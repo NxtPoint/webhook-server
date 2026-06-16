@@ -1,5 +1,7 @@
 # Court calibration — camera-class taxonomy + breakage matrix
 
+> **Tier-4 reference (frozen). Camera-setup taxonomy behind the calibration work; the silent-degeneracy failure mode it informed was RESOLVED 2026-05-29 (see court_calibration_silent_degeneracy.md). Retained for the taxonomy.**
+
 **Tier:** REFERENCE / investigation
 **Dated:** 2026-05-28 (calibration research session)
 **Companion to:** `docs/_investigation/court_calibration_silent_degeneracy.md` (root cause + architectural proposal) and `.claude/court_calibration_implementation_kickoff.md` (execution plan).

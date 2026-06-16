@@ -403,7 +403,9 @@ For Batch-side changes:
 
 ### Validation rule — don't skip this
 
-After ANY change to the FAR-player path, reconcile MUST be run on `4a591553-a8d9-4eaf-9bff-b0ec5c9c1185` (current task with both ROI data and SA reference). If far MATCH drops below 3/10, REVERT. If you can't get above 3/10 strict with one targeted change, escalate to Tomo before continuing.
+After ANY change to the FAR-player path, reconcile MUST be run. **The canonical reconciliation is now `recon_line` against the reference pair `079d2c62 ↔ 375198f5` (RULE 6)** — see the NEXT SESSION section above for the exact command. The old `4a591553` task and the "far MATCH must not drop below 3/10 strict" figure below are **historical** (Apr-2026 framing); they're retained because the *spirit* of the rule still holds: reconcile after any far-path change, and if a far-path change drops MATCH count, REVERT and escalate to Tomo before continuing.
+
+Historical form of the gate (pre-`recon_line`): reconcile was run on `4a591553-a8d9-4eaf-9bff-b0ec5c9c1185` (the then-current task with both ROI data and SA reference); if far MATCH dropped below 3/10, REVERT, and if you couldn't get above 3/10 strict with one targeted change, escalate.
 
 The two metrics that matter, in priority order:
 1. Strict reconcile MATCH count (NEAR + FAR) — should NEVER decrease vs the immediately-prior commit.
@@ -416,6 +418,8 @@ If a change improves precision but reduces MATCH count, REVERT. Tomo prefers mor
 ---
 
 ## Deployment state (2026-04-23 — Option A landing)
+
+> **HISTORICAL (2026-04-23 Option-A landing). Job-def revs / digests / task IDs below are point-in-time and long superseded — current detection job-def is ~rev 80 and the current state is in `.claude/next_session_pickup.md`. Retained for the deploy-sequence example only.**
 
 **WHAT'S LIVE IN PRODUCTION** (auto-deployed via Render pulling from `main`):
 
@@ -431,19 +435,15 @@ If a change improves precision but reduces MATCH count, REVERT. Tomo prefers mor
 
 `reconcile_serves_strict.py` + `probe_serve_window.py` + `visualize_far_serve.py` diag tools — all on main.
 
-### P2 ROI extractor integration (Option A — deployed 2026-04-23)
+### ROI extractor integration — UNIFIED 3-extractor sweep (current state)
 
-**Images live in ECR, both regions:**
-- `696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest`
-- `696793787014.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest`
-- Digest: `sha256:2640e28f9531b8431313a0e6c192acf082da5b111b6feba6bc43639d60977640`
-- Image size: 17.9 GB uncompressed / 6.4 GB compressed (adds transformers 4.49.0 + ViTPose-Base weights on top of previous rev)
+The ROI sweep is no longer the single pose extractor of the Apr-23 landing. It is now a **unified single-decode sweep** — `ml_pipeline/roi_extractors/unified.py::run_unified_roi` decodes the video ONCE and fans the frames to three extractors that each write a distinct bronze fact (returns `(n_pose, n_bounce, n_far_ball)`):
 
-**Code wired into Batch pipeline** (`ml_pipeline/__main__.py::_run_batch` step 2b):
-- `ml_pipeline/roi_extractors/pose.py::extract_far_pose()` — SA-less ViTPose-Base extractor, scans the whole video on GPU, writes to `ml_analysis.player_detections_roi` (`source='far_vitpose'`). Failure is non-fatal.
-- `ml_pipeline/roi_extractors/bounces.py::extract_far_bounces()` — **STUB** (logs + returns 0). Proper WASB bounce extraction deferred to a follow-up session.
-- Runs only for match uploads (`if not practice`), not practice sessions.
-- Smoke-tested locally (CPU) in Phase 1: 306 sampled frames → 260 detections → 119 usable pose rows in 579 s. End-to-end DB write confirmed.
+- `roi_extractors/pose.py` — far-player ViTPose-Base, whole-video on GPU → `ml_analysis.player_detections_roi` (`source='far_vitpose'`, pid=1). The original Option-A extractor; failure non-fatal.
+- `roi_extractors/bounces.py::extract_far_bounces()` — **NOT a stub** (the old "STUB / returns 0" note is dead). Service-box-targeted TrackNet around in-memory bounce anchors → `ml_analysis` bounce rows. Inside `unified` it shares the single decode (it has its own standalone driver too, used outside the unified path).
+- `roi_extractors/far_ball.py` — far-half ball ROI sweep around far-ball anchors → `ml_analysis.ball_detections` with `source='roi_far_ball'`; carried through `bronze_export` + `bronze_ingest_t5` and deduped by readers via `ml_pipeline.ball_merge`.
+
+Each extractor is independently non-fatal: `unified` catches `far_ball.feed`/`finalize` raises and drops just that pass, leaving pose + bounce intact. Runs for match uploads, not practice. The sweep is rally-gated by the bounce CNN output (far-pose ROI runs past rally activity, per `328d3b8`).
 
 **Job-def** still uses `:latest` tag (Batch rev 1 in both regions). Spot nodes are ephemeral so every new job pulls the new image fresh — no re-registration needed. Confirm via: `aws ecr describe-images --region eu-north-1 --repository-name ten-fifty5-ml-pipeline --image-ids imageTag=latest`.
 
@@ -599,7 +599,7 @@ python -m ml_pipeline.harness eval-player <task_id>      # count, coord variance
 python -m ml_pipeline.harness eval-serve <task_id>       # precision/recall vs SportAI ground truth
 ```
 
-`eval-serve` targets: precision ≥ 90%, recall ≥ 85%, mean ts error < 1 s.
+`eval-serve` is a **diagnostic** tool — not a release gate. The old "precision ≥ 90% / recall ≥ 85% / mean ts error < 1 s" target is **overturned** by the DEV-COMPLETE framing: per `docs/north_star.md`, "we are NOT chasing 100% serve detection," and serve accuracy beyond the bench floor (especially far-serve recall) is now **training-gated**, not a fixed eval threshold. The live gates are the **bench** (`ea1e500c=12/26`, `880dff02=23/24`) plus `recon_line` reconciliation against the canonical reference pair. Use `eval-serve` to read precision/recall/ts-error, but don't treat 90/85 as a pass/fail line.
 
 ### Full reconcile vs SportAI ground truth
 
