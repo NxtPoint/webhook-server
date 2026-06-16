@@ -512,7 +512,10 @@ async function init() {
     document.body.innerHTML = '<div class="access-denied"><h3>Configuration Required</h3><p>Missing email or API key. Access through your dashboard.</p></div>';
     return;
   }
-  if (window.__CLERK_MODE) { EMAIL = TFAuth.email() || EMAIL; }
+  if (window.__CLERK_MODE) {
+    EMAIL = TFAuth.email() || EMAIL;
+    isAdmin = ADMIN_EMAILS.includes(EMAIL);   // recompute — applyAuth() never runs in clerk mode
+  }
 
   // Set sidebar state
   document.getElementById('sidebar').classList.toggle('expanded', sidebarExpanded);

@@ -80,8 +80,11 @@ def _html(name: str):
             # Skipped for marketing/blog/login; legacy (Wix) behaviour is unchanged
             # because TFAuth only acts in clerk mode (no ?key= + a Clerk session).
             base = os.path.basename(name)
+            # Check for the actual <script src> tag, NOT the bare substring — the
+            # converted pages mention "/auth_client.js" in a comment, which must
+            # not be mistaken for an already-present include.
             if (base not in _NO_AUTH_CLIENT and not base.startswith("blog")
-                    and "/auth_client.js" not in html):
+                    and 'src="/auth_client.js"' not in html):
                 auth_tag = '<script src="/auth_client.js"></script>'
                 if "</head>" in html:
                     html = html.replace("</head>", auth_tag + "\n</head>", 1)
