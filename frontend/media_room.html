@@ -322,20 +322,18 @@ textarea.edit-input { resize: vertical; min-height: 60px; }
 // CONFIG & AUTH (same pattern as locker_room.html)
 // ============================================================
 const params = new URLSearchParams(window.location.search);
-const EMAIL = (params.get('email') || '').trim().toLowerCase();
+let EMAIL = (params.get('email') || '').trim().toLowerCase();
 const API_KEY = params.get('key') || '';
 const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
 
-function apiFetch(path, opts = {}) {
-  const sep = path.includes('?') ? '&' : '?';
-  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
-  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
-}
+// Dual-mode via TFAuth (/auth_client.js): clerk Bearer or legacy X-Client-Key + ?email.
+function apiFetch(path, opts = {}) { return TFAuth.apiFetch(path, opts); }
 
-function apiPost(path, body) {
+async function apiPost(path, body) {
+  const authH = await TFAuth.authHeaders();
   return fetch(API_BASE + path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authH },
     body: JSON.stringify({ ...body, email: EMAIL }),
   });
 }
@@ -435,10 +433,12 @@ function clearUploadState() {
 // INIT
 // ============================================================
 async function init() {
-  if (!EMAIL || !API_KEY) {
+  await TFAuth.ready();
+  if (!TFAuth.isAuthed()) {
     document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key. Access the Media Room through your dashboard.</p></div>';
     return;
   }
+  EMAIL = TFAuth.email();
 
   try {
     const [entRes, profileRes, usageRes, membersRes, playersRes] = await Promise.all([

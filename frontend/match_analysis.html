@@ -647,15 +647,12 @@ body {
 
 <script>
 const params = new URLSearchParams(window.location.search);
-const EMAIL = (params.get('email') || '').trim().toLowerCase();
+let EMAIL = (params.get('email') || '').trim().toLowerCase();
 const API_KEY = params.get('key') || '';
 const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
 
-function apiFetch(path, opts = {}) {
-  const sep = path.includes('?') ? '&' : '?';
-  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
-  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
-}
+// Dual-mode via TFAuth (/auth_client.js): clerk Bearer or legacy X-Client-Key + ?email.
+function apiFetch(path, opts = {}) { return TFAuth.apiFetch(path, opts); }
 
 let matches = [];
 let selectedMatch = null;
@@ -678,10 +675,12 @@ const PB_COLOR = '#2563eb';
 
 // ==================== INIT ====================
 async function init() {
-  if (!EMAIL || !API_KEY) {
+  await TFAuth.ready();
+  if (!TFAuth.isAuthed()) {
     document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key.</p></div>';
     return;
   }
+  EMAIL = TFAuth.email();
   try {
     const res = await apiFetch('/api/client/matches');
     const data = await res.json();

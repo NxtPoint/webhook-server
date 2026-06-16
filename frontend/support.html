@@ -222,7 +222,7 @@ input, textarea { font-family: inherit; }
 //   AUTH (mirrors pricing.html / locker_room.html pattern)
 // ====================================================================
 const params = new URLSearchParams(window.location.search);
-const EMAIL      = (params.get('email') || '').trim().toLowerCase();
+let EMAIL        = (params.get('email') || '').trim().toLowerCase();
 const API_KEY    = (params.get('key') || '').trim();
 const API_BASE   = (params.get('api') || 'https://api.nextpointtennis.com').trim().replace(/\/+$/, '');
 const FIRST_NAME = (params.get('firstName') || '').trim();
@@ -249,7 +249,7 @@ const QUICK_PROMPTS = [
 function render() {
   const root = document.getElementById('root');
 
-  if (!EMAIL || !API_KEY) {
+  if (!TFAuth.isAuthed()) {
     root.innerHTML = `
       <div class="no-auth">
         <h3>You're not signed in</h3>
@@ -388,7 +388,7 @@ async function onSend() {
   try {
     const res = await fetch(API_BASE + '/api/support/ask', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Client-Key': API_KEY },
+      headers: { 'Content-Type': 'application/json', ...(await TFAuth.authHeaders()) },
       body: JSON.stringify({
         message: q,
         email: EMAIL,
@@ -452,7 +452,7 @@ async function onEscalate() {
   try {
     const res = await fetch(API_BASE + '/api/support/escalate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Client-Key': API_KEY },
+      headers: { 'Content-Type': 'application/json', ...(await TFAuth.authHeaders()) },
       body: JSON.stringify({
         conversation_id: conversationId,
         email: EMAIL,
@@ -492,7 +492,7 @@ function escapeAttr(s) { return escapeHtml(s); }
 // ====================================================================
 //   BOOT
 // ====================================================================
-render();
+(async () => { await TFAuth.ready(); EMAIL = TFAuth.email(); render(); })();
 </script>
 
 </body>

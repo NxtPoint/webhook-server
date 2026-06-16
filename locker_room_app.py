@@ -57,6 +57,14 @@ _env_hosts = {h.strip().lower() for h in os.environ.get("MARKETING_HOSTS", "").s
 MARKETING_HOSTS = _DEFAULT_MARKETING_HOSTS | _env_hosts
 
 
+# App pages that DON'T get the auth_client.js shim: marketing/SEO pages (no portal,
+# keep them lean), the blog, and login.html (carries its own Clerk logic).
+_NO_AUTH_CLIENT = {
+    "home.html", "how_it_works.html", "pricing_public.html", "for_coaches.html",
+    "for_academies.html", "contact.html", "404.html", "login.html",
+}
+
+
 def _html(name: str):
     path = os.path.join(FRONTEND_DIR, name)
     if not os.path.isfile(path):
@@ -67,6 +75,18 @@ def _html(name: str):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 html = f.read()
+            # Shared dual-mode auth helper (TFAuth) for the logged-in app pages.
+            # In <head>, non-defer, so window.TFAuth exists before page scripts run.
+            # Skipped for marketing/blog/login; legacy (Wix) behaviour is unchanged
+            # because TFAuth only acts in clerk mode (no ?key= + a Clerk session).
+            base = os.path.basename(name)
+            if (base not in _NO_AUTH_CLIENT and not base.startswith("blog")
+                    and "/auth_client.js" not in html):
+                auth_tag = '<script src="/auth_client.js"></script>'
+                if "</head>" in html:
+                    html = html.replace("</head>", auth_tag + "\n</head>", 1)
+                else:
+                    html = auth_tag + "\n" + html
             if "/analytics.js" not in html:
                 tag = '<script src="/analytics.js" defer></script>'
                 html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
@@ -167,6 +187,13 @@ def dashboard():
     # Dedicated, NON host-switched route for the Locker Room dashboard SPA. The
     # portal nav loads this (not '/', which serves marketing on a marketing host).
     return _html("locker_room.html")
+
+
+@app.get("/plans")
+def plans():
+    # Dedicated, NON host-switched route for the in-app pricing/plans SPA. The portal
+    # nav loads this (not '/pricing', which serves the marketing page on a marketing host).
+    return _html("pricing.html")
 
 
 def _serve_login():

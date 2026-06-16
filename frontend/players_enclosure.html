@@ -352,9 +352,12 @@ function esc(s) {
 }
 
 async function api(path, opts = {}) {
+  // Dual-mode via TFAuth (/auth_client.js): clerk Bearer or legacy X-Client-Key + ?email.
+  await TFAuth.ready();
   const sep = path.includes('?') ? '&' : '?';
-  const headers = { 'X-Client-Key': STATE.apiKey, ...(opts.headers || {}) };
-  const url = STATE.apiBase + path + sep + 'email=' + encodeURIComponent(STATE.email);
+  const headers = { ...(await TFAuth.authHeaders()), ...(opts.headers || {}) };
+  const qs = (TFAuth.mode() === 'clerk') ? '' : ('email=' + encodeURIComponent(STATE.email));
+  const url = STATE.apiBase + path + (qs ? sep + qs : '');
   return fetch(url, { ...opts, headers });
 }
 
@@ -362,6 +365,8 @@ async function api(path, opts = {}) {
 // INIT
 // ============================================================
 async function init() {
+  await TFAuth.ready();
+  if (TFAuth.mode() === 'clerk') STATE.email = TFAuth.email();
   if (!STATE.email) {
     // Wait briefly for postMessage from Wix
     await new Promise(res => setTimeout(res, 1500));
@@ -373,7 +378,7 @@ async function init() {
   }
 
   // Fetch existing profile to see if already registered
-  if (STATE.apiKey) {
+  if (TFAuth.isAuthed()) {
     try {
       const res = await api('/api/client/profile');
       if (res.ok) {
@@ -457,7 +462,7 @@ async function completeSignup(btn) {
   try {
     const res = await fetch(STATE.apiBase + '/api/client/register?email=' + encodeURIComponent(STATE.email), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Client-Key': STATE.apiKey },
+      headers: { 'Content-Type': 'application/json', ...(await TFAuth.authHeaders()) },
       body: JSON.stringify({
         email: STATE.email,
         first_name: STATE.firstName,
@@ -486,7 +491,7 @@ async function completeSignup(btn) {
       try {
         const cres = await fetch(STATE.apiBase + '/api/client/children?email=' + encodeURIComponent(STATE.email), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Client-Key': STATE.apiKey },
+          headers: { 'Content-Type': 'application/json', ...(await TFAuth.authHeaders()) },
           body: JSON.stringify({
             email: STATE.email,
             children: validChildren.map(c => ({
