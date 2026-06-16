@@ -70,6 +70,7 @@ def _config_payload() -> dict:
     recurring = [{
         "code": p["code"], "name": p["name"], "matches": p["matches"],
         "plan_id": (plan_map.get(p["code"]) or {}).get("plan_id"),
+        "amount": (plan_map.get(p["code"]) or {}).get("price", plans.price_of(p["code"])),
     } for p in plans.recurring_plans()]
     payg = [{
         "code": p["code"], "name": p["name"], "matches": p["matches"],

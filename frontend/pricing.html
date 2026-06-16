@@ -252,6 +252,27 @@ button { cursor: pointer; font-family: inherit; }
   .status-bar { flex-direction: column; align-items: flex-start; }
   .app { padding-bottom: 300px !important; }
 }
+
+/* ========== PAYPAL ========== */
+.paypal-slot { min-height: 40px; margin-top: 2px; }
+.paypal-slot.pp-loading { display: flex; align-items: center; justify-content: center;
+  font-size: 0.78rem; color: var(--text-dim); min-height: 40px; }
+.pp-unavail {
+  display: block; width: 100%; padding: 10px; border: 1px dashed var(--border);
+  border-radius: var(--radius); font-size: 0.8rem; text-align: center; color: var(--text-dim);
+}
+.cancel-sub-btn {
+  background: none; border: none; color: var(--text-dim); font-size: 0.75rem;
+  text-decoration: underline; padding: 0; margin-top: 4px;
+}
+.cancel-sub-btn:hover { color: var(--red); }
+.pp-toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  background: var(--green); color: var(--white); padding: 12px 20px;
+  border-radius: var(--radius); font-size: 0.85rem; font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2); z-index: 10000; max-width: 90%;
+}
+.pp-toast.err { background: var(--red); }
 </style>
 </head>
 <body>
@@ -425,6 +446,129 @@ const COACH_PLANS = [
 // ==================== STATE ====================
 let entitlements = null;
 
+// ==================== PAYPAL ====================
+// Direct PayPal checkout. When the backend reports enabled, we render PayPal Buttons
+// (Subscriptions for recurring, Orders for PAYG) instead of the Wix postMessage path.
+// When disabled, everything falls back to the existing Wix checkout below.
+let PAYPAL = { enabled: false, client_id: '', env: 'sandbox', currency: 'USD', recurring: [], payg: [] };
+let PP_SDK_READY = false;
+
+async function apiPost(path, body) {
+  const sep = path.includes('?') ? '&' : '?';
+  const res = await fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), {
+    method: 'POST',
+    headers: { 'X-Client-Key': API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+async function fetchPayPalConfig() {
+  try {
+    const res = await fetch(API_BASE + '/api/billing/paypal/config');
+    if (res.ok) {
+      const d = await res.json();
+      if (d && d.enabled && d.client_id) PAYPAL = d;
+    }
+  } catch (e) { console.warn('paypal config fetch failed', e); }
+}
+
+// Patch the displayed plan prices from our own catalogue (no longer "managed in Wix").
+function applyPayPalPrices() {
+  if (!PAYPAL.enabled) return;
+  const rec = Object.fromEntries((PAYPAL.recurring || []).map(p => [p.code, p.amount]));
+  const pg = Object.fromEntries((PAYPAL.payg || []).map(p => [p.code, p.amount]));
+  PLAYER_PLANS.forEach(p => { if (rec[p.code] != null) p.price = rec[p.code]; });
+  TOPUP_PACKS.forEach(p => { if (pg[p.code] != null) p.price = pg[p.code]; });
+}
+
+// Two SDK instances (different namespaces) so one page can do both intents:
+// subscriptions (vault + intent=subscription) and one-off orders (intent=capture).
+function loadPayPalSdk() {
+  return new Promise((resolve, reject) => {
+    if (PP_SDK_READY) return resolve();
+    const cur = encodeURIComponent(PAYPAL.currency || 'USD');
+    const cid = encodeURIComponent(PAYPAL.client_id);
+    let pending = 2;
+    const done = () => { if (--pending === 0) { PP_SDK_READY = true; resolve(); } };
+    const add = (extra, ns) => {
+      const s = document.createElement('script');
+      s.src = `https://www.paypal.com/sdk/js?client-id=${cid}&currency=${cur}&${extra}`;
+      s.setAttribute('data-namespace', ns);
+      s.onload = done; s.onerror = reject;
+      document.head.appendChild(s);
+    };
+    add('vault=true&intent=subscription', 'paypal_sub');
+    add('intent=capture', 'paypal_order');
+  });
+}
+
+function mountPayPalButtons() {
+  if (!PAYPAL.enabled || !PP_SDK_READY) return;
+  document.querySelectorAll('.paypal-slot').forEach(slot => {
+    if (slot.dataset.mounted) return;
+    slot.dataset.mounted = '1';
+    slot.classList.remove('pp-loading');
+    const code = slot.dataset.code, type = slot.dataset.type;
+    if (type === 'recurring') {
+      const meta = (PAYPAL.recurring || []).find(p => p.code === code);
+      if (!meta || !meta.plan_id) { slot.innerHTML = '<div class="pp-unavail">Coming soon</div>'; return; }
+      window.paypal_sub.Buttons({
+        style: { layout: 'horizontal', height: 40, label: 'subscribe', tagline: false },
+        createSubscription: () => apiPost('/api/billing/paypal/create-subscription', { plan_code: code }).then(d => d.id),
+        onApprove: () => onPaid('Subscription active — your credits will appear in a few seconds.'),
+        onError: (err) => { console.error(err); toast('Something went wrong with checkout. Please try again.', true); },
+      }).render(slot);
+    } else {
+      window.paypal_order.Buttons({
+        style: { layout: 'horizontal', height: 40, label: 'pay', tagline: false },
+        createOrder: () => apiPost('/api/billing/paypal/create-order', { plan_code: code }).then(d => d.id),
+        onApprove: (data) => apiPost('/api/billing/paypal/capture-order', { order_id: data.orderID })
+          .then(() => onPaid('Credits added to your account.'))
+          .catch((e) => { console.error(e); toast('Payment captured but crediting failed — contact support@ten-fifty5.com.', true); }),
+        onError: (err) => { console.error(err); toast('Something went wrong with checkout. Please try again.', true); },
+      }).render(slot);
+    }
+  });
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// After payment: credits land via webhook (subscriptions) or capture (PAYG). Poll a few
+// times so the UI reflects the new balance/plan without a manual refresh.
+async function onPaid(message) {
+  toast(message);
+  for (let i = 0; i < 5; i++) {
+    await sleep(1800);
+    await fetchEntitlements();
+    render();
+    if ((entitlements?.credits_remaining ?? 0) > 0 || entitlements?.plan_active) break;
+  }
+}
+
+async function cancelSubscription() {
+  if (!confirm('Cancel your subscription? You keep access and remaining credits until the end of your current billing period.')) return;
+  try {
+    await apiPost('/api/billing/paypal/cancel-subscription', {});
+    toast('Subscription cancelled. Access continues until your period ends.');
+    await fetchEntitlements();
+    render();
+  } catch (e) {
+    console.error(e);
+    toast('Could not cancel right now — please contact support@ten-fifty5.com.', true);
+  }
+}
+
+function toast(msg, isErr) {
+  const el = document.createElement('div');
+  el.className = 'pp-toast' + (isErr ? ' err' : '');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 5000);
+}
+
 // ==================== RENDER ====================
 function render() {
   const app = document.getElementById('app');
@@ -470,6 +614,7 @@ function render() {
     html += `<div class="coach-notice">You are signed in as a <strong>Coach</strong>. Coach access is free and managed by your players' accounts.</div>`;
     html += renderCoachView();
     app.innerHTML = html;
+    mountPayPalButtons();
     return;
   }
 
@@ -486,6 +631,7 @@ function render() {
   }
 
   app.innerHTML = html;
+  mountPayPalButtons();
 }
 
 function renderStatusBar(planActive, planCode, planType, subStatus, periodEnd, remaining, granted, consumed) {
@@ -522,6 +668,8 @@ function renderStatusBar(planActive, planCode, planType, subStatus, periodEnd, r
       <div class="status-bar-label">Current Plan</div>
       <div class="status-bar-plan" style="color:${planColor}">${esc(planLabel)}</div>
       ${detail ? `<div class="status-bar-detail">${detail}</div>` : ''}
+      ${(planActive && planType === 'recurring' && PAYPAL.enabled)
+        ? `<button class="cancel-sub-btn" onclick="cancelSubscription()">Cancel subscription</button>` : ''}
     </div>
     <div class="status-bar-right">
       <div style="text-align:right">
@@ -640,6 +788,9 @@ function renderPlanCard(plan, isCurrent) {
     btnHtml = `<div class="plan-current-label">Included</div>`;
   } else if (!checkoutUrl) {
     btnHtml = `<div class="plan-current-label">Included</div>`;
+  } else if (PAYPAL.enabled && (plan.type === 'recurring' || plan.type === 'payg')) {
+    // Direct PayPal: a Buttons slot mounted after render (Subscriptions / Orders).
+    btnHtml = `<div class="paypal-slot pp-loading" data-code="${esc(plan.code)}" data-type="${plan.type === 'payg' ? 'payg' : 'recurring'}">Loading…</div>`;
   } else {
     const btnCls = plan.featured ? 'plan-btn plan-btn-primary' : 'plan-btn plan-btn-secondary';
     const label = plan.type === 'payg' ? 'Buy Credits' : 'Get Started';
@@ -671,15 +822,7 @@ function selectPlan(wixPlanId) {
 }
 
 // ==================== INIT ====================
-async function init() {
-  if (!EMAIL || !API_KEY) {
-    document.getElementById('app').innerHTML = `
-      <div class="loading">
-        <p style="color:var(--red)">Configuration required. Missing email or API key.</p>
-      </div>`;
-    return;
-  }
-
+async function fetchEntitlements() {
   try {
     const res = await apiFetch('/api/client/entitlements');
     if (res.ok) {
@@ -690,6 +833,24 @@ async function init() {
     }
   } catch (e) {
     console.error('Failed to fetch entitlements', e);
+  }
+}
+
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    document.getElementById('app').innerHTML = `
+      <div class="loading">
+        <p style="color:var(--red)">Configuration required. Missing email or API key.</p>
+      </div>`;
+    return;
+  }
+
+  await Promise.all([fetchEntitlements(), fetchPayPalConfig()]);
+  applyPayPalPrices();
+
+  if (PAYPAL.enabled) {
+    try { await loadPayPalSdk(); }
+    catch (e) { console.error('PayPal SDK load failed — falling back to Wix', e); PAYPAL.enabled = false; }
   }
 
   render();
