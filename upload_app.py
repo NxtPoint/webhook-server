@@ -64,7 +64,7 @@ except ImportError:
 
 # ── CORS (cross-origin support for Wix iframe embeds) ──────────────
 # Covers: /api/client/*, /api/support/*, /upload/api/*, /api/submit_s3_task, /media-room, etc.
-CORS_PATHS = ("/api/client/", "/api/support/", "/upload/api/", "/api/submit_s3_task", "/api/coaches/accept-token", "/media-room", "/backoffice", "/analytics", "/portal", "/pricing", "/coach-accept")
+CORS_PATHS = ("/api/client/", "/api/support/", "/api/billing/paypal/", "/upload/api/", "/api/submit_s3_task", "/api/coaches/accept-token", "/media-room", "/backoffice", "/analytics", "/portal", "/pricing", "/coach-accept")
 
 @app.before_request
 def handle_cors_preflight():
