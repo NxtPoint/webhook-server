@@ -113,6 +113,16 @@ sandbox testing takes time.
 - **PayPal-direct** — viable, and PayPal brand trust + our half-built backend help; but its API is the
   fiddliest, and it doesn't solve tax.
 
-**Recommendation:** treat payment as its own decision after (or alongside) auth. If minimizing ongoing
-operational/tax burden matters most → a Merchant of Record. If lowest fees + maximum control → Stripe.
-PayPal-direct only if PayPal-specifically is a requirement. Either way: **cheaper to do now than later.**
+**Decision (2026-06-16): PayPal-direct.** Tomo's PayPal account settles to FNB (SA bank) and is already
+wired to QuickBooks, with easy fund repatriation — concrete operational reasons that outweigh the
+generic MoR/Stripe pitch for this business. So the ~1–2 week PayPal-direct build above is the path.
+
+**On tax (clarified):** the "tax piece" is **not** a payment-integration problem and no processor
+choice creates or removes it. Two buckets: (1) **SA taxes** (income; SA VAT only past the ~R1m
+threshold) — handled by the accountant + QuickBooks, PayPal-direct is fine. (2) **Foreign consumption
+tax** (EU/UK VAT on B2C digital services) — for a non-resident seller this technically applies from the
+first sale; a Merchant of Record would absorb that liability, PayPal-direct leaves it with us. For an
+early-stage SA business with low international consumer volume it's a **"handle as regional traction
+becomes material"** obligation, **owned by the accountant**, not a launch blocker and not something the
+integration touches. Action: ask the accountant "when do I need to worry about EU/UK VAT?" at some point;
+don't let it shape the build.
