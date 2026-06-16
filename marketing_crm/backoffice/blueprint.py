@@ -144,6 +144,24 @@ def feedback():
                     "verbatims": verbatims, "recent_feedback": recent_feedback})
 
 
+@cockpit_bp.route(f"{_PREFIX}/sync-crm", methods=["POST", "OPTIONS"])
+def sync_crm():
+    """Trigger a full DB→HubSpot/Klaviyo profile sync (admin; for a nightly cron or manual run).
+    No-op unless CRM_SYNC_ENABLED=1 + provider keys set."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    try:
+        from marketing_crm.crm_sync import enabled, sync_all
+        if not enabled():
+            return jsonify({"ok": True, "synced": 0, "note": "CRM_SYNC_ENABLED is off"})
+        n = sync_all()
+        return jsonify({"ok": True, "synced": n})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 def register(app):
     """Register the cockpit blueprint IFF COCKPIT_ENABLED=1. No-op otherwise (dark by default)."""
     if os.getenv("COCKPIT_ENABLED", "0") != "1":

@@ -68,6 +68,13 @@ def _emit(event_type, email, account_id, user_id, person_id, ref_type, ref_id, p
     except Exception:
         log.exception("track: amplitude emit failed for %s", event_type)
 
+    # 3) Best-effort: forward to Klaviyo so marketing flows can trigger (no-op unless CRM_SYNC_ENABLED)
+    try:
+        from marketing_crm.crm_sync import forward_event
+        forward_event(event_type, email, properties)
+    except Exception:
+        log.exception("track: crm forward failed for %s", event_type)
+
 
 def _amplitude(event_type, email, account_id, properties):
     key = os.getenv("AMPLITUDE_API_KEY")

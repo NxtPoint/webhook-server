@@ -968,6 +968,15 @@ def register_member():
         except Exception:
             logging.getLogger(__name__).exception("signup_bonus grant failed for account_id=%s", acct.id)
 
+    # Product event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
+    try:
+        from marketing_crm.tracking import track
+        from marketing_crm.tracking.events import ACCOUNT_CREATED
+        track(ACCOUNT_CREATED, email=email,
+              properties={"role": role, "source": (payload.get("source") or payload.get("utm_source"))})
+    except Exception:
+        pass
+
     return jsonify({"ok": True, "account_id": int(acct.id)})
 
 
@@ -1631,6 +1640,14 @@ def _gold_guard_and_fetch(view_name, task_id):
 def gold_match_kpi(task_id):
     """Single-row match KPIs for both players (Summary tab head-to-head)."""
     code, payload = _gold_guard_and_fetch("match_kpi", task_id)
+    # "report viewed" signal — the KPI card is the head of every match view (fire-and-forget)
+    if code == 200:
+        try:
+            from marketing_crm.tracking import track
+            from marketing_crm.tracking.events import REPORT_VIEWED
+            track(REPORT_VIEWED, email=request.args.get("email"), ref_type="match", ref_id=task_id)
+        except Exception:
+            pass
     return jsonify(payload), code
 
 

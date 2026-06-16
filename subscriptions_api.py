@@ -299,6 +299,13 @@ def subscription_event():
         except Exception:
             pass
 
+        # Refresh the CRM profile (plan/MRR/stage changed) — fire-and-forget, no-op if disabled
+        try:
+            from marketing_crm.crm_sync import sync_profile
+            sync_profile(buyer_email)
+        except Exception:
+            pass
+
         return jsonify({
             "ok": True,
             "stored": True,
