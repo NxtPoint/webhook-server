@@ -125,6 +125,12 @@ def _ensure_subscription_state_columns() -> None:
                 "ALTER TABLE billing.subscription_state "
                 "ADD COLUMN IF NOT EXISTS billing_provider TEXT NOT NULL DEFAULT 'wix'"
             ))
+            # PayPal subscription resource id (I-XXXX) — needed to cancel via the API.
+            # Null for Wix (Wix owns cancellation on its side).
+            conn.execute(text(
+                "ALTER TABLE billing.subscription_state "
+                "ADD COLUMN IF NOT EXISTS provider_subscription_id TEXT"
+            ))
     except Exception:
         pass
 
@@ -173,6 +179,7 @@ def apply_subscription_event(payload: Dict[str, Any], *, provider: str = "wix"):
     plan_code = (payload.get("plan_code") or "").strip() or None
     plan_type = (payload.get("plan_type") or "").strip().lower() or None
     matches_granted = payload.get("matches_granted")
+    provider_subscription_id = (payload.get("provider_subscription_id") or "").strip() or None
 
     plan_start_dt = _parse_dt(payload.get("plan_start"))
     plan_end_dt = _parse_dt(payload.get("plan_end"))
@@ -258,6 +265,7 @@ def apply_subscription_event(payload: Dict[str, Any], *, provider: str = "wix"):
                   plan_code = COALESCE(:plan_code, plan_code),
                   plan_type = COALESCE(:plan_type, plan_type),
                   billing_provider = :provider,
+                  provider_subscription_id = COALESCE(:provider_subscription_id, provider_subscription_id),
                   matches_granted = COALESCE(:matches_granted, matches_granted),
                   status = :status,
                   current_period_start = COALESCE(:start_dt, current_period_start),
@@ -279,6 +287,7 @@ def apply_subscription_event(payload: Dict[str, Any], *, provider: str = "wix"):
                 "plan_code": plan_code,
                 "plan_type": plan_type,
                 "provider": provider,
+                "provider_subscription_id": provider_subscription_id,
                 "matches_granted": matches_granted,
                 "status": new_status,
                 "start_dt": plan_start_dt,

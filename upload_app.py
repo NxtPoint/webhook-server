@@ -245,6 +245,17 @@ try:
 except Exception:
     app.logger.exception("marketing_crm page beacon register failed on boot")
 
+# ---------- Direct PayPal payments (paypal_billing) — DARK by default ----------
+# Registers checkout + webhook routes only when PAYPAL_ENABLED=1. The public
+# GET /api/billing/paypal/config probe is registered even when dark (reports
+# enabled=false) so the frontend can fall back to the Wix checkout path.
+try:
+    from paypal_billing import register as register_paypal
+    if register_paypal(app):
+        app.logger.info("paypal_billing registered (PAYPAL_ENABLED=1)")
+except Exception:
+    app.logger.exception("paypal_billing register failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init

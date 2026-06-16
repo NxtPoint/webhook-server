@@ -146,6 +146,23 @@ def create_plan(*, product_id: str, name: str, price: float, currency: str,
 
 # ── Subscriptions ────────────────────────────────────────────────────────────
 
+def create_subscription(*, plan_id: str, custom_id: str, brand_name: str = "TEN-FIFTY5") -> dict:
+    """Create a subscription server-side so custom_id (our account email) is set by us,
+    not the browser. The JS SDK's createSubscription returns this id and renders approval.
+    No card data touches us."""
+    body = {
+        "plan_id": plan_id,
+        "custom_id": custom_id[:127],
+        "application_context": {
+            "brand_name": brand_name,
+            "shipping_preference": "NO_SHIPPING",
+            "user_action": "SUBSCRIBE_NOW",
+        },
+    }
+    return _request("POST", "/v1/billing/subscriptions", json_body=body,
+                    headers={"PayPal-Request-Id": str(uuid.uuid4())})
+
+
 def get_subscription(subscription_id: str) -> dict:
     return _request("GET", f"/v1/billing/subscriptions/{subscription_id}")
 
