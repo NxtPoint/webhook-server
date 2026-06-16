@@ -37,6 +37,17 @@ silver rollback (KEEP until stroke-driven is proven on a fresh real upload).
 - **DEFER to Tomo (Batch-side, rule #8 — Docker rebuild + daylight only, low value /
   disk-only):** orphaned v1 weight files in `models/` (`bounce_detector_v1*.pt`,
   `swing_classifier_v1.pt`) — deleting changes the Docker `models/` COPY payload.
+  They drop naturally on the next detection-image rebuild (e.g. shipping retrained
+  weights) — not worth a dedicated rebuild.
+- **KNOWN NON-BLOCKING FOLLOW-UP — bench "Option B" (durable home, recorded here so it
+  survives pickup overwrites):** `SERVE_FAR_POSE_ENABLED` is correct in prod via env=0,
+  but the code default stays ON because the locked CI fixtures (`ea1e500c`, `880dff02`)
+  carry NO `serve_candidates`, so far-pose-OFF makes them go red (the bench can't see the
+  `model_far` that makes OFF correct). The durable end-state ("Option B"): regenerate the
+  bench fixtures WITH `serve_candidates`, THEN flip the code default to OFF and re-baseline
+  — so the OFF state is bench-guarded and the env crutch goes away. Not done; not blocking
+  (prod is correct today). Touches locked CI fixtures (rules #5/#9) → do it only as a
+  deliberate, daylight change when next touching the serve detector.
 
 ---
 
