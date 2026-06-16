@@ -20,6 +20,16 @@ _PREFIX = "/api/client/backoffice/cockpit"
 
 
 def _admin_ok():
+    # Dual-mode (de-Wix): a verified Clerk JWT (admin derived server-side) OR the
+    # legacy shared key + ?email. resolve_principal handles BOTH and exposes is_admin.
+    try:
+        from auth_v2 import resolve_principal
+        p = resolve_principal(request)
+        if p is not None:
+            return bool(getattr(p, "is_admin", False))
+    except Exception:
+        pass
+    # Fallback only if auth_v2 is unavailable: original shared-key + ?email check.
     expected = os.getenv("CLIENT_API_KEY") or os.getenv("CORE_API_KEY")
     if not expected:
         return False
