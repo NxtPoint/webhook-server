@@ -1,5 +1,7 @@
 # T5 bronze accuracy investigation — far-player detection + A/B identity
 
+> **PARTIALLY RESOLVED — far position (−0.43m) and identity (0% pollution) landed by 2026-06-06; bounce recall + far hit-WHO remain the standing TRAIN gates. See docs/north_star.md banner + .claude/next_session_pickup.md for current state. Still cited by CLAUDE.md rule #11 for the bronze-accuracy framing.**
+
 **Status:** REFERENCE / investigation. Read-only diagnosis, 2026-05-24. Feeds a strategic
 decision on what to fix before the stroke-driven silver pivot (Option B in
 `next_session_pickup.md`) can land.

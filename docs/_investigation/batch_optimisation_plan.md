@@ -1,5 +1,7 @@
 # Batch GPU pipeline — sub-1-hour optimisation plan (player-stage focus)
 
+> **SUPERSEDED 2026-06-03 by docs/_investigation/t5_runtime_backlog.md. Levers L1/L3/L4/L5/L7 shipped (rev 59). Frozen historical.**
+
 **Tier:** REFERENCE / investigation
 **Dated:** 2026-05-28
 **Status:** PLAN — to be executed during Tomo's daylight hours, one commit per lever, bench-gated

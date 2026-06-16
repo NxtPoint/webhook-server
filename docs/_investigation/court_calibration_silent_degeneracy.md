@@ -1,5 +1,7 @@
 # Court calibration silent degeneracy — investigation kickoff
 
+> **RESOLVED 2026-05-29 (rev 57) — fixes shipped + proven in prod ("court calibration FIXED & PROVEN IN PROD", north_star). This doc is frozen historical; retained for the failure-mode taxonomy.**
+
 **Tier:** REFERENCE / investigation
 **Dated:** 2026-05-28
 **Status:** KICKOFF — concrete diagnosis from match 4; fixes A/B/C ready to be sequenced; (D) needs research
