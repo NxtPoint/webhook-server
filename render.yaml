@@ -52,13 +52,13 @@ services:
         value: "1"          # ON: accepts per-user Clerk JWTs ALONGSIDE the legacy key (Wix unaffected)
       - key: AUTH_PROVIDER
         value: "clerk"
-      # Clerk dev instance "definite-terrapin-9" (derived from the publishable key).
-      # Public values (browser-exposed by design) — safe to commit. Swap to the
-      # production instance's URLs when a pk_live_ key is issued near launch.
+      # Clerk PRODUCTION instance — custom domain clerk.ten-fifty5.com (LIVE 2026-06-16,
+      # pk_live_, own Google OAuth, 5/5 DNS verified). Public values (browser-exposed
+      # by design). Dev instance was definite-terrapin-9.clerk.accounts.dev.
       - key: AUTH_JWKS_URL
-        value: "https://definite-terrapin-9.clerk.accounts.dev/.well-known/jwks.json"
+        value: "https://clerk.ten-fifty5.com/.well-known/jwks.json"
       - key: AUTH_ISSUER
-        value: "https://definite-terrapin-9.clerk.accounts.dev"
+        value: "https://clerk.ten-fifty5.com"
       - key: AUTH_AUDIENCE
         value: ""           # leave blank for Clerk default session tokens
 
@@ -239,9 +239,9 @@ services:
       # set AUTH_V2_ENABLED=1, then point CTAs at /login. The publishable key is
       # public (browser-side by design). AUTH_AFTER_LOGIN_URL defaults to /portal.
       - key: AUTH_V2_ENABLED
-        value: "1"          # ON: /login runs the Clerk widget (no CTA routes real users here yet)
+        value: "1"          # ON: /login runs the Clerk widget (CTAs now point here — LIVE)
       - key: CLERK_PUBLISHABLE_KEY
-        value: "pk_test_ZGVmaW5pdGUtdGVycmFwaW4tOS5jbGVyay5hY2NvdW50cy5kZXYk"  # dev instance; public by design
+        value: "pk_live_Y2xlcmsudGVuLWZpZnR5NS5jb20k"  # Clerk PRODUCTION (clerk.ten-fifty5.com); public by design
       - key: AUTH_AFTER_LOGIN_URL
         value: "/portal"
       # Backend that verifies the Clerk token from /login (the whoami check).
