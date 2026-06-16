@@ -431,6 +431,14 @@ function onChildInput(idx, field, value) {
 // SUBMIT — one call at the end
 // ============================================================
 async function completeSignup(btn) {
+  // Consent gate — Terms + Privacy are required before we create the account.
+  const termsEl = document.getElementById('pe-terms');
+  if (termsEl && !termsEl.checked) {
+    showInlineError('Please agree to the Terms of Service and Privacy Policy to continue.');
+    return;
+  }
+  const wantsMarketing = !!(document.getElementById('pe-mkt') && document.getElementById('pe-mkt').checked);
+
   btn.disabled = true;
   btn.textContent = 'Saving…';
 
@@ -480,6 +488,17 @@ async function completeSignup(btn) {
         if (!cres.ok) console.warn('Children registration non-ok:', cres.status);
       } catch (e) { console.warn('Children error', e); }
     }
+
+    // 3) Record consent against the account (terms + privacy required; marketing if opted).
+    //    Fire-and-forget — never block signup completion on a consent write.
+    try {
+      if (window.TF_Consent) {
+        const fullName = [STATE.firstName, STATE.surname].filter(Boolean).join(' ');
+        TF_Consent.record(STATE.email, 'terms_of_service', { full_name: fullName, source: 'signup' });
+        TF_Consent.record(STATE.email, 'privacy_policy', { full_name: fullName, source: 'signup' });
+        if (wantsMarketing) TF_Consent.record(STATE.email, 'marketing_email', { full_name: fullName, source: 'signup' });
+      }
+    } catch (e) { console.warn('consent record error', e); }
 
     // All good — show success state, then route to dashboard
     STATE.alreadyRegistered = true;
@@ -643,6 +662,16 @@ function render() {
         `).join('')}
       </div>
       <button class="btn-add-child" onclick="addChild()">+ Add another child</button>
+      <div style="margin:18px 0 4px;border-top:1px solid var(--border,#2a2f3a);padding-top:14px;">
+        <label style="display:flex;gap:9px;align-items:flex-start;font-size:0.82rem;line-height:1.45;cursor:pointer;">
+          <input type="checkbox" id="pe-terms" style="margin-top:3px;">
+          <span>I agree to the <a href="/privacy" target="_blank">Terms of Service</a> and <a href="/privacy" target="_blank">Privacy Policy</a>.</span>
+        </label>
+        <label style="display:flex;gap:9px;align-items:flex-start;font-size:0.82rem;line-height:1.45;cursor:pointer;margin-top:10px;">
+          <input type="checkbox" id="pe-mkt" style="margin-top:3px;">
+          <span>Send me tips, product updates and the occasional offer by email. <span style="opacity:.7;">(Optional — unsubscribe anytime.)</span></span>
+        </label>
+      </div>
       <div id="msg-wrap"></div>
       <div class="actions">
         <button class="btn btn-back" onclick="setStep('details')">Back</button>
@@ -726,5 +755,6 @@ function continueFromDetails(btn) {
 // GO
 init();
 </script>
+<script src="/consent.js" defer></script>
 </body>
 </html>

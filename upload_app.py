@@ -227,6 +227,15 @@ try:
 except Exception:
     app.logger.exception("marketing_crm consent register failed on boot")
 
+# ---------- Page-view beacon (marketing_crm) — self-gates on TRACKING_ENABLED ----------
+# Public POST /api/track/page for navigation analytics (sendBeacon). Records nothing unless
+# TRACKING_ENABLED=1; always registered so the route exists.
+try:
+    from marketing_crm.tracking import register_beacon
+    register_beacon(app)
+except Exception:
+    app.logger.exception("marketing_crm page beacon register failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init

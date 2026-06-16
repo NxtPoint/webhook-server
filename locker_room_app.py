@@ -61,6 +61,18 @@ def _html(name: str):
     path = os.path.join(FRONTEND_DIR, name)
     if not os.path.isfile(path):
         abort(404)
+    # Auto-inject page-view analytics into every served HTML page (marketing + member).
+    # Server-side beacon self-gates on TRACKING_ENABLED, so this is inert until that's on.
+    if name.endswith(".html"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                html = f.read()
+            if "/analytics.js" not in html:
+                tag = '<script src="/analytics.js" defer></script>'
+                html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
+            return Response(html, mimetype="text/html")
+        except Exception:
+            return send_file(path)
     return send_file(path)
 
 
@@ -121,6 +133,12 @@ def feedback_widget_js():
 def consent_js():
     # Consent screens module (marketing_crm). Included by signup / technique / settings pages.
     return _html("consent.js")
+
+
+@app.get("/analytics.js")
+def analytics_js():
+    # Page-view analytics, auto-injected into served HTML pages.
+    return _html("analytics.js")
 
 
 @app.get("/privacy-settings")

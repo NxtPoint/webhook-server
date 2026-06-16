@@ -7,5 +7,6 @@
 
 from marketing_crm.tracking.events import EVENTS  # noqa: F401
 from marketing_crm.tracking.client import track   # noqa: F401
+from marketing_crm.tracking.beacon import page_bp, register as register_beacon  # noqa: F401
 
-__all__ = ["track", "EVENTS"]
+__all__ = ["track", "EVENTS", "page_bp", "register_beacon"]

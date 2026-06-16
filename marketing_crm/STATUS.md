@@ -44,10 +44,22 @@ signup + technique pages, set `CONSENT_ENABLED=1`.
 `FEEDBACK_ENABLED`, `CRM_SYNC_ENABLED`, `CORE_API_ENABLED` + keys `AMPLITUDE_API_KEY`,
 `HUBSPOT_PRIVATE_APP_TOKEN`, `KLAVIYO_API_KEY`. Tunables: `NPS_TRIGGER_N` (3), `NPS_COOLDOWN_DAYS` (90).
 
+## ACTIVATED 2026-06-16 (pre-launch, no customers)
+`render.yaml` sets `TRACKING_ENABLED=1`, `CONSENT_ENABLED=1`, `FEEDBACK_ENABLED=1`, `COCKPIT_ENABLED=1`
+on the webhook-server service. `CRM_SYNC_ENABLED` stays OFF until HubSpot/Klaviyo keys are set.
+Consent screen is LIVE on signup (players_enclosure) — copy is DRAFT pending legal; set `policy_version`
+after sign-off. tomo.stojakovic@gmail.com backfilled into core (1 acct, 3 persons, 121 matches).
+
+## Page-view analytics (navigation / drop-off)
+`frontend/analytics.js` (auto-injected into every Locker-Room-served HTML via `_html()`) → sendBeacon →
+`POST /api/track/page` → `core.usage_event` (event_type `page_view`, account by email when authed,
+anonymous on public pages) + Amplitude. Self-gates on `TRACKING_ENABLED`. Funnel/drop-off analysis:
+query `core.usage_event` by path (or Amplitude once `AMPLITUDE_API_KEY` is set — better for funnels).
+
 ## Events emitted (vs contract `contracts/events.md`)
-- ✅ `match_uploaded`, `subscription_started`, `subscription_cancelled`, `credit_purchased`,
+- ✅ `page_view`, `match_uploaded`, `subscription_started`, `subscription_cancelled`, `credit_purchased`,
   `account_created`, `report_viewed`, `nps_submitted`, `feedback_submitted`,
-  `cancellation_reason_submitted`
+  `cancellation_reason_submitted`, `consent_recorded`
 - ⬜ not yet: `match_processed`/`match_failed` (ingest paths, incl. the separate ingest-worker),
   `ai_coach_query`, `technique_uploaded`, `coach_invited`/`coach_accepted`, `login` (Wix-side)
 
