@@ -83,14 +83,17 @@ string**, **retention day-counts**, and **age threshold** come back into `core.c
 - Consent-capture UI + loading `policy_version`/`retention_rule` (privacy spec Part B).
 - §7 live-data backfill (`billing.*`/`bronze.*` → `core.*`) — or a write-path so `core.*` fills going forward.
 - Referral system.
-- **De-Wix auth — Phase 0+1 BUILT (dark), Phases 2-4 pending.** Done: `auth_v2/` JWT
-  verifier (Clerk, provider-agnostic), `client_api._guard()` accepts per-user JWT OR
-  legacy key (email derived server-side under JWT — the §6.1 fix), `/login` Clerk page.
-  Blocked on: Tomo creating the Clerk app (paste `CLERK_PUBLISHABLE_KEY` + Frontend
-  API URL → `AUTH_ISSUER`/`AUTH_JWKS_URL`; add a Clerk JWT template with an `email`
-  claim). Then commit 4 = portal mints per-request Clerk tokens; then flip
-  `AUTH_V2_ENABLED=1`. Payment is the SEPARATE `paypal_billing/` lane — keep decoupled.
+- **De-Wix auth — LIVE 2026-06-16 (Phases 0-3 done; Phase 4 hardening pending).**
+  Clerk auth is the front door: marketing CTAs → `/login`, all 10 portal SPAs run
+  dual-mode via `TFAuth` (`frontend/auth_client.js`; Clerk loads once in the portal,
+  children relay tokens via postMessage), `client_api._guard()` accepts the Clerk JWT
+  alongside the legacy key, new signups land in `core.*`. `AUTH_V2_ENABLED=1` on both
+  services; Clerk **dev** instance (`definite-terrapin-9`). Proven on real Google sign-in.
+  STILL TODO: (4) **harden** — remove the shared `CLIENT_API_KEY` path once nothing
+  depends on it; swap to a Clerk **production** instance (`pk_live_` + own Google OAuth)
+  before real launch; retire the Wix `postMessage` handoff after a fallback window.
 
 ## Changelog
 - 2026-06-16: core_db live · contracts hub · cockpit (P5) · tracking (P3) · feedback (P6) · crm_sync (P4) · this STATUS.md. Cowork added `klaviyo/` + `privacy/`.
 - 2026-06-16: de-Wix auth Phase 0+1 (Clerk) built dark — `auth_v2/` verifier+principal, wired into `client_api._guard()` (legacy-identical with flag off, proven), `/login` page. `AUTH_V2_ENABLED=0` everywhere; Wix login untouched. Awaiting Clerk app keys.
+- 2026-06-16: de-Wix auth WENT LIVE (Phases 2-3). All 10 portal SPAs converted to `TFAuth` dual-mode (`frontend/auth_client.js` — auth-once: Clerk in the portal, children relay tokens via postMessage); marketing CTAs cut over to `/login`; `AUTH_V2_ENABLED=1` both services. Clerk dev instance `definite-terrapin-9`. Wix login kept as fallback. Remaining: Phase-4 harden (drop shared key) + Clerk prod instance before launch.
