@@ -1,0 +1,24 @@
+{
+  "currency": "USD",
+  "env": "sandbox",
+  "plans": {
+    "player advances": {
+      "matches": 10,
+      "plan_id": "P-57W53977SY305693GNIYXTJY",
+      "price": 70.0,
+      "product_id": "PROD-7J1193837E193015X"
+    },
+    "player standard": {
+      "matches": 5,
+      "plan_id": "P-8FE21224X46108601NIYXTJQ",
+      "price": 40.0,
+      "product_id": "PROD-654851550H571323Y"
+    },
+    "player starter": {
+      "matches": 3,
+      "plan_id": "P-1LG75193X7394002HNIYXTJA",
+      "price": 25.0,
+      "product_id": "PROD-8BN36825Y6973754F"
+    }
+  }
+}
