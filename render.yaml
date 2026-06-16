@@ -63,15 +63,15 @@ services:
         value: ""           # leave blank for Clerk default session tokens
 
       # Direct PayPal payments (paypal_billing) — replaces Wix Pricing Plans checkout.
-      # DARK: with PAYPAL_ENABLED=0 the Wix postMessage checkout stays the only path,
-      # and the public /api/billing/paypal/config probe reports enabled=false so the
-      # frontend falls back to Wix. Flip to "1" only after the sandbox E2E is proven
-      # and PAYPAL_ENV="live". Secrets (client id/secret/webhook id) are set in the
-      # Render dashboard, not committed. Runbook: paypal_billing/README.md.
+      # LIVE since 2026-06-16: catalog.json carries the live Billing Plan ids, the live
+      # webhook is registered, and the secrets below hold live credentials. The go-live
+      # state lives HERE (not the dashboard) so a blueprint sync can't wipe it.
+      # ROLLBACK: set PAYPAL_ENABLED=0 → the frontend instantly falls back to the Wix
+      # checkout (no deploy beyond the env change). Runbook: paypal_billing/README.md.
       - key: PAYPAL_ENABLED
-        value: "0"
+        value: "1"
       - key: PAYPAL_ENV            # sandbox | live
-        value: "sandbox"
+        value: "live"
       - key: PAYPAL_CURRENCY
         value: "USD"
       - key: PAYPAL_CLIENT_ID
