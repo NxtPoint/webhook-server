@@ -55,6 +55,43 @@ Corpus today (`ml_analysis.training_corpus`, 8 SA↔T5 pairs, verified 2026-06-1
 
 ---
 
+## Where the corpus comes from (dual-submit auto-label) — the FREE label pipeline
+
+Training labels are SportAI's own outputs, captured automatically every time a real
+SportAI match is uploaded. This is the "train-LAST is free + automatic" mechanism
+from north_star. End-to-end, all in `upload_app.py`:
+
+1. **Auto-spawn (`AUTO_DUAL_SUBMIT_T5`, default OFF / prod ON).** On a `tennis_singles`
+   SportAI upload completing, `_auto_dual_submit_t5(task_id)` submits a **sibling T5
+   job on the same S3 video** (the SportAI flow is unaffected if this errors). Result:
+   one video, two analyses — SA (teacher) + T5 (student).
+2. **Ingest the sibling.** Auto-spawned T5 tasks have no browser to fire the polling
+   ingest gate, so the **`/ops/sweep-t5-orphans` cron (every 5 min)** fires the Render
+   ingest for them (rule #10 / `feedback_polling_driven_ingest_gates`). After that the
+   T5 bronze lands in `ml_analysis.*`.
+3. **Auto-label (`AUTO_LABEL_DUAL_SUBMIT_PAIRS`, default OFF / prod ON).** The pair
+   `(sa_task_id, t5_task_id)` is exported into `ml_analysis.training_corpus`, one row
+   per `label_kind`, idempotent via `ON CONFLICT (sa_task_id, t5_task_id, label_kind)
+   DO NOTHING`. The three exporters (`ml_pipeline/training/label_*.py`):
+   - `label_ball_positions.py` → `label_kind='ball_position'` (SA ball track)
+   - `label_serves.py` → `label_kind='serve'` (SA serve events)
+   - `label_swing_types.py` → `label_kind='stroke_classifier'` (SA swing types)
+4. **Both flags default OFF in code** (ship dark) and are **set ON in prod via the
+   Render dashboard** (not `render.yaml`). Rollback = unset the env var.
+
+**Manual / backfill paths** (when you need to (re)build the corpus by hand):
+- `POST /ops/dual-submit-t5-backfill` — replays the auto-spawn+label for existing SA
+  tasks (ops-key auth).
+- `python -m ml_pipeline.harness build-corpus [--task <id>] [--upload-s3]` — builds the
+  training dataset artefact from the `training_corpus` rows; `harness verify-corpus-row
+  <task_id>` checks one pair.
+
+So the full free loop is: **SA upload → auto-spawn T5 → sweep-ingest → auto-label →
+`training_corpus` → trainers read it (below).** Identity has no `label_kind` yet (v2
+OSNet is future), which is why it has no trainer.
+
+---
+
 ## ONE-COMMAND-PER-FACT (the whole point)
 
 After the one-time setup below, each fact trains on GPU with a single command

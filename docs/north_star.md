@@ -100,7 +100,7 @@ We are NOT chasing 100% serve detection. We're getting the dashboard data trustw
 - **Query the prod DB directly** (this dev box's IP is allowlisted): `from db_init import engine; engine.connect()`.
 - **Rebuild a T5 silver match**: `from ml_pipeline.build_silver_match_t5 import build_silver_match_t5; build_silver_match_t5('<task_id>', replace=True)`.
 - **Batch deploy** (after a Batch-side change — see the file-list trigger in `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST"): Docker rebuild → dual-region ECR push → new job-def revisions in **eu-north-1 + us-east-1**.
-- **Train a fact** (GPU Batch one-off): `submit_train_job.py --fact {serve|hit|bounce|swing}` (job-def rev 3). Runbook: `.claude/training_environment.md`.
+- **Train a fact** (GPU Batch one-off): `python -m ml_pipeline.training.submit_train_job --fact {serve|hit|bounce|swing}` (job-def rev 3). Runbook: `.claude/training_environment.md` (incl. where the corpus comes from).
 - **Full ops/how-to-run reference**: `.claude/handover_t5.md`.
 
 ---

@@ -48,7 +48,7 @@ Run: `python -m ml_pipeline.diag.recon_line 375198f5-... --sa 079d2c62-...`
 - `T5_BOUNCE_FROM_MODEL`, `SERVE_MODEL_ENABLED`, `SWING_CLASSIFIER_ENABLED`, `BOUNCE_CNN_THRESHOLD=0.70` — all default-on/set; see `docs/env_vars.md`. (`T5_SERVE_FROM_EVENTS` was DELETED 2026-06-07.)
 
 ## NEXT SESSION — TRAINING (the final phase) — `.claude/training_environment.md`
-GPU Batch one-off jobs: `submit_train_job.py --fact {serve|hit|bounce|swing}` (job-def rev 3). Bounce recall is highest-leverage (gates bounce + volley). Re-bench swing on GPU. Deploying retrained detection weights = rule-#8 detection-image rebuild. Gated on Tomo's sharp-far full-res uploads (DATA). Measure every retrain with `recon_line` + the per-fact benches (`bench_hit`/`bench_bounce`/`bench_identity`/`bench_swing_type`, map in `.claude/training_harness_status.md`).
+GPU Batch one-off jobs: `python -m ml_pipeline.training.submit_train_job --fact {serve|hit|bounce|swing}` (job-def rev 3). Bounce recall is highest-leverage (gates bounce + volley). Re-bench swing on GPU. Deploying retrained detection weights = rule-#8 detection-image rebuild. Gated on Tomo's sharp-far full-res uploads (DATA). Measure every retrain with `recon_line` + the per-fact benches (`bench_hit`/`bench_bounce`/`bench_identity`/`bench_swing_type`, map in `.claude/training_harness_status.md`).
 
 ## HELD / deferred (deliberate)
 - **Bounce-driven silver rollback NOT retired** — `_t5_pass1_load_bounce_driven` stays until stroke-driven is proven on a fresh REAL upload.
