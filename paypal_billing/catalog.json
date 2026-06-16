@@ -1,24 +1,24 @@
 {
   "currency": "USD",
-  "env": "sandbox",
+  "env": "live",
   "plans": {
     "player advances": {
       "matches": 10,
-      "plan_id": "P-57W53977SY305693GNIYXTJY",
+      "plan_id": "P-15W49407BW826073RNIYZHOY",
       "price": 70.0,
-      "product_id": "PROD-7J1193837E193015X"
+      "product_id": "PROD-35F94652R5612584A"
     },
     "player standard": {
       "matches": 5,
-      "plan_id": "P-8FE21224X46108601NIYXTJQ",
+      "plan_id": "P-3J330675PV503881FNIYZHOQ",
       "price": 40.0,
-      "product_id": "PROD-654851550H571323Y"
+      "product_id": "PROD-3C627801P7593322T"
     },
     "player starter": {
       "matches": 3,
-      "plan_id": "P-1LG75193X7394002HNIYXTJA",
+      "plan_id": "P-88196504SL8262045NIYZHOI",
       "price": 25.0,
-      "product_id": "PROD-8BN36825Y6973754F"
+      "product_id": "PROD-3DS67684D3303643X"
     }
   }
 }
