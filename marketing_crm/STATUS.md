@@ -82,6 +82,15 @@ string**, **retention day-counts**, and **age threshold** come back into `core.c
 ## Not built yet
 - Consent-capture UI + loading `policy_version`/`retention_rule` (privacy spec Part B).
 - §7 live-data backfill (`billing.*`/`bronze.*` → `core.*`) — or a write-path so `core.*` fills going forward.
+  - **`core.*` payment mirror (deferred from the PayPal launch, 2026-06-16).** Direct PayPal writes
+    `billing.*` only (entitlement_grant + subscription_state) — same as the Wix flow always did; `core.*`
+    is unfed for billing. To populate `core.subscription` / `core.credit_ledger` (cockpit MRR + credit
+    analytics), wire a fire-and-forget mirror inside `subscriptions_api.apply_subscription_event`
+    (resolve the core account via `core_db.repositories.accounts.ensure_identity`, then
+    `repositories.subscriptions.upsert_subscription` + `grant_credits`). **Do it together with the
+    CONSUMPTION side** (match-upload path → `consume_match`) or the ledger balance will be inflated —
+    that's why it's a scoped session, not a payment-only bolt-on. No payment impact; `billing.*` stays
+    the system of record. Repos already exist in `core_db/repositories/subscriptions.py`.
 - Referral system.
 - **De-Wix auth — LIVE 2026-06-16 (Phases 0-3 done; Phase 4 hardening pending).**
   Clerk auth is the front door: marketing CTAs → `/login`, all 10 portal SPAs run
