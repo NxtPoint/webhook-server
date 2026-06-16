@@ -52,10 +52,13 @@ services:
         value: "0"
       - key: AUTH_PROVIDER
         value: "clerk"
+      # Clerk dev instance "definite-terrapin-9" (derived from the publishable key).
+      # Public values (browser-exposed by design) — safe to commit. Swap to the
+      # production instance's URLs when a pk_live_ key is issued near launch.
       - key: AUTH_JWKS_URL
-        value: ""           # https://<frontend-api>/.well-known/jwks.json
+        value: "https://definite-terrapin-9.clerk.accounts.dev/.well-known/jwks.json"
       - key: AUTH_ISSUER
-        value: ""           # https://<frontend-api>
+        value: "https://definite-terrapin-9.clerk.accounts.dev"
       - key: AUTH_AUDIENCE
         value: ""           # leave blank for Clerk default session tokens
 
@@ -238,6 +241,6 @@ services:
       - key: AUTH_V2_ENABLED
         value: "0"
       - key: CLERK_PUBLISHABLE_KEY
-        value: ""          # pk_test_… / pk_live_… from the Clerk dashboard
+        value: "pk_test_ZGVmaW5pdGUtdGVycmFwaW4tOS5jbGVyay5hY2NvdW50cy5kZXYk"  # dev instance; public by design
       - key: AUTH_AFTER_LOGIN_URL
         value: "/portal"
