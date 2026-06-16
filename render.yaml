@@ -42,6 +42,23 @@ services:
       - key: COCKPIT_ENABLED       # internal admin cockpit (/cockpit) + views
         value: "1"
 
+      # De-Wix auth (Phase 0/1) — per-user IdP (Clerk) JWT auth in auth_v2.
+      # DARK: with AUTH_V2_ENABLED=0 the legacy CLIENT_API_KEY + ?email path is
+      # the only active auth, so the live Wix login is untouched. Fill the Clerk
+      # values + flip to "1" only once the Clerk app exists and is tested.
+      # Clerk note: tokens set `iss` (Frontend API URL) but not `aud`, so leave
+      # AUTH_AUDIENCE blank; add an `email` claim via a Clerk JWT template.
+      - key: AUTH_V2_ENABLED
+        value: "0"
+      - key: AUTH_PROVIDER
+        value: "clerk"
+      - key: AUTH_JWKS_URL
+        value: ""           # https://<frontend-api>/.well-known/jwks.json
+      - key: AUTH_ISSUER
+        value: ""           # https://<frontend-api>
+      - key: AUTH_AUDIENCE
+        value: ""           # leave blank for Clerk default session tokens
+
       # Serve over-emission fix (2026-06-16): retire the far-POSE serve path.
       # Proving run (T5 375198f5 vs SA 079d2c62): far-pose is pure FP on a real
       # upload — the trained model_far catches the same far serves (recall

@@ -53,12 +53,21 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from db_init import engine
 from models_billing import Member
+
+# Per-user IdP (Clerk) auth — auth_v2. Imported defensively: client_api is an
+# always-registered blueprint the live site depends on, so if auth_v2 ever fails
+# to import (e.g. a missing dep on some box) we MUST still serve with the legacy
+# shared-key auth rather than 500 the whole API. Dark by default (AUTH_V2_ENABLED).
+try:
+    from auth_v2 import resolve_principal as _resolve_principal
+except Exception:  # pragma: no cover - defensive
+    _resolve_principal = None
 
 client_bp = Blueprint("client_api", __name__)
 
@@ -90,12 +99,32 @@ def handle_preflight():
 # Auth
 # ----------------------------
 
-def _guard() -> bool:
+def _legacy_key_ok() -> bool:
+    """The original shared-key check (X-Client-Key or Bearer == CLIENT_API_KEY).
+    Kept verbatim as the always-safe fallback path."""
     hk = request.headers.get("X-Client-Key") or ""
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
     return bool(CLIENT_API_KEY) and hmac.compare_digest(hk.strip(), CLIENT_API_KEY)
+
+
+def _guard() -> bool:
+    """Authenticate the request and stash the resolved principal on flask.g.
+    Prefers auth_v2 (per-user JWT OR legacy key); falls back to the pure legacy
+    key check if auth_v2 is unavailable or errors. With AUTH_V2_ENABLED unset,
+    auth_v2's own behaviour is the legacy key check, so this is a no-op change."""
+    g.principal = None
+    if _resolve_principal is not None:
+        try:
+            p = _resolve_principal(request)
+        except Exception:
+            log.exception("auth_v2 resolve_principal raised; using legacy key check")
+            return _legacy_key_ok()
+        g.principal = p
+        return p is not None
+    # auth_v2 not importable on this box → legacy only.
+    return _legacy_key_ok()
 
 
 def _forbid():
@@ -104,6 +133,22 @@ def _forbid():
 
 def _norm_email(email: Optional[str]) -> str:
     return (email or "").strip().lower()
+
+
+def _client_email(legacy_fallback: Optional[str] = None) -> str:
+    """The authenticated caller's email — the single source of 'who am I'.
+
+    Under a verified JWT (auth_v2) it is derived SERVER-SIDE from core.app_user and
+    ANY client-supplied email is ignored — this is the §6.1 security fix (the client
+    can no longer assert which account it is). Under the legacy shared-key path it is
+    the email the client supplied (?email by default, or a JSON body field passed as
+    legacy_fallback) — byte-identical to pre-auth_v2 behaviour."""
+    p = getattr(g, "principal", None)
+    if p is not None and getattr(p, "method", None) == "jwt":
+        return p.email or ""
+    if legacy_fallback is not None:
+        return _norm_email(legacy_fallback)
+    return _norm_email(request.args.get("email"))
 
 
 # ----------------------------
@@ -115,7 +160,7 @@ def list_matches():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -214,7 +259,7 @@ def list_players():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -245,7 +290,7 @@ def match_detail(task_id: str):
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -310,7 +355,7 @@ def client_usage():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -369,7 +414,7 @@ def update_match(task_id: str):
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -410,7 +455,7 @@ def reprocess_match(task_id: str):
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -465,7 +510,7 @@ def delete_match(task_id: str):
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -641,7 +686,7 @@ def get_profile():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -696,7 +741,7 @@ def update_profile():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -747,7 +792,7 @@ def footage_url(task_id: str):
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -786,7 +831,7 @@ def client_entitlements():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -916,7 +961,7 @@ def register_member():
         return _forbid()
 
     payload = request.get_json(silent=True) or {}
-    email = _norm_email(payload.get("email"))
+    email = _client_email(payload.get("email"))
     first_name = (payload.get("first_name") or "").strip()
     surname = (payload.get("surname") or "").strip()
     wix_member_id = (payload.get("wix_member_id") or "").strip() or None
@@ -991,7 +1036,7 @@ def add_children():
         return _forbid()
 
     payload = request.get_json(silent=True) or {}
-    email = _norm_email(payload.get("email"))
+    email = _client_email(payload.get("email"))
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1060,7 +1105,7 @@ def profile_photo_upload_url():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1158,7 +1203,7 @@ def list_account_members():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1189,7 +1234,7 @@ def add_member():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1247,7 +1292,7 @@ def update_member(member_id: int):
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1307,7 +1352,7 @@ def delete_member(member_id: int):
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1345,7 +1390,7 @@ def _admin_guard() -> bool:
     """Guard + admin email whitelist."""
     if not _guard():
         return False
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     return email in ADMIN_EMAILS
 
 
@@ -1358,7 +1403,7 @@ def practice_sessions():
     """List all practice sessions with aggregate stats."""
     if not _guard():
         return _forbid()
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1422,7 +1467,7 @@ def practice_detail(task_id):
     """Return practice detail rows + computed summary for a session."""
     if not _guard():
         return _forbid()
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1548,7 +1593,7 @@ def practice_heatmap(task_id, heatmap_type):
     """Return a presigned S3 URL for a practice heatmap image."""
     if not _guard():
         return _forbid()
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -1622,7 +1667,7 @@ def _gold_guard_and_fetch(view_name, task_id):
     """Shared guard + fetch pattern. Returns (status_code, payload_dict)."""
     if not _guard():
         return 403, {"ok": False, "error": "forbidden"}
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return 400, {"ok": False, "error": "email required"}
     try:
@@ -1645,7 +1690,7 @@ def gold_match_kpi(task_id):
         try:
             from marketing_crm.tracking import track
             from marketing_crm.tracking.events import REPORT_VIEWED
-            track(REPORT_VIEWED, email=request.args.get("email"), ref_type="match", ref_id=task_id)
+            track(REPORT_VIEWED, email=_client_email(), ref_type="match", ref_id=task_id)
         except Exception:
             pass
     return jsonify(payload), code
@@ -1695,7 +1740,7 @@ def gold_player_performance():
     a default."""
     if not _guard():
         return _forbid()
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
     player = (request.args.get("player") or "").strip() or None
@@ -1748,7 +1793,7 @@ def _technique_guard_and_fetch(view_name, task_id):
     """Shared guard + fetch for technique gold views (TEXT task_id, not UUID)."""
     if not _guard():
         return 403, {"ok": False, "error": "forbidden"}
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return 400, {"ok": False, "error": "email required"}
     try:
@@ -1796,7 +1841,7 @@ def gold_technique_progression():
     """Player technique improvement dashboard (email-scoped, cross-session)."""
     if not _guard():
         return _forbid()
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
     try:
@@ -1825,7 +1870,7 @@ def match_analysis(task_id):
     """Return full silver.point_detail with coordinates + match metadata for analysis dashboards."""
     if not _guard():
         return _forbid()
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -2209,7 +2254,7 @@ def list_coaches():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -2250,7 +2295,7 @@ def coach_invite():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
@@ -2369,7 +2414,7 @@ def coach_revoke():
     if not _guard():
         return _forbid()
 
-    email = _norm_email(request.args.get("email"))
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 

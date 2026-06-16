@@ -19,15 +19,26 @@ CONSENT_TYPES = cons.CONSENT_TYPES  # terms_of_service, privacy_policy, marketin
 
 
 def _key_ok():
+    # Legacy shared key (X-Client-Key or Bearer == CLIENT_API_KEY) — unchanged.
     expected = os.getenv("CLIENT_API_KEY") or os.getenv("CORE_API_KEY")
-    if not expected:
-        return False
-    supplied = request.headers.get("X-Client-Key")
-    if not supplied:
-        auth = request.headers.get("Authorization", "")
-        if auth.lower().startswith("bearer "):
-            supplied = auth[7:].strip()
-    return bool(supplied) and supplied == expected
+    bearer = ""
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        bearer = auth[7:].strip()
+    supplied = request.headers.get("X-Client-Key") or bearer
+    if expected and supplied and supplied == expected:
+        return True
+    # Per-user IdP token (auth_v2) — accept a verified JWT too. Dark unless
+    # AUTH_V2_ENABLED=1 (verify_jwt returns None when disabled), so when off this
+    # leaves the legacy result above completely unchanged.
+    if bearer:
+        try:
+            from auth_v2.verifier import is_enabled, verify_jwt
+            if is_enabled() and verify_jwt(bearer):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _evidence():

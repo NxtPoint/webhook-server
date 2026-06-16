@@ -47,6 +47,15 @@ app.register_blueprint(client_bp)
 from coach_invite import accept_bp as coach_accept_bp
 app.register_blueprint(coach_accept_bp)
 
+# Per-user IdP (Clerk) auth — auth_v2. Boot hook only logs state; the actual
+# auth is wired inside client_api._guard(). Dark until AUTH_V2_ENABLED=1; the
+# legacy CLIENT_API_KEY + ?email path keeps working alongside it (de-Wix Phase 0).
+try:
+    from auth_v2 import init_auth_v2
+    init_auth_v2(app)
+except Exception:
+    app.logger.exception("auth_v2 init failed on boot (legacy auth unaffected)")
+
 try:
     from ml_pipeline.api import ml_analysis_bp
     app.register_blueprint(ml_analysis_bp)
