@@ -279,6 +279,20 @@ def subscription_event():
             )
 
         session.commit()
+
+        # Product event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
+        try:
+            from marketing_crm.tracking import track
+            from marketing_crm.tracking.events import SUBSCRIPTION_STARTED, SUBSCRIPTION_CANCELLED
+            if new_status == "ACTIVE" and event_type == "PLAN_PURCHASED":
+                track(SUBSCRIPTION_STARTED, email=buyer_email, ref_type="subscription",
+                      ref_id=order_id, properties={"plan_code": plan_code, "plan_type": plan_type})
+            elif new_status == "CANCELLED":
+                track(SUBSCRIPTION_CANCELLED, email=buyer_email, ref_type="subscription",
+                      ref_id=order_id, properties={"plan_code": plan_code})
+        except Exception:
+            pass
+
         return jsonify({
             "ok": True,
             "stored": True,

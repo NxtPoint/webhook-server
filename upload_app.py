@@ -3596,6 +3596,16 @@ def api_submit_s3_task():
             _set_status_cache(conn, task_id, "queued", None)
 
         pipeline = "technique" if is_technique else ("t5" if is_t5 else "sportai")
+
+        # Product event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
+        try:
+            from marketing_crm.tracking import track
+            from marketing_crm.tracking.events import MATCH_UPLOADED
+            track(MATCH_UPLOADED, email=email, ref_type="match", ref_id=task_id,
+                  properties={"sport_type": sport_type, "pipeline": pipeline})
+        except Exception:
+            pass
+
         return jsonify({
             "ok": True,
             "task_id": task_id,
