@@ -140,6 +140,35 @@ def update_person(session, person_id, **fields):
     return person
 
 
+def get_primary_person(session, account_id):
+    return session.execute(
+        select(Person).where(Person.account_id == account_id, Person.is_primary.is_(True),
+                             Person.deleted_at.is_(None)).order_by(Person.id).limit(1)
+    ).scalar_one_or_none()
+
+
+def set_marketing_opt_in(session, user_id, value):
+    user = session.get(AppUser, user_id)
+    if user:
+        user.marketing_opt_in = bool(value)
+        user.updated_at = _now()
+        session.flush()
+    return user
+
+
+def ensure_identity(session, *, email, full_name=None, role="player"):
+    """Idempotently ensure a core account + owner user + primary person exist for an email.
+    This is the forward write-path into core.* (e.g. driven by consent capture / signup).
+    Returns (account, owner_user, primary_person)."""
+    acct = create_account(session, email=email, display_name=full_name)
+    user = create_user(session, account_id=acct.id, email=email, is_account_owner=True)
+    person = get_primary_person(session, acct.id)
+    if person is None:
+        person = create_person(session, account_id=acct.id, full_name=(full_name or email),
+                               role=role, user_id=user.id, is_primary=True)
+    return acct, user, person
+
+
 def list_persons_for_account(session, account_id, include_deleted=False):
     q = select(Person).where(Person.account_id == account_id)
     if not include_deleted:

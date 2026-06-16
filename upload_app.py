@@ -217,6 +217,16 @@ try:
 except Exception:
     app.logger.exception("marketing_crm feedback register failed on boot")
 
+# ---------- Consent capture (marketing_crm) — DARK by default ----------
+# Registers /api/client/consent/* only when CONSENT_ENABLED=1. Recording consent also creates the
+# core identity (account/user/person) — the forward write-path into core.*.
+try:
+    from marketing_crm.consent import register as register_consent
+    if register_consent(app):
+        app.logger.info("marketing_crm consent registered (CONSENT_ENABLED=1)")
+except Exception:
+    app.logger.exception("marketing_crm consent register failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init

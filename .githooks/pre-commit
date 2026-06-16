@@ -1,0 +1,36 @@
+#!/bin/sh
+# Lane guard (see marketing_crm/STATUS.md "Lanes & file ownership").
+#
+# Only Claude Code writes code. The content lane (e.g. Cowork) edits docs only. This hook BLOCKS a
+# commit that stages code/product files UNLESS CLAUDE_CODE=1 is set (Claude Code sets it on commit).
+# Docs (.md/.txt) and the Cowork content dirs (marketing_crm/klaviyo, marketing_crm/privacy) always pass.
+#
+# It's a guardrail, not a vault — anyone who sets the flag bypasses it. For a hard lock, add GitHub
+# branch protection + CODEOWNERS review on code paths. Activate locally with:
+#     git config core.hooksPath .githooks
+
+if [ "$CLAUDE_CODE" = "1" ]; then
+  exit 0
+fi
+
+blocked=""
+for f in $(git diff --cached --name-only); do
+  case "$f" in
+    *.md|*.txt) : ;;                                       # docs — always allowed
+    marketing_crm/klaviyo/*|marketing_crm/privacy/*) : ;;  # Cowork content dirs
+    *) blocked="$blocked $f" ;;
+  esac
+done
+
+if [ -n "$blocked" ]; then
+  echo "==================================================================="
+  echo " Commit blocked by the lane guard."
+  echo " This lane may only change docs (.md/.txt) + marketing_crm/{klaviyo,privacy}/."
+  echo " Code / product files staged in this commit:"
+  for f in $blocked; do echo "   - $f"; done
+  echo ""
+  echo " Only Claude Code writes code. If you ARE Claude Code, re-run with CLAUDE_CODE=1."
+  echo "==================================================================="
+  exit 1
+fi
+exit 0

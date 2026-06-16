@@ -117,6 +117,18 @@ def feedback_widget_js():
     return _html("feedback_widget.js")
 
 
+@app.get("/consent.js")
+def consent_js():
+    # Consent screens module (marketing_crm). Included by signup / technique / settings pages.
+    return _html("consent.js")
+
+
+@app.get("/privacy-settings")
+def privacy_settings():
+    # Self-serve consent management (Settings → Privacy & consent).
+    return _html("privacy_settings.html")
+
+
 @app.get("/practice")
 def practice():
     return _html("practice.html")

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Privacy &amp; consent · Ten-Fifty5</title>
+<style>
+  body{margin:0;background:#f5f7fa;color:#11151c;font:15px Inter,system-ui,-apple-system,sans-serif}
+  .wrap{max-width:640px;margin:0 auto;padding:28px 18px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:#6b7480;font-size:13px;margin-bottom:18px}
+  .panel{background:#fff;border:1px solid #e6e9ee;border-radius:14px;padding:8px 18px}
+  a{color:#16a34a}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Privacy &amp; consent</h1>
+  <div class="sub">Manage how Ten-Fifty5 uses your data. Changes take effect immediately.</div>
+  <div class="panel" id="consent"></div>
+</div>
+<script src="/consent.js" defer></script>
+<script>
+  // Render the consent-management UI once consent.js has loaded.
+  function boot(){
+    if(!window.TF_Consent){ return setTimeout(boot, 50); }
+    TF_Consent.renderSettings(document.getElementById('consent'));
+  }
+  boot();
+</script>
+</body>
+</html>

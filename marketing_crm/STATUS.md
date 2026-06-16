@@ -5,7 +5,11 @@
 > change. Point-in-time details elsewhere drift; this wins. Last structural update: 2026-06-16.
 
 ## Lanes & file ownership (avoid collisions)
-Both agents can now see + edit this repo. Stay in your lane:
+Both agents can now see + edit this repo. Stay in your lane.
+**Enforced by a git hook:** `.githooks/pre-commit` BLOCKS any commit that stages code/product files
+unless `CLAUDE_CODE=1` (only Claude Code sets it). Docs (`.md`/`.txt`) + `marketing_crm/{klaviyo,privacy}/`
+always pass. Activate in a fresh clone with `git config core.hooksPath .githooks`. (Guardrail, not a
+vault — for a hard lock add GitHub branch protection + CODEOWNERS.)
 
 | Path | Owner | Notes |
 |---|---|---|
@@ -26,7 +30,15 @@ Both agents can now see + edit this repo. Stay in your lane:
 | Event tracking | `marketing_crm/tracking/` | `TRACKING_ENABLED=1` (+ `AMPLITUDE_API_KEY`) | ✅ partial events |
 | Feedback + NPS | `marketing_crm/feedback/` + `frontend/feedback_widget.js` | `FEEDBACK_ENABLED=1` | ✅ |
 | CRM sync (HubSpot+Klaviyo) | `marketing_crm/crm_sync/` | `CRM_SYNC_ENABLED=1` (+ `HUBSPOT_PRIVATE_APP_TOKEN` / `KLAVIYO_API_KEY`) | ✅ code (untested vs live APIs) |
+| Consent capture | `marketing_crm/consent/` + `frontend/consent.js` + `/privacy-settings` | `CONSENT_ENABLED=1` | ✅ (DRAFT copy, pre-legal) |
 | core_api | `core_api/` | `CORE_API_ENABLED=1` | ✅ |
+
+**Consent = the forward write-path into `core.*`:** recording consent ensures the core account/user/
+person exist, so `core.*` fills going forward (no backfill needed for new signups). Copy lives in
+`frontend/consent.js` + Cowork's `privacy/consent_screens_copy.md` (DRAFT). After legal sign-off, set
+the `policy_version` string (consent.js `TF_Consent.setPolicyVersion(...)` + pass into record calls)
+and the retention day-counts into `core.retention_rule`. To activate: include `/consent.js` in the
+signup + technique pages, set `CONSENT_ENABLED=1`.
 
 **Env switches (set on the `webhook-server` Render service):** `COCKPIT_ENABLED`, `TRACKING_ENABLED`,
 `FEEDBACK_ENABLED`, `CRM_SYNC_ENABLED`, `CORE_API_ENABLED` + keys `AMPLITUDE_API_KEY`,
