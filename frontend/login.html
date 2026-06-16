@@ -188,10 +188,8 @@ async function verifyWithBackend(Clerk) {
         '<div>Signed in as <b>' + (data.email || email) + '</b>.<br>' +
         'Backend authorised you (account #' + (data.account_id == null ? "—" : data.account_id) +
         ', via ' + data.method + ').</div>' +
-        '<div style="margin-top:14px;color:#5b6b62;font-size:13px">' +
-        'Auth verified end-to-end. Your portal still uses the previous login — migrating ' +
-        'that onto this is the next step.</div>' +
-        '<div style="margin-top:14px"><a href="#" id="signout">Sign out</a></div>' +
+        '<div style="margin-top:18px"><a href="' + CFG.afterLogin + '">Continue to your portal →</a></div>' +
+        '<div style="margin-top:10px"><a href="#" id="signout">Sign out</a></div>' +
         '</div>';
     } else if (res.status === 403 || res.status === 401) {
       // Most common cause: the token has no email claim yet (add it in Clerk).

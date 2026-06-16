@@ -269,6 +269,7 @@ body {
   <div class="portal-loading"><div class="spinner"></div><p>Loading...</p></div>
 </div>
 
+<script src="/auth_client.js"></script>
 <script>
 // ==================== AUTH ====================
 // URL params are a fallback — the real handoff is via postMessage from
@@ -321,6 +322,9 @@ function applyAuth(next) {
 // internal plumbing (not a cross-origin leak). Updating in one place means
 // all children get the latest key even if it arrived by postMessage.
 function authParams() {
+  // Clerk mode (standalone from /login): forward only the api base — each child
+  // iframe is same-origin and resolves its own Clerk session via TFAuth.
+  if (window.__CLERK_MODE) return TFAuth.navParams();
   const p = new URLSearchParams();
   if (AUTH.email) p.set('email', AUTH.email);
   if (AUTH.apiKey) p.set('key', AUTH.apiKey);
@@ -336,7 +340,7 @@ const NAV_ITEMS = [
   {
     id: 'dashboard',
     label: 'Dashboard',
-    path: '/',
+    path: '/dashboard',   // dedicated route (NOT host-switched '/', which is marketing on www)
     icon: '<svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
   },
   {
@@ -504,10 +508,11 @@ function toggleMobile() {
 
 // ==================== INIT ====================
 async function init() {
-  if (!EMAIL || !API_KEY) {
+  if (!window.__CLERK_MODE && (!EMAIL || !API_KEY)) {
     document.body.innerHTML = '<div class="access-denied"><h3>Configuration Required</h3><p>Missing email or API key. Access through your dashboard.</p></div>';
     return;
   }
+  if (window.__CLERK_MODE) { EMAIL = TFAuth.email() || EMAIL; }
 
   // Set sidebar state
   document.getElementById('sidebar').classList.toggle('expanded', sidebarExpanded);
@@ -548,9 +553,11 @@ async function init() {
 async function fetchProfile() {
   const statusEl = document.getElementById('connStatus');
   try {
-    const res = await fetch(API_BASE + '/api/client/profile?email=' + encodeURIComponent(EMAIL), {
-      headers: { 'X-Client-Key': API_KEY },
-    });
+    const res = window.__CLERK_MODE
+      ? await TFAuth.apiFetch('/api/client/profile')
+      : await fetch(API_BASE + '/api/client/profile?email=' + encodeURIComponent(EMAIL), {
+          headers: { 'X-Client-Key': API_KEY },
+        });
     if (res.status === 403) {
       if (statusEl) { statusEl.textContent = 'API key invalid'; statusEl.style.color = 'var(--red)'; }
       console.error('Portal: API key rejected (403). API:', API_BASE);
@@ -642,7 +649,20 @@ try { window.parent.postMessage({ type: 'portal-ready' }, '*'); } catch (e) {}
 if (AUTH.email && AUTH.apiKey) {
   _initStarted = true;
   init();
+} else if (window.self === window.top) {
+  // Top-level (reached standalone from /login, NOT embedded in the Wix iframe) —
+  // try a Clerk session. Falls through to the config-required state if none.
+  (async () => {
+    try {
+      await TFAuth.ready();
+      if (!_initStarted && TFAuth.mode() === 'clerk') {
+        window.__CLERK_MODE = true; _initStarted = true; init(); return;
+      }
+    } catch (e) {}
+    if (!_initStarted) { _initStarted = true; init(); }
+  })();
 } else {
+  // Embedded (Wix) — wait for the postMessage handoff; safety-net init after 5s.
   setTimeout(() => {
     if (!_initStarted) {
       _initStarted = true;

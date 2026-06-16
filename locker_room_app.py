@@ -162,6 +162,13 @@ def portal():
     return _html("portal.html")
 
 
+@app.get("/dashboard")
+def dashboard():
+    # Dedicated, NON host-switched route for the Locker Room dashboard SPA. The
+    # portal nav loads this (not '/', which serves marketing on a marketing host).
+    return _html("locker_room.html")
+
+
 def _serve_login():
     """Serve login.html with Clerk config injected from env. The publishable key
     is PUBLIC (browser-side by design), so substituting it into the page is fine.
@@ -186,6 +193,22 @@ def _serve_login():
 @app.get("/login")
 def login_page():
     return _serve_login()
+
+
+@app.get("/auth_client.js")
+def auth_client_js():
+    """Shared dual-mode auth helper (TFAuth) with Clerk config injected from env.
+    All public values. Lazy: loads Clerk only when a page actually uses clerk mode."""
+    path = os.path.join(FRONTEND_DIR, "auth_client.js")
+    if not os.path.isfile(path):
+        abort(404)
+    with open(path, "r", encoding="utf-8") as f:
+        js = f.read()
+    js = (js
+          .replace("__AUTH_V2_ENABLED__", os.getenv("AUTH_V2_ENABLED", "0").strip())
+          .replace("__CLERK_PUBLISHABLE_KEY__", os.getenv("CLERK_PUBLISHABLE_KEY", "").strip())
+          .replace("__CLERK_JWT_TEMPLATE__", os.getenv("CLERK_JWT_TEMPLATE", "").strip()))
+    return Response(js, mimetype="application/javascript")
 
 
 @app.get("/coach-accept")
