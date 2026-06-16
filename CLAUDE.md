@@ -16,7 +16,7 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Dashboards / gold views / endpoint mapping** → `docs/dashboards.md`.
 - **Public marketing site / blog / SEO / backlinks** → `docs/seo_marketing_migration.md` (architecture + cutover — DONE 2026-06-15: `www`→Render marketing, Wix app→its wixstudio URL) + `docs/seo_backlink_kit.md` (off-page/backlinks). **Publish a blog post**: drop a `<slug>.md` (frontmatter: title/description/date, optional `image: /blog/images/<file>` for a hero + index thumbnail) in `frontend/blog/_posts/`, run `.venv/Scripts/python build_blog.py`, then commit + push. No more Wix blog.
 - **Business rules / account model / credits / entitlements / soft-delete / share + referrals + pricing-pivot** → `docs/business.md` (canonical for *how the product behaves*).
-- **Growth / CRM / admin cockpit / event + page tracking / feedback+NPS / consent / canonical `core.*` DB / de-Wix auth + payment** → `marketing_crm/STATUS.md` (the living hymn sheet — start here), the canonical model in `core_db/` (`DB-SCHEMA-PROPOSAL.md`), and the root system-map docs `ARCHITECTURE.md` / `DATA-INVENTORY.md` / `WIX-DEPENDENCY.md` / `AUTH-MIGRATION-PLAN.md`. **Fresh session picking up auth or payment → `HANDOVER.md`** (read-order + kickoff prompts). All `marketing_crm` features are dark-by-default (env-gated). **Lane guard:** `.githooks/pre-commit` blocks code commits unless `CLAUDE_CODE=1` (docs commit freely) — keeps the Cowork/content lane out of code.
+- **Growth / CRM / admin cockpit / event + page tracking / feedback+NPS / consent / canonical `core.*` DB / de-Wix auth + payment** → `marketing_crm/STATUS.md` (the living hymn sheet — start here), the canonical model in `core_db/` (code: `models.py` / `schema.py` / `repositories/`) with the design rationale in root-level `DB-SCHEMA-PROPOSAL.md`, and the root system-map docs `ARCHITECTURE.md` / `DATA-INVENTORY.md` / `WIX-DEPENDENCY.md` / `AUTH-MIGRATION-PLAN.md`. **Fresh session picking up auth or payment → `HANDOVER.md`** (read-order + kickoff prompts). All `marketing_crm` features are dark-by-default (env-gated). **Lane guard:** `.githooks/pre-commit` blocks code commits unless `CLAUDE_CODE=1` (docs commit freely) — keeps the Cowork/content lane out of code.
 - **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md`.
 - **Billing implementation** (file map, entry points, flows) → `docs/billing.md`. Behaviour → `docs/business.md`.
 - **Module-level orientation** → `<module>/README.md` first. READMEs exist for: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`.
@@ -201,6 +201,9 @@ Portal chat using Claude Haiku 4.5. FAQ-only (answers strictly from `support_bot
 ### Client API (`client_api.py`)
 Auth: `X-Client-Key` header. Admin endpoints additionally require email in `ADMIN_EMAILS` (hardcoded: `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`). Surface: customer-facing dashboard data + profile / entitlements / members / matches / footage URLs + `/backoffice/*` admin endpoints. Dashboard endpoints: `docs/dashboards.md`. Full list: grep `@.*\.route` in `client_api.py`.
 
+### Growth / CRM stack (`marketing_crm/` + `core_db/` + `core_api/`)
+The de-Wix growth + canonical-data layer. **All dark-by-default and env-gated** — registering has zero prod effect until its flag flips. Living status doc: `marketing_crm/STATUS.md` (start here). `marketing_crm/` sub-packages: `backoffice` (admin cockpit), `consent` (consent capture + biometric/parental modals), `privacy` (policy + decisions), `tracking` (page-view beacon + event tracking → `core.*`), `feedback` (in-app feedback + NPS), `klaviyo` / `crm_sync` (CRM flows), `outreach`, `contracts`. The canonical DB is `core_db/` (`models.py` / `schema.py` / `repositories/`, schema `core.*` — customers/users/subs/matches/usage/feedback/consent), surfaced over HTTP by `core_api/` (`/api/core/*`, gated on `CORE_API_ENABLED`). `core.user` carries `auth_provider` + `auth_provider_uid` for IdP-based auth (the de-Wix migration target). Design rationale: root `DB-SCHEMA-PROPOSAL.md`; system maps: `ARCHITECTURE.md` / `DATA-INVENTORY.md` / `WIX-DEPENDENCY.md` / `AUTH-MIGRATION-PLAN.md`; auth/payment read-order: `HANDOVER.md`.
+
 ### Locker Room SPAs (`frontend/`)
 All auth via URL params forwarded through the portal: `?email=&firstName=&surname=&wixMemberId=&key=&api=`.
 
@@ -289,6 +292,10 @@ Try/except-wrapped (failure is logged, service still boots):
 - `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep`.
 - `diag_sql.diag_sql_bp` — `POST /ops/diag/sql`.
 - `ml_pipeline.api.ml_analysis_bp` — local-only; import fails on Render (no `cv2` / `torch`). Dev diagnostics only, never serves prod.
+
+Dark-by-default (env-gated; `register()` is a no-op unless its flag is `1`):
+- `marketing_crm` stack — registered in `upload_app.py` boot: `backoffice` (`COCKPIT_ENABLED`), `feedback` (`FEEDBACK_ENABLED`), `consent` (`CONSENT_ENABLED`), `tracking` page beacon (self-gates on `TRACKING_ENABLED`). See `marketing_crm/STATUS.md`.
+- `core_api.core_bp` — `/api/core/*`, thin HTTP layer over `core_db` repositories (`CORE_API_ENABLED`, auth via `CORE_API_KEY`/`CLIENT_API_KEY`). **Built but NOT yet wired into any app's boot** — `core_api.register(app)` exists and is gated but is not called from `upload_app.py` yet. This is the surface the de-Wix auth/payment migration switches on.
 
 **Cron scripts** (root-level, invoked by Render Cron Jobs, not blueprints):
 - `cron_capacity_sweep.py` — periodic billing/capacity sweep (see `docs/billing.md`, `docs/env_vars.md`).
