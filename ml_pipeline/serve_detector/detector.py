@@ -107,6 +107,24 @@ CROSS_PLAYER_DEDUP_S = 3.0
 # heuristic missed; near path untouched per the wire-in gate).
 MODEL_MERGE_GAP_S = 4.0
 
+# Far-pose A/B switch (2026-06-16) — the proving-run measurement instrument.
+# The far-POSE serve path is high-recall / very-low-precision: it emits a
+# serve for any far-baseline trophy cluster between points (323 events vs
+# ~23 real on ea085d50), and silver inherits them verbatim (~8x serve
+# over-emission). Heuristic gates can't separate real far serves from FPs —
+# the corroborating bounce is exactly what TrackNet misses far (bench
+# 880dff02 far 9/10 -> 0/10 when a corroboration gate was tried, reverted).
+# Training the serve MODEL cannot fix it either: model_far is a SEPARATE
+# unioned path, so the far-pose FPs persist regardless of model quality.
+# The real lever is RETIRING far-pose in favour of the trained model — but
+# that trades far recall and must be measured on a REAL upload (bench
+# fixtures carry no model candidates). This flag is that instrument:
+# default ON = current behaviour (bench-neutral); set SERVE_FAR_POSE_ENABLED=0
+# on the proving run to A/B far-pose-off vs model-alone against SA truth.
+# See .claude/audit_bronze_build_2026-06-16.md.
+import os as _os
+_FAR_POSE_ENABLED = _os.environ.get("SERVE_FAR_POSE_ENABLED", "1") != "0"
+
 
 def _get_dominant_hand(conn, task_id: str) -> bool:
     """Return True if the submitter is left-handed. Default right."""
@@ -1023,15 +1041,22 @@ def _run_pipeline(
     # beating the real FAR serve in reconcile timing-wins. Feeding
     # far-pose events into the rally state before near-pose detection
     # puts the state correctly at IN_RALLY for those windows.
-    far_pose_events = _detect_pose_based_serves(
-        pose_rows=pose_far,
-        player_id=1,
-        is_left_handed=is_left_handed,
-        fps=fps,
-        task_id=task_id,
-        rally=rally,
-        ball_rows=ball_rows,
-    )
+    if _FAR_POSE_ENABLED:
+        far_pose_events = _detect_pose_based_serves(
+            pose_rows=pose_far,
+            player_id=1,
+            is_left_handed=is_left_handed,
+            fps=fps,
+            task_id=task_id,
+            rally=rally,
+            ball_rows=ball_rows,
+        )
+    else:
+        far_pose_events = []
+        logger.info(
+            "serve_detector: far-POSE path DISABLED (SERVE_FAR_POSE_ENABLED=0) "
+            "— far serves come from the trained model_far + far-bounce only"
+        )
 
     # Augment rally state with far-pose serve times + 0.5s flight
     # (approximate hit→bounce time; pose fires at trophy which is ~0.5s
