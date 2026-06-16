@@ -925,7 +925,11 @@ def client_entitlements():
 
     account_active = bool(row["account_active"])
     sub_status = (row["subscription_status"] or "").upper()
-    plan_active = sub_status == "ACTIVE"
+    # "Active plan" means an active RECURRING subscription. A PAYG credit purchase also
+    # writes subscription_state (status=ACTIVE, plan_type='payg'), but it is NOT a
+    # subscription — counting it as active wrongly shows a "current plan", hides the
+    # subscribe options, and offers a non-existent cancel. Gate on plan_type.
+    plan_active = sub_status == "ACTIVE" and (row["plan_type"] or "").lower() == "recurring"
 
     if not account_active:
         account_status = "terminated"
@@ -946,7 +950,7 @@ def client_entitlements():
                     SELECT COUNT(*)
                     FROM billing.entitlement_grant
                     WHERE account_id = :aid
-                      AND source = 'wix_payg'
+                      AND source IN ('wix_payg', 'paypal_payg')
                       AND is_active = true
                 """),
                 {"aid": int(row["account_id"])},
