@@ -32,6 +32,7 @@ vault — for a hard lock add GitHub branch protection + CODEOWNERS.)
 | CRM sync (HubSpot+Klaviyo) | `marketing_crm/crm_sync/` | `CRM_SYNC_ENABLED=1` (+ `HUBSPOT_PRIVATE_APP_TOKEN` / `KLAVIYO_API_KEY`) | ✅ code (untested vs live APIs) |
 | Consent capture | `marketing_crm/consent/` + `frontend/consent.js` + `/privacy-settings` | `CONSENT_ENABLED=1` | ✅ (DRAFT copy, pre-legal) |
 | core_api | `core_api/` | `CORE_API_ENABLED=1` | ✅ |
+| De-Wix auth (Clerk) — Phase 0+1 | `auth_v2/` + `client_api._guard()` + `frontend/login.html` (`/login`) | `AUTH_V2_ENABLED=1` (+ `CLERK_PUBLISHABLE_KEY` / `AUTH_JWKS_URL` / `AUTH_ISSUER`) | ✅ code, dark — awaiting Clerk app keys |
 
 **Consent = the forward write-path into `core.*`:** recording consent ensures the core account/user/
 person exist, so `core.*` fills going forward (no backfill needed for new signups). Copy lives in
@@ -80,7 +81,15 @@ string**, **retention day-counts**, and **age threshold** come back into `core.c
 ## Not built yet
 - Consent-capture UI + loading `policy_version`/`retention_rule` (privacy spec Part B).
 - §7 live-data backfill (`billing.*`/`bronze.*` → `core.*`) — or a write-path so `core.*` fills going forward.
-- Referral system. De-Wix auth (Prompt 7, plan-only).
+- Referral system.
+- **De-Wix auth — Phase 0+1 BUILT (dark), Phases 2-4 pending.** Done: `auth_v2/` JWT
+  verifier (Clerk, provider-agnostic), `client_api._guard()` accepts per-user JWT OR
+  legacy key (email derived server-side under JWT — the §6.1 fix), `/login` Clerk page.
+  Blocked on: Tomo creating the Clerk app (paste `CLERK_PUBLISHABLE_KEY` + Frontend
+  API URL → `AUTH_ISSUER`/`AUTH_JWKS_URL`; add a Clerk JWT template with an `email`
+  claim). Then commit 4 = portal mints per-request Clerk tokens; then flip
+  `AUTH_V2_ENABLED=1`. Payment is the SEPARATE `paypal_billing/` lane — keep decoupled.
 
 ## Changelog
 - 2026-06-16: core_db live · contracts hub · cockpit (P5) · tracking (P3) · feedback (P6) · crm_sync (P4) · this STATUS.md. Cowork added `klaviyo/` + `privacy/`.
+- 2026-06-16: de-Wix auth Phase 0+1 (Clerk) built dark — `auth_v2/` verifier+principal, wired into `client_api._guard()` (legacy-identical with flag off, proven), `/login` page. `AUTH_V2_ENABLED=0` everywhere; Wix login untouched. Awaiting Clerk app keys.
