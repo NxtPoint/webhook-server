@@ -954,7 +954,8 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
 
     strokes = conn.execute(sql_text("""
         SELECT predicted_hit_frame, player_id, confidence,
-               ball_hit_location_x, ball_hit_location_y, hitter_side_near, volley
+               ball_hit_location_x, ball_hit_location_y, hitter_side_near, volley,
+               ball_speed
         FROM ml_analysis.stroke_events
         WHERE task_id::text = :tid
         ORDER BY predicted_hit_frame
@@ -1040,7 +1041,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         logger.info("T5 Pass 1: A/B identity active — %d game windows", len(ident_game_starts))
 
     rows_to_insert: List[dict] = []
-    for i, (hf, raw_stroke_pid, _conf, bhx, bhy, bsn, s_volley) in enumerate(strokes):
+    for i, (hf, raw_stroke_pid, _conf, bhx, bhy, bsn, s_volley, s_speed) in enumerate(strokes):
         ts = hf / fps if fps > 0 else 0.0
 
         # ---- Match a bounce in (hf, hf + ~1s] ----
@@ -1126,7 +1127,8 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
 
         # Pass-1 row = VERBATIM bronze projection except where STOPGAP-tagged.
         #   VERBATIM: serve (serve_events), swing_type (player_detections.stroke_class),
-        #     ball_speed + court_x/court_y (ball_bounces), ball_hit_s/timestamp
+        #     court_x/court_y (ball_bounces), ball_speed (stroke_events — outgoing
+        #     shot speed at the hit), ball_hit_s/timestamp
         #     (stroke_events.predicted_hit_frame -> sec).
         #   STOPGAP (model gap, see tags above + the audit doc): player_id (identity),
         #     volley (volley model), and ball_hit_location_x/y below — RECONSTRUCTED
@@ -1143,7 +1145,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
             "volley": is_volley,
             "is_in_rally": True,
             "ball_player_distance": ball_player_dist,
-            "ball_speed": b_speed,
+            "ball_speed": s_speed,
             "ball_impact_type": None,
             "ball_hit_s": ts,
             "ball_hit_location_x": hit_x,

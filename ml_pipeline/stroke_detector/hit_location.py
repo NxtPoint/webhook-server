@@ -66,6 +66,44 @@ def _load_bounce_index(conn, job_id: str):
     """), {"jid": job_id}).fetchall()
 
 
+# Outgoing-shot speed. The ball is fastest just AFTER contact (and is often
+# occluded by the racquet AT contact), so we read the PEAK tracked ball speed in
+# a short window starting a touch before the hit. main-only (ROI ball carries no
+# speed); implausible tracker spikes are capped out; NULL when nothing tracked.
+_SPEED_CAP_KMH = 230.0  # above any real groundstroke/serve -> tracker noise
+
+
+def _load_ball_speed_index(conn, job_id: str):
+    """([frame_idx…], [speed_kmh…]) for main ball detections carrying a speed."""
+    rows = conn.execute(sql_text(f"""
+        SELECT frame_idx, speed_kmh
+        FROM ml_analysis.ball_detections
+        WHERE job_id = :jid AND speed_kmh IS NOT NULL AND {MAIN_ONLY_WHERE}
+        ORDER BY frame_idx
+    """), {"jid": job_id}).fetchall()
+    return [int(f) for f, _ in rows], [float(s) for _, s in rows]
+
+
+def _ball_speed_at(frames: List[int], vals: List[float], hf: int,
+                   before: int, after: int) -> Optional[float]:
+    """Robust tracked ball speed (km/h) in [hf-before, hf+after].
+
+    MEDIAN, not max — the per-frame tracker throws single-frame spikes (1-2 px
+    ball, speed = displacement x fps x scale), and max grabs the spike (matched
+    shots read ~200 vs SA ~90). The ball is ~constant-speed in the ~0.35s after
+    contact, so the window median is a stable shot-speed estimate. Zeros (ball
+    momentarily static / mistrack) and >cap spikes are dropped first."""
+    if not frames:
+        return None
+    lo = bisect.bisect_left(frames, hf - before)
+    hi = bisect.bisect_right(frames, hf + after)
+    cands = [vals[i] for i in range(lo, hi) if 0.0 < vals[i] <= _SPEED_CAP_KMH]
+    if not cands:
+        return None
+    import statistics
+    return round(statistics.median(cands), 1)
+
+
 def _build_index(dets: List[dict]) -> Tuple[List[int], List[dict]]:
     dets.sort(key=lambda d: d["frame_idx"])
     return [d["frame_idx"] for d in dets], dets
@@ -172,9 +210,12 @@ def assemble_hit_locations(
     HIT_WINDOW = max(1, int(round(fps * 0.20)))
     HIT_SOFT_WINDOW = max(1, int(round(fps * 1.20)))
     BOUNCE_AFTER = max(1, int(round(fps * 1.0)))
+    SPEED_AFTER = max(1, int(round(fps * 0.4)))   # outgoing-shot window after contact
+    SPEED_BEFORE = 2                               # contact frame is often ball-occluded
 
     bounce_rows = _load_bounce_index(conn, job_id)
     bounce_frames = [b[0] for b in bounce_rows]
+    sp_frames, sp_vals = _load_ball_speed_index(conn, job_id)
     pc = _load_player_court(conn, job_id)
     near_f, near_d = pc["near"]
     far_f, far_d = pc["far"]
@@ -199,6 +240,9 @@ def assemble_hit_locations(
             n_volley += 1
         prev_hf = hf
 
+        # ---- outgoing shot speed at the hit (peak tracked ball speed) ----
+        bspeed = _ball_speed_at(sp_frames, sp_vals, hf, SPEED_BEFORE, SPEED_AFTER)
+
         # ---- resolve SIDE (near = court_y > HALF_Y) ----
         bi = bisect.bisect_left(bounce_frames, hf)
         b_cy = None
@@ -221,7 +265,7 @@ def assemble_hit_locations(
         if side_near is None:
             n_unresolved += 1
             out.append({"ball_hit_location_x": None, "ball_hit_location_y": None,
-                        "hitter_side_near": None, "volley": vol})
+                        "hitter_side_near": None, "volley": vol, "ball_speed": bspeed})
             continue
 
         # ---- hitter court position on the resolved side (+ mirror fallback) ----
@@ -239,13 +283,14 @@ def assemble_hit_locations(
                 n_mirror += 1
         if hitter is None:
             out.append({"ball_hit_location_x": None, "ball_hit_location_y": None,
-                        "hitter_side_near": side_near, "volley": vol})
+                        "hitter_side_near": side_near, "volley": vol, "ball_speed": bspeed})
             continue
         out.append({
             "ball_hit_location_x": hitter.get("court_x"),
             "ball_hit_location_y": hitter.get("court_y"),
             "hitter_side_near": side_near,
             "volley": vol,
+            "ball_speed": bspeed,
         })
 
     logger.info(

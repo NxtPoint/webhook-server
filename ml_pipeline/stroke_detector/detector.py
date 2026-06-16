@@ -356,12 +356,14 @@ def _persist_events(conn, events: List[StrokeEvent]) -> None:
             (task_id, frame_idx, ts, predicted_hit_frame, player_id,
              confidence, peak_velocity_px_per_frame,
              pre_peak_v, post_peak_v, decel_ratio,
-             ball_hit_location_x, ball_hit_location_y, hitter_side_near, volley)
+             ball_hit_location_x, ball_hit_location_y, hitter_side_near, volley,
+             ball_speed)
         VALUES
             (:task_id, :frame_idx, :ts, :predicted_hit_frame, :player_id,
              :confidence, :peak_velocity_px_per_frame,
              :pre_peak_v, :post_peak_v, :decel_ratio,
-             :ball_hit_location_x, :ball_hit_location_y, :hitter_side_near, :volley)
+             :ball_hit_location_x, :ball_hit_location_y, :hitter_side_near, :volley,
+             :ball_speed)
         ON CONFLICT (task_id, predicted_hit_frame, player_id) DO NOTHING
     """), rows)
 
@@ -444,6 +446,7 @@ def detect_strokes_for_task(
             ev.ball_hit_location_y = loc["ball_hit_location_y"]
             ev.hitter_side_near = loc["hitter_side_near"]
             ev.volley = loc["volley"]
+            ev.ball_speed = loc.get("ball_speed")
     except Exception:
         logger.exception("stroke_detector: hit-location assembly failed (non-fatal); "
                          "events persisted with NULL hit location")

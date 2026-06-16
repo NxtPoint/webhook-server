@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS ml_analysis.stroke_events (
     ball_hit_location_y         DOUBLE PRECISION,   -- hitter court_y at the hit
     hitter_side_near            BOOLEAN,            -- resolved side (near=court_y>HALF_Y); bounce-opposite, attribution fallback
     volley                      BOOLEAN,            -- no ball bounce since the previous hit (struck out of the air)
+    ball_speed                  DOUBLE PRECISION,   -- outgoing shot speed (km/h) at the hit, peak of ball_detections.speed_kmh in the post-contact window
 
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -49,6 +50,7 @@ ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS ball_hit_location
 ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS ball_hit_location_y DOUBLE PRECISION;
 ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS hitter_side_near BOOLEAN;
 ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS volley BOOLEAN;
+ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS ball_speed DOUBLE PRECISION;
 """
 
 
