@@ -8,7 +8,7 @@
 
 ## 1. One-paragraph summary
 
-Ten-Fifty5 is an AI tennis-analysis SaaS. A visitor lands on a **native marketing site** (Render), logs in via **Wix Studio** (auth + payment), and is dropped into a **portal** (Render-hosted SPA embedded in a Wix iframe). They upload match video to **S3**, which is analysed either by the external **SportAI API** or our in-house **T5 ML pipeline on AWS Batch GPU**, ingested through a **bronze → silver → gold** medallion pipeline in a single **Postgres** DB, trimmed by a **video worker**, and surfaced as dashboards + an LLM coach. Four Flask services run on Render; AWS (S3, Batch, SES, Lambda) does the heavy lifting; Wix remains the auth + payment front door.
+Ten-Fifty5 is an AI tennis-analysis SaaS. A visitor lands on a **native marketing site** (Render), logs in via **Clerk** (identity — `clerk.ten-fifty5.com`, LIVE 2026-06-17), and is dropped into a **standalone Render portal** (no longer a Wix iframe). They upload match video to **S3**, which is analysed either by the external **SportAI API** or our in-house **T5 ML pipeline on AWS Batch GPU**, ingested through a **bronze → silver → gold** medallion pipeline in a single **Postgres** DB, trimmed by a **video worker**, and surfaced as dashboards + an LLM coach. Payment is **direct PayPal** (`paypal_billing/`, LIVE). Four Flask services run on Render; AWS (S3, Batch, SES, Lambda) does the heavy lifting. **Wix is retired** (auth → Clerk, payment → PayPal); only inert data columns + a rollback path remain.
 
 ---
 
@@ -35,7 +35,8 @@ Ten-Fifty5 is an AI tennis-analysis SaaS. A visitor lands on a **native marketin
 
 | Service | Used by | Purpose | Auth / config |
 |---|---|---|---|
-| **Wix Studio** (`info5945780.wixstudio.com/online-tennis-analyt`) | portal, pricing | Member auth, payment checkout (Pricing Plans → PayPal), subscription webhook | Wix-side; see `WIX-DEPENDENCY.md` |
+| **Clerk** (`clerk.ten-fifty5.com`) | `/login`, portal, all client APIs | Member auth (per-user JWT, Google + email); verified by `auth_v2/` | `CLERK_PUBLISHABLE_KEY`, `AUTH_ISSUER`, `AUTH_JWKS_URL`; LIVE 2026-06-17 |
+| ~~**Wix Studio**~~ (RETIRED 2026-06-17) | — | Was member auth + Pricing Plans checkout + subscription webhook → replaced by Clerk (auth) + PayPal (payment) | Inert; rollback only. See `WIX-DEPENDENCY.md` |
 | **SportAI API** (`api.sportai.com`) | `upload_app.py` | External tennis analysis (the `tennis_singles` path) | `Authorization: Bearer SPORT_AI_TOKEN` |
 | **AWS S3** | all upload/ingest/trim | Video upload, SportAI/ML outputs, trimmed video, training corpus | `S3_BUCKET`, AWS keys, region |
 | **AWS Batch (GPU)** | `upload_app.py` `_t5_submit`, Lambda | T5 ML detection (G5.xlarge A10G primary, G4dn/Spot fallback), regions `eu-north-1` → `us-east-1` | `BATCH_JOB_QUEUE`, `BATCH_JOB_DEF` (Render env, not in `render.yaml`) |
@@ -235,7 +236,7 @@ sequenceDiagram
 Ranked by how much they'd hurt at scale. Each is observed from code, not speculative.
 
 ### 6.1 Security / auth (highest)
-1. **No real authentication.** Client API auth is a **single shared `CLIENT_API_KEY`** + an `email` query param (`client_api.py` AUTH guard). Any holder of the key can request any account's data by changing the email. There is no per-user token, session, password, or signature. Auth identity is entirely outsourced to Wix and handed off via `postMessage`. → This is the #1 blocker for being a "real SaaS" and the hardest Wix-decoupling (see `WIX-DEPENDENCY.md`).
+1. ~~**No real authentication.**~~ **✅ FIXED 2026-06-16/17 (de-Wix auth).** Was: a single shared `CLIENT_API_KEY` + `email` query param (anyone with the key could read any account by changing the email). Now: **per-user Clerk JWT** verified by `auth_v2/` (JWKS), with account + email derived SERVER-SIDE from the token — a spoofed `?email` is ignored. Dual-mode across `client_api`/cockpit/consent/feedback/`support_bot`/`tennis_coach`/`core_api`. The shared `CLIENT_API_KEY` is now a pure fallback (Phase 4 = delete it). See `AUTH-MIGRATION-PLAN.md` + `marketing_crm/STATUS.md`.
 2. **Admin allowlist is hardcoded** (`ADMIN_EMAILS` in `client_api.py`) — fine for one operator, doesn't scale to a team.
 3. **`CLIENT_API_KEY` lives in Wix Secrets Manager** and is injected into the browser. Rotation requires a Wix-side change; the key is effectively long-lived and broadly scoped.
 

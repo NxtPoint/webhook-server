@@ -48,7 +48,7 @@ Created idempotently on boot by `gold_init.py::gold_init_presentation()` (`DROP 
 
 ## Client API — Dashboard Endpoints
 
-All under `/api/client/match/*`, CLIENT_API_KEY auth, `email` query param for tenant isolation. Thin passthroughs: `SELECT * FROM gold.<view> WHERE task_id = CAST(:tid AS uuid)` → JSON.
+All under `/api/client/match/*`, dual-mode auth (Clerk JWT or legacy CLIENT_API_KEY), `email` query param for tenant isolation. Thin passthroughs: `SELECT * FROM gold.<view> WHERE task_id = CAST(:tid AS uuid)` → JSON.
 
 | Endpoint | View |
 |---|---|
@@ -75,7 +75,7 @@ Other dashboard endpoints:
 
 Package: `tennis_coach/`. Design doc: `docs/llm_coach_design.md`. Its own dashboard module.
 
-**Endpoints** (CLIENT_API_KEY auth):
+**Endpoints** (dual-mode auth (Clerk JWT or legacy CLIENT_API_KEY)):
 - `POST /api/client/coach/analyze` — named prompt or freeform. Returns `{response, data_snapshot, cached, tokens_used}`.
 - `GET /api/client/coach/cards/<task_id>?email=` — pre-generated 3-card insight summary. Cached forever per (task, email).
 - `GET /api/client/coach/status/<task_id>?email=` — poll for card generation status.

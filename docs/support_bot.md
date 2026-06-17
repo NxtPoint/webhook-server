@@ -1,6 +1,6 @@
 # Support Bot (`support_bot/`)
 
-Customer-service chat answering FAQ-only questions on the portal. Uses Claude Haiku 4.5 with prompt caching + forced tool-use for guaranteed structured output. All authenticated (`X-Client-Key`); portal-only — no public/Wix surface.
+Customer-service chat answering FAQ-only questions on the portal. Uses Claude Haiku 4.5 with prompt caching + forced tool-use for guaranteed structured output. All authenticated — **dual-mode (de-Wix, 2026-06-17): a Clerk JWT via `Authorization: Bearer` OR the legacy `X-Client-Key`** (`_check_client_key()` → `auth_v2.resolve_principal`); portal-only — no public surface.
 
 **Status (2026-04-29)**: Backend + frontend page deployed. Both live.
 
@@ -44,7 +44,7 @@ User-context (name, plan, role, credits) goes in the user message — NOT the ca
 
 ## Endpoints (`support_bot/support_api.py`)
 
-All require `X-Client-Key` header.
+All require authentication — a Clerk JWT (`Authorization: Bearer <token>`) OR the legacy `X-Client-Key` header (dual-mode).
 
 | Method | Path | Purpose |
 |---|---|---|

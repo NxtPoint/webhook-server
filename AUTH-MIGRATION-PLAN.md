@@ -1,9 +1,13 @@
 # AUTH-MIGRATION-PLAN.md — getting auth (and later, payment) off Wix
 
-> **Status: PLAN ONLY — not actioned.** Decision doc for when we choose to move. Builds on
-> [`WIX-DEPENDENCY.md`](WIX-DEPENDENCY.md) (what Wix owns + coupling) and the `core.user` identity
-> entity + consent write-path already built (`core_db/`, `marketing_crm/consent/`). Companion:
-> [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.1 (the shared-key auth problem this fixes).
+> **Status: ✅ ACTIONED — Phases 0-3 SHIPPED (2026-06-16/17). Phase 4 (delete the shared key) pending.**
+> Clerk is LIVE in production (`clerk.ten-fifty5.com`, `pk_live`, own Google OAuth); `auth_v2/` verifies
+> the JWT; the Wix `postMessage` handoff is REMOVED from the code; marketing CTAs point at `/login`.
+> The legacy `CLIENT_API_KEY` is now a pure fallback across every client surface (Phase 4 = delete it,
+> after a verification window). The text below is the original plan, **kept as the executed-record**;
+> live state is in [`marketing_crm/STATUS.md`](marketing_crm/STATUS.md) and the phase table in §4 is
+> annotated DONE/PENDING. Builds on [`WIX-DEPENDENCY.md`](WIX-DEPENDENCY.md) + the `core.user` identity
+> entity + consent write-path (`core_db/`, `marketing_crm/consent/`).
 
 ## TL;DR
 - **Do it pre-launch.** With ~0 real customers, the hard part of any auth/payment migration —
@@ -59,6 +63,12 @@ Replace the shared-key guard with **per-user token verification**:
 - Keep the legacy `CLIENT_API_KEY` path alive *only* during the dual-run window, then delete it.
 
 ## 4. Phased migration (no downtime, preserve logins)
+
+> **STATUS (2026-06-17): Phases 0-3 ✅ DONE, Phase 4 ⏳ PENDING.** 0 — `auth_v2/` JWT-verify middleware
+> built, dual-mode. 1 — `/login` (Clerk) + signups → `core.*` live. 2 — trivial (pre-launch, only Tomo;
+> his account auto-relinked dev→prod by email). 3 — portal flipped to Clerk, Wix `postMessage` handoff
+> removed from code, CTAs → `/login`, Clerk PRODUCTION live. 4 — remaining: delete the shared
+> `CLIENT_API_KEY` (now a pure fallback; every surface is dual-mode) + remove inactive `WIX_NOTIFY_*`.
 
 | Phase | What | Effort | Risk |
 |---|---|---|---|

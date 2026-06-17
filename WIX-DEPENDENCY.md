@@ -12,8 +12,10 @@
 > same day: **Payment** moved to **direct PayPal** (`paypal_billing/`, LIVE — Wix Pricing Plans
 > checkout retired; see `paypal_billing/README.md`), and **Authentication** moved to **Clerk**
 > (`auth_v2/`, LIVE dual-mode — see `marketing_crm/STATUS.md`). Marketing/data were already off Wix.
-> The detailed sections below are the pre-migration map, kept for history + the remaining cleanup
-> (retire the Wix `postMessage` handoff + the standalone wixstudio app after the fallback window).
+> The detailed sections below are the pre-migration map, kept for history. **The Wix auth `postMessage`
+> handoff has since been REMOVED from the code (2026-06-17 — `portal.html` + `players_enclosure.html`);
+> Clerk is the only login door.** Remaining cleanup: delete the legacy `CLIENT_API_KEY` (now a pure
+> fallback) + the inactive `WIX_NOTIFY_*` env; payment-Wix relay + `external_wix_id` columns at baseline.
 
 As of the 2026-06-15 marketing migration, Wix had been reduced to **three responsibilities, all hard-coupled and interdependent** (all now migrated — see the update above):
 

@@ -10,7 +10,7 @@
 
 ## What this is NOT
 
-- **Not Wix.** Since 2026-06-15, `www.ten-fifty5.com` + apex serve the **native marketing site from this directory** (Render), and the Wix app moved to its free Wix Studio URL `https://info5945780.wixstudio.com/online-tennis-analyt`. Everything here is server-rendered HTML from Render. Wix's only remaining responsibilities are member auth (login → URL params), payment checkout (PayPal via Wix Pricing Plans), and the subscription event webhook — all on the wixstudio URL.
+- **Not Wix.** Everything here is server-rendered HTML from Render. **Wix is now retired:** member auth → **Clerk** (`/login`, `auth_v2/`, LIVE 2026-06-17 — Wix handoff removed from the code), payment → **direct PayPal** (`paypal_billing/`, LIVE). The standalone `wixstudio` app remains only as a rollback path.
 - **Not bundled.** Pages are served as-is via `Flask.send_file()`. There is no webpack, no rollup, no TypeScript compile step. View-source on any page is the actual code.
 - **Not a SPA in the React sense.** Each HTML file is its own app. Cross-page nav happens through `portal.html`'s sidebar, which iframes the next page in.
 
@@ -29,16 +29,20 @@ The pattern is one helper `_html(name)` in both apps that resolves an absolute p
 
 | Route | File | Audience | One-line purpose |
 |---|---|---|---|
-| `/` | `locker_room.html` | Player / parent | Home dashboard: matches per month, usage gauge, match history, profile + linked-players + invite-coach tabs |
-| `/portal` | `portal.html` | All authenticated | **Entry point.** Collapsible sidebar nav shell. Iframes the inner page. Embedded in Wix at `/portal`. |
+| `/login` | `login.html` | Public | **Clerk sign-in/sign-up** (Google + email) — the live login door. On success → `/portal`. NEW 2026-06-16. |
+| `/` | `locker_room.html` | Player / parent | Home dashboard (on a non-marketing host). On a marketing host `/` is the marketing home — the portal nav uses `/dashboard` instead. |
+| `/dashboard` | `locker_room.html` | Player / parent | Dedicated, NON host-switched dashboard route (portal nav target). NEW 2026-06-16. |
+| `/portal` | `portal.html` | All authenticated | **Entry point.** Collapsible sidebar shell, iframes the inner page. **Standalone on Render (reached top-level from `/login`)** — Wix auth handoff removed 2026-06-17. |
 | `/media-room` | `media_room.html` | Player / parent | 4-step upload wizard: game type → upload → details → progress |
 | `/match-analysis` | `match_analysis.html` | Player / parent / coach | **Primary match dashboard.** 4 modules: Match Analytics, Placement Heatmaps, Player Performance, AI Coach |
 | `/practice` | `practice.html` | Player / parent / coach | Practice analytics (heatmaps, timeline). Reference design for new dashboards. |
-| `/pricing` | `pricing.html` | All authenticated | Entitlement-aware plans page. Renders new-plan / top-up / coach view. Sends `postMessage({type:'wix-checkout', planId})` up to Wix for PayPal checkout. |
+| `/pricing` | `pricing.html` | All authenticated | (Marketing-host: serves the public pricing page.) Entitlement-aware plans page; **PayPal-direct checkout** (PayPal JS SDK, LIVE) with `wix-checkout` postMessage as `PAYPAL_ENABLED=0` fallback. |
+| `/plans` | `pricing.html` | All authenticated | Dedicated, NON host-switched pricing route (portal nav target — `/pricing` is marketing on `www`). NEW 2026-06-16. |
 | `/help` | `support.html` | All authenticated | Support bot UI. Mirrors AI Coach styling: greeting, quick-prompt chips, green-callout answer, amber escalate CTA. Backed by `/api/support/*`. |
 | `/coach-accept` | `coach_accept.html` | Token-auth public | Coach invitation acceptance. Token from email URL is the auth. |
 | `/register` | `players_enclosure.html` | Onboarding | Players' Enclosure — multi-player household setup wizard |
-| `/backoffice` | `backoffice.html` | Admin email only | Pipeline status, customer table, KPI cards. Auth gate via `ADMIN_EMAILS` server-side. |
+| `/backoffice` | `backoffice.html` | Admin email only | Pipeline status, customer table, KPI cards. Admin-gated. |
+| `/cockpit` | `cockpit.html` | Admin email only | **Business Cockpit** — MRR / customers / at-risk / processing-ops / feedback over `core.*`. Linked from the portal admin nav. |
 
 ### Public marketing pages (native, LIVE on `www`)
 
@@ -66,18 +70,16 @@ Legacy same-origin backups (canonicals point at the clean URLs): `/home`, `/how-
 | `/robots.txt` · `/sitemap.xml` | Generated; sitemap covers every marketing route + post |
 | `404.html` (errorhandler) | Branded 404 for browsers; JSON for `/api`·`/ops` + JSON clients |
 | `/__alive` | Locker-room liveness probe — `{"ok": true, "service": "locker-room"}`. No auth. |
+| `/auth_client.js` | Shared dual-mode auth helper (`window.TFAuth`); Clerk config env-injected. Auto-injected into app pages by `_html()`. See Auth pattern below. |
 
-## Auth pattern (the URL-param dance)
+## Auth pattern — DUAL-MODE via `TFAuth` (de-Wix, 2026-06-17)
 
-Every authenticated SPA expects these params, forwarded through the portal iframe:
+Auth is now handled by a shared helper, **`/auth_client.js` → `window.TFAuth`** (auto-injected into every app page by `locker_room_app.py::_html()`; not on marketing/blog/login). Two modes, chosen automatically:
 
-```
-?email=<member_email>&firstName=<f>&surname=<s>&wixMemberId=<id>&key=<CLIENT_API_KEY>&api=<api_base>
-```
+- **Clerk (live path):** the user signs in at `/login` (Clerk) → standalone `/portal`. No `?key=`. Each API call sends `Authorization: Bearer <fresh Clerk JWT>`; the backend derives the account/email **server-side** from the token. **Auth-once:** Clerk loads only in the portal (top frame); child iframes request a fresh token per call from the portal via `postMessage` (no per-page Clerk re-init).
+- **Legacy (fallback):** if a `?key=<CLIENT_API_KEY>` URL param is present (the old Wix path), pages send `X-Client-Key` + `?email=` exactly as before. TFAuth never loads Clerk in this mode. This path is slated for removal once `CLIENT_API_KEY` is dropped.
 
-The portal reads them from Wix's iframe-postMessage handshake, then constructs every inner-iframe `src` with those params. SPAs read params via the helper `authParams()` defined inline in each page.
-
-`X-Client-Key` header on every API call comes from the `key` param. Same key is shared across all member sessions — server-side `email` parameter on each request scopes data to the right account.
+Page code is mode-agnostic: call `TFAuth.apiFetch(path, opts)` (sets the right auth header + email handling), `TFAuth.isAuthed()`, `TFAuth.email()`, `TFAuth.navParams()` for cross-page links. The Wix `postMessage` auth handoff has been **removed** from `portal.html` + `players_enclosure.html`.
 
 ## Shared design system (by convention, not by import)
 

@@ -25,6 +25,12 @@
 
 ## KICKOFF PROMPT — AUTH (de-Wix authentication)
 
+> **✅ DONE 2026-06-16/17 — this kickoff is historical.** De-Wix auth shipped: Clerk PRODUCTION live
+> (`clerk.ten-fifty5.com`, `pk_live`, own Google OAuth), `auth_v2/` verifies the JWT, all client surfaces
+> dual-mode, marketing CTAs → `/login`, Wix `postMessage` handoff removed from code. Only Phase 4 remains
+> (delete the legacy `CLIENT_API_KEY` — now a pure fallback). Current state: `marketing_crm/STATUS.md`;
+> executed plan: `AUTH-MIGRATION-PLAN.md`. The prompt below is kept as the original kickoff record.
+
 ```
 We're starting the de-Wix AUTHENTICATION migration. Read HANDOVER.md, AUTH-MIGRATION-PLAN.md,
 WIX-DEPENDENCY.md, and marketing_crm/STATUS.md first.
@@ -50,6 +56,14 @@ Propose the exact file plan for approval BEFORE writing code. Keep Wix payment u
 ```
 
 ## KICKOFF PROMPT — PAYMENT (PayPal-direct, NEW chat)
+
+> **✅ DONE 2026-06-16 — this kickoff is historical.** Direct PayPal is LIVE (`PAYPAL_ENABLED=1`,
+> `PAYPAL_ENV=live`) in `paypal_billing/`: vanilla PayPal Subscriptions + Orders, signature-verified
+> webhook → refetch → the shared `apply_subscription_event` grant path, native buttons + cancel in
+> `pricing.html`. Proven on sandbox AND a real live purchase. **`billing.*` only — the core.* mirror in
+> step 4 below was DEFERRED** (own ticket: `STATUS.md` "Not built yet" + the CORE.* kickoff below). Wix
+> checkout retained only as the `PAYPAL_ENABLED=0` rollback (its deprecation is the WIX PAYMENT
+> DEPRECATION kickoff below). Runbook: `paypal_billing/README.md`. Prompt kept as the original record.
 
 ```
 We're building DIRECT PayPal payments to replace Wix Pricing Plans checkout. Read HANDOVER.md, the

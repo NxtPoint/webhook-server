@@ -47,6 +47,14 @@
 - `PAYPAL_CURRENCY` — presentment currency (default `USD`).
 Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing/README.md`.
 
+**De-Wix auth — Clerk (`auth_v2/`, LIVE 2026-06-17). On the `webhook-server` service:**
+- `AUTH_V2_ENABLED=1` — turns on Clerk JWT verification in `client_api._guard()` + the other dual-mode guards (alongside the legacy key). `0` = legacy-key-only rollback.
+- `AUTH_PROVIDER=clerk` (informational); `AUTH_ISSUER=https://clerk.ten-fifty5.com`; `AUTH_JWKS_URL=https://clerk.ten-fifty5.com/.well-known/jwks.json`; `AUTH_AUDIENCE` (blank — Clerk default tokens set no `aud`). All public values.
+
+**Clerk frontend vars — on the `locker-room` service:** `CLERK_PUBLISHABLE_KEY=pk_live_…` (public, browser-side); `AUTH_AFTER_LOGIN_URL=/portal`; `AUTH_API_BASE=https://api.nextpointtennis.com`; `CLERK_JWT_TEMPLATE` (blank = default session token — add an `email` claim via Clerk → Sessions → Customize session token). **Gotcha:** a `render.yaml` value change may not auto-apply — set in the Render dashboard + verify the live `/auth_client.js` shows the `pk_live_` key.
+
+**De-gated growth flags (NO LONGER READ by code — 2026-06-17):** `COCKPIT_ENABLED`, `CONSENT_ENABLED`, `FEEDBACK_ENABLED`, `TRACKING_ENABLED`, `CORE_API_ENABLED` — these features now register unconditionally; the env vars are inert leftovers (remove at baseline). `CRM_SYNC_ENABLED` is replaced by self-gating on `HUBSPOT_PRIVATE_APP_TOKEN`/`HUBSPOT_API_KEY`/`KLAVIYO_API_KEY` presence. `AUTH_V2_ENABLED` + `PAYPAL_ENABLED` remain real flags.
+
 **Legacy (Wix payment transition — remove when own payment auth is built):**
 `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`, `WIX_NOTIFY_TIMEOUT_S`, `WIX_NOTIFY_RETRIES`
 
@@ -54,7 +62,7 @@ Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing
 
 - **Ingest Worker**: `INGEST_WORKER_OPS_KEY` (required — startup crash), `DATABASE_URL`, `VIDEO_WORKER_*` for trim trigger.
 - **Video Trim Worker** (Docker): `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS credentials. FFmpeg tunables: `VIDEO_CRF=28`, `VIDEO_PRESET=veryfast`, `FFMPEG_TIMEOUT_S=1800`.
-- **Locker Room**: `PORT=5050` only. No DB or S3.
+- **Locker Room**: `PORT` + the Clerk frontend vars (`AUTH_V2_ENABLED`, `CLERK_PUBLISHABLE_KEY`, `AUTH_AFTER_LOGIN_URL`, `AUTH_API_BASE`, `CLERK_JWT_TEMPLATE` — see the De-Wix auth section above; injected into `/login` + `/auth_client.js`) + optional `MARKETING_HOSTS`. No DB or S3.
 - **Cron `cron_capacity_sweep.py`**: `OPS_KEY`, `DATABASE_URL`, `INGEST_STALE_S=1800`, `TRIM_STALE_S=1800`.
 - **Cron `cron_monthly_refill.py`**: `BILLING_OPS_KEY` or `OPS_KEY`.
 - **Lambda `lambda/ml_trigger.py`**: `BATCH_JOB_QUEUE`, `BATCH_JOB_DEF`, `DATABASE_URL`.
