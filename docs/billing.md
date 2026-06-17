@@ -8,7 +8,7 @@ For the **business rules** (what's a credit, what gates upload, how the soft-del
 
 - The `billing.*` Postgres schema (`account`, `member`, `entitlement_grant`, `entitlement_consumption`, `subscription_state`, `subscription_event_log`, `coaches_permission`, `monthly_refill_log`, `entitlements`, `vw_customer_usage`)
 - The credit grant / consumption / entitlements logic
-- The Wix subscription webhook handler + monthly refill cron driver
+- The subscription webhook handling (PayPal — LIVE; Wix — rollback fallback) via the shared `apply_subscription_event` path + monthly refill cron driver
 - Two ops endpoints (`/api/billing/summary`, `/api/billing/entitlement/check`, `/api/billing/entitlement/grant`) for backoffice use
 - The `entitlements_api` UPSERT that derives all permission flags into `billing.entitlements`
 - The capacity-sweep cron that detects stuck ingests / trims (auxiliary, not strictly billing)
@@ -16,7 +16,7 @@ For the **business rules** (what's a credit, what gates upload, how the soft-del
 ## What this is NOT
 
 - **Not the upload gate caller.** `upload_app.py` reads from `billing.entitlements` to decide if a request is allowed. This module *writes* the table; the consumer is `upload_app`.
-- **Not Wix.** Wix owns plan definitions, payment, and PayPal integration. This module receives lifecycle webhook events and translates them to credit grants.
+- **Not the payment processor.** Since 2026-06-16 payment is **direct PayPal** (`paypal_billing/`, LIVE) — it owns checkout, the plan catalogue, and the signature-verified webhook. This module receives the *normalized* lifecycle event (from PayPal now; Wix only as the `PAYPAL_ENABLED=0` fallback) and translates it to credit grants via the shared `subscriptions_api.apply_subscription_event(payload, provider)`.
 - **Not the AI Coach paywall.** That gate lives in `tennis_coach/coach_api.py::_check_ai_coach_entitled`. It reads `billing.subscription_state` and `billing.member.role` directly — bypasses `billing.entitlements` because it pre-dates that table.
 
 ## Files
@@ -27,8 +27,9 @@ For the **business rules** (what's a credit, what gates upload, how the soft-del
 | `billing_service.py` | The behavioural core. Account/member create-with-guard-rails, entitlement grant with three-way idempotency, consumption (match + technique), monthly no-rollover reset, coach cap gate, signup bonus. Direct callers from everywhere. |
 | `billing_import_from_bronze.py` | Reconciliation: scans `bronze.submission_context` for completed tasks without consumption rows and writes them. Auto-creates accounts on the fly if needed. Used as a CLI tool for backfill, and called from ingest worker step 5. |
 | `entitlements_api.py` | The big derived-flags UPSERT. One SQL statement that reads `account`, `member`, `subscription_state`, `entitlement_grant`, `entitlement_consumption`, `coaches_permission` and writes `billing.entitlements`. Single source of truth for `can_upload`, `can_view_dashboards`, `can_link_additional_player`, block reasons. |
-| `subscriptions_api.py` | Wix subscription webhook receiver + monthly refill endpoint. Idempotent per Wix event by sha256 of canonical fields. |
-| `usage_api.py` | OPS_KEY ops endpoints: `summary`, `entitlement/check`, `entitlement/grant`. For backoffice / Wix integration scripts / one-off corrections. |
+| `subscriptions_api.py` | The **shared normalize→grant path** `apply_subscription_event(payload, provider)` + the Wix webhook endpoint (`/api/billing/subscription/event`, now the fallback) + monthly refill endpoint. Idempotent per event by sha256 of canonical fields. The PayPal receiver (`paypal_billing/webhook.py`) calls `apply_subscription_event(provider='paypal')` in-process — one grant path, two front doors. |
+| `paypal_billing/` | **Direct PayPal payments (LIVE 2026-06-16) — replaces Wix Pricing Plans checkout.** `webhook.py` (signature-verified receiver → refetch from PayPal → `apply_subscription_event`; server-side create-subscription / create-order / capture-order / cancel-subscription; public `/config` probe), `client.py` (REST client), `plans.py` + committed `catalog.json` (plan catalogue + live Product/Billing-Plan ids), dark `register(app)` on `PAYPAL_ENABLED`. `billing.*` only (core mirror deferred). Full reference: `paypal_billing/README.md`. |
+| `usage_api.py` | OPS_KEY ops endpoints: `summary`, `entitlement/check`, `entitlement/grant`. For backoffice / integration scripts / one-off corrections. |
 | `cron_monthly_refill.py` | **Render cron.** Single HTTP POST to `/api/billing/cron/monthly_refill`. The endpoint owns the logic; this script is just the trigger. |
 | `cron_capacity_sweep.py` | **Render cron.** Detects stuck ingests / trims by reading `bronze.submission_context` directly. Not strictly billing, but co-located with the other cron driver. |
 
@@ -55,8 +56,11 @@ For the **business rules** (what's a credit, what gates upload, how the soft-del
 
 | Endpoint | Auth | Module | Purpose |
 |---|---|---|---|
-| `POST /api/billing/subscription/event` | OPS_KEY | `subscriptions_api.py` | Wix subscription lifecycle webhook |
-| `POST /api/billing/cron/monthly_refill` | OPS_KEY | `subscriptions_api.py` | Monthly refill (called by `cron_monthly_refill.py`) |
+| `POST /api/billing/paypal/webhook` | PayPal signature | `paypal_billing/webhook.py` | **PayPal lifecycle webhook (LIVE)** → refetch → `apply_subscription_event(provider='paypal')` |
+| `POST /api/billing/paypal/{create-subscription,create-order,capture-order,cancel-subscription}` | client-key **or** Clerk JWT (`_guard`) | `paypal_billing/webhook.py` | Server-side checkout + cancel (amounts/plan/custom_id set server-side) |
+| `GET /api/billing/paypal/config` | none (public) | `paypal_billing/webhook.py` | Frontend probe: `enabled`/`env`/plan ids (drives `/pricing`; Wix fallback when off) |
+| `POST /api/billing/subscription/event` | OPS_KEY | `subscriptions_api.py` | Wix subscription lifecycle webhook — **now the `PAYPAL_ENABLED=0` fallback** |
+| `POST /api/billing/cron/monthly_refill` | OPS_KEY | `subscriptions_api.py` | Monthly refill (called by `cron_monthly_refill.py`) — Wix subs only |
 | `GET /api/billing/summary?email=…` | OPS_KEY | `usage_api.py` | Account usage summary |
 | `GET /api/billing/entitlement/check?email=…` | OPS_KEY | `usage_api.py` | Upload-gate check |
 | `POST /api/billing/entitlement/grant` | OPS_KEY | `usage_api.py` | Manual credit grant |
@@ -81,8 +85,8 @@ billing.account                          (1 per email)
 
 billing.entitlement_grant                (additive credit ledger — append-only)
   ├─ account_id (FK)
-  ├─ source ∈ {wix_subscription, wix_payg, manual_adjustment, signup_bonus}
-  ├─ plan_code, external_wix_id (NULLABLE)
+  ├─ source ∈ {wix_subscription, wix_payg, paypal_subscription, paypal_payg, manual_adjustment, signup_bonus}
+  ├─ plan_code, external_wix_id (NULLABLE) — **reused by PayPal** (`purchase:{order_id}:{account_id}`); a misnomer pending the Wix-payment-deprecation rename to `external_id`
   ├─ matches_granted, techniques_granted
   ├─ valid_from, valid_to (NULLABLE = lifetime), is_active
   └─ idempotency: see grant_entitlement three-way rule above
@@ -95,10 +99,12 @@ billing.entitlement_consumption          (deduction ledger — append-only)
   └─ NEVER deleted — soft-delete contract, see business.md §7
 
 billing.subscription_state               (current state per account)
-  ├─ account_id, plan_id (Wix UUID), plan_code, status, period_end
+  ├─ account_id, plan_id (PayPal Billing-Plan id, or legacy Wix UUID), plan_code, status, period_end
+  ├─ billing_provider ∈ {wix, paypal} — the monthly cron refills only 'wix'; PayPal subs are webhook-driven (grant per renewal payment)
+  ├─ provider_subscription_id — PayPal subscription id (I-…) used to cancel; NULL for Wix
   └─ entitlements UPSERT picks the most recent by updated_at when multiple exist
 
-billing.subscription_event_log           (Wix webhook audit + idempotency)
+billing.subscription_event_log           (Wix + PayPal webhook audit + idempotency)
   └─ unique on event_id (sha256 of canonical event fields)
 
 billing.coaches_permission               (coach invite + access)
@@ -147,13 +153,20 @@ billing_import_from_bronze.sync_usage_for_task_id(task_id)
               -- Idempotent. Re-running is a no-op.
 ```
 
-## Flow — Wix subscription event becomes credits
+## Flow — a subscription/payment event becomes credits
+
+> Both providers feed the SAME `subscriptions_api.apply_subscription_event(payload, provider)`.
+> **PayPal (LIVE):** `paypal_billing/webhook.py` verifies PayPal's signature, **refetches** the
+> resource from PayPal, then calls it with `provider='paypal'` — recurring grants on
+> `PAYMENT.SALE.COMPLETED` (`valid_to`=next billing → no rollover), PAYG on capture (never expires).
+> **Wix (fallback):** the OPS_KEY `/api/billing/subscription/event` endpoint calls it with
+> `provider='wix'`. The diagram below is the normalized shape both share.
 
 ```
-Wix subscription lifecycle event
+subscription/payment lifecycle event (PayPal webhook | Wix webhook)
         │
         ▼
-POST /api/billing/subscription/event   (OPS_KEY)
+apply_subscription_event(payload, provider)   (via /api/billing/paypal/webhook | /api/billing/subscription/event)
         │
         ├─ event_id = sha256(event_type|email|order_id|plan_id|status|plan_start|plan_end)
         ├─ INSERT billing.subscription_event_log (skip if event_id exists — idempotent)
@@ -163,11 +176,12 @@ POST /api/billing/subscription/event   (OPS_KEY)
         │     ├─ PLAN_CANCELLED / RECURRING_PAYMENT_CANCELLED → status=CANCELLED
         │     └─ ACTIVE with past period_end → status=EXPIRED
         │
-        └─ if PLAN_PURCHASED + ACTIVE:
-              grant_entitlement(account_id, source='wix_subscription',
-                                plan_code, external_wix_id=order_id,
-                                matches_granted=plan_allowance)
-              -- Immediate: user can upload right now, doesn't wait for monthly cron
+        └─ if PLAN_PURCHASED + ACTIVE (matches_granted > 0):
+              grant_entitlement(account_id, source=f'{provider}_subscription' | f'{provider}_payg',
+                                plan_code, external_wix_id=f'purchase:{order_id}:{account_id}',
+                                matches_granted=plan_allowance, valid_to=period_end)
+              -- Immediate: user can upload right now, doesn't wait for monthly cron.
+              -- billing_provider is stamped on subscription_state so the Wix-only cron skips PayPal subs.
 ```
 
 ## Flow — monthly refill (1st of month)
@@ -178,7 +192,8 @@ Render cron fires cron_monthly_refill.py
         ▼
 POST /api/billing/cron/monthly_refill   (OPS_KEY)
         │
-        ├─ for each ACTIVE recurring subscription:
+        ├─ for each ACTIVE recurring WIX subscription (billing_provider='wix'):
+        │     -- PayPal subs are excluded: they grant per renewal payment via the webhook, not here
         │     ├─ check billing.monthly_refill_log unique (account_id, YYYY-MM) — skip if done
         │     ├─ remaining = vw_customer_usage.matches_remaining
         │     ├─ allowance = subscription_state.plan_allowance
@@ -217,7 +232,8 @@ POST /api/billing/cron/monthly_refill   (OPS_KEY)
 ## See also
 
 - [`business.md`](business.md) §2–§8 — full business rules, entitlement contract, hidden invariants
-- [`pricing_strategy.md`](pricing_strategy.md) — tier numerics, Wix plan IDs, AI Coach access matrix
+- [`pricing_strategy.md`](pricing_strategy.md) — tier numerics, plan IDs (PayPal live in `paypal_billing/`; legacy Wix), AI Coach access matrix
+- [`../paypal_billing/README.md`](../paypal_billing/README.md) — direct PayPal payments (LIVE): checkout, webhook, grant model, rollback
 - [`../coach_invite/README.md`](../coach_invite/README.md) — coach invite flow (consumes `coach_accept_gate`)
 - [`../tennis_coach/README.md`](../tennis_coach/README.md) — AI Coach paywall (separate gate that reads `subscription_state` directly)
 - [`../cleanup/README.md`](../cleanup/README.md) — orphan sweep (the bright line: never touches `billing.*`)

@@ -130,7 +130,7 @@ Every API call goes to the same-origin main API ("Sport AI - API call") because 
 | `practice.html` | `/api/client/practice-detail/<task_id>`, `/api/client/practice-heatmap/<task_id>/<type>` |
 | `media_room.html` | `/api/submit_s3_task`, `/api/client/upload-init`, `/api/client/upload-part`, `/api/client/upload-complete`, `/api/client/entitlements` |
 | `portal.html` | `/api/client/entitlements`, plus iframe-driven nav |
-| `pricing.html` | `/api/client/entitlements`, posts up to Wix for checkout |
+| `pricing.html` | `/api/client/entitlements`, `/api/billing/paypal/{config,create-subscription,create-order,capture-order,cancel-subscription}` (PayPal-direct, LIVE); `wix-checkout` postMessage only as the `PAYPAL_ENABLED=0` fallback |
 | `support.html` | `/api/support/{ask,feedback,escalate}` |
 | `coach_accept.html` | `/api/coaches/accept-token` (token-only auth) |
 | `backoffice.html` | `/api/client/backoffice/{pipeline,customers,kpis}` |
