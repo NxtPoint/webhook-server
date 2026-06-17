@@ -33,7 +33,10 @@ _TRAITS_SQL = text("""
 
 
 def enabled():
-    return os.getenv("CRM_SYNC_ENABLED", "0") == "1"
+    # Self-gates on credentials (de-gated from CRM_SYNC_ENABLED 2026-06-17): active only
+    # when a destination key is configured, so it no-ops cleanly without HubSpot/Klaviyo.
+    return bool(os.getenv("HUBSPOT_PRIVATE_APP_TOKEN") or os.getenv("HUBSPOT_API_KEY")
+                or os.getenv("KLAVIYO_API_KEY"))
 
 
 def build_traits(session, email):

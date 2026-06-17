@@ -22,8 +22,8 @@ page_bp = Blueprint("mc_page_beacon", __name__)
 def page():
     if request.method == "OPTIONS":
         return ("", 204)
-    if os.getenv("TRACKING_ENABLED", "0") != "1":
-        return jsonify({"ok": True, "tracked": False})
+    # Always on (de-gated 2026-06-17). Page-views land in core.usage_event; Amplitude
+    # forwarding self-gates on AMPLITUDE_API_KEY.
     try:
         body = json.loads(request.get_data() or b"{}")
     except Exception:

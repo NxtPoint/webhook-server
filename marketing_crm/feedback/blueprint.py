@@ -145,8 +145,6 @@ def _track(event, email, props):
 
 
 def register(app):
-    """Register feedback endpoints IFF FEEDBACK_ENABLED=1. No-op otherwise (dark by default)."""
-    if os.getenv("FEEDBACK_ENABLED", "0") != "1":
-        return False
+    """Register feedback/NPS endpoints. Always on (de-gated 2026-06-17, post go-live)."""
     app.register_blueprint(feedback_bp)
     return True

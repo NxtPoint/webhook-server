@@ -196,8 +196,7 @@ def _emit_consent_event(ctype, email):
 
 
 def register(app):
-    """Register consent endpoints IFF CONSENT_ENABLED=1. No-op otherwise (dark by default)."""
-    if os.getenv("CONSENT_ENABLED", "0") != "1":
-        return False
+    """Register consent endpoints. Always on (de-gated 2026-06-17, post go-live —
+    the forward write-path into core.* + consent capture)."""
     app.register_blueprint(consent_bp)
     return True

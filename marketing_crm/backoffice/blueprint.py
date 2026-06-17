@@ -173,8 +173,7 @@ def sync_crm():
 
 
 def register(app):
-    """Register the cockpit blueprint IFF COCKPIT_ENABLED=1. No-op otherwise (dark by default)."""
-    if os.getenv("COCKPIT_ENABLED", "0") != "1":
-        return False
+    """Register the cockpit blueprint. Always on (de-gated 2026-06-17, post go-live —
+    every route is admin-gated via _admin_ok)."""
     app.register_blueprint(cockpit_bp)
     return True

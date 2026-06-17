@@ -128,8 +128,7 @@ def admin_metrics():
 
 
 def register(app):
-    """Register the blueprint IFF CORE_API_ENABLED=1. No-op otherwise (dark by default)."""
-    if os.getenv("CORE_API_ENABLED", "0") != "1":
-        return False
+    """Register the /api/core/* blueprint. Always on (de-gated 2026-06-17, post go-live —
+    additive over core.*, admin/auth-gated per route)."""
     app.register_blueprint(core_bp)
     return True

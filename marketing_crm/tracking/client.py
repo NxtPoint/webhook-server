@@ -13,7 +13,7 @@ _AMPLITUDE_URL = "https://api2.amplitude.com/2/httpapi"
 
 
 def _enabled():
-    return os.getenv("TRACKING_ENABLED", "0") == "1"
+    return True  # always on (de-gated 2026-06-17); Amplitude still self-gates on AMPLITUDE_API_KEY
 
 
 def track(event_type, *, email=None, account_id=None, user_id=None, person_id=None,
