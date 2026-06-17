@@ -2,6 +2,12 @@
   "currency": "USD",
   "env": "live",
   "plans": {
+    "coach pro": {
+      "matches": 0,
+      "plan_id": "P-9VS40731HS2423915NIZG4YA",
+      "price": 50.0,
+      "product_id": "PROD-3HG46485KK353890L"
+    },
     "player advances": {
       "matches": 10,
       "plan_id": "P-15W49407BW826073RNIYZHOY",
