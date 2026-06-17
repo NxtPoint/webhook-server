@@ -40,7 +40,7 @@
 | public_id | uuid | |
 | account_id | bigint FK→account | the account this login belongs to (owner + coaches) |
 | email | citext UNIQUE | |
-| auth_provider | text | wix / password / google … |
+| auth_provider | text | clerk / password / google … (legacy: wix) |
 | auth_provider_uid | text | e.g. wixMemberId (today's `external_wix_id`) |
 | email_verified | bool | |
 | is_account_owner | bool | partial-unique: one owner per account |
@@ -82,10 +82,10 @@
 | id | bigint PK | |
 | account_id | bigint FK→account | |
 | plan_id | bigint FK→plan NULL | |
-| external_plan_id | text | Wix plan UUID |
+| external_plan_id | text | PayPal Billing-Plan id (legacy: Wix plan UUID) |
 | plan_code / plan_type | text | |
 | status | text | active / cancelled / expired / past_due |
-| billing_provider | text | wix_paypal / stripe / manual |
+| billing_provider | text | paypal / stripe / manual (legacy: wix_paypal) |
 | **mrr_cents** | int | normalised monthly recurring revenue (0 for payg) |
 | current_period_start / current_period_end | timestamptz | |
 | started_at / cancelled_at / payment_cancelled_at | timestamptz | |
@@ -322,7 +322,7 @@ These need a human/legal call before they can be finalised in code:
 2. **Backfill (dry-run first):** one-off script reads `billing.*`/`bronze.*` → writes `core.*`. Reconcile counts; idempotent + re-runnable.
 3. **Dual-write window:** new writes hit `core.*` *and* `billing.*` (or `billing.*` becomes a view over `core.*`) — verify parity before flipping reads.
 4. **Cut over reads** (portal/backoffice → `core_api`), per-entity, behind a flag.
-5. **Sync external systems → core:** Wix webhook continues but now writes `core.subscription` directly; add a periodic **reconcile-from-Wix** job (closes the silent-desync risk in `ARCHITECTURE.md` §6.4). On full auth migration, `core.user` becomes the identity SoT and Wix sync stops.
+5. **Sync external systems → core:** the **PayPal** webhook (`/api/billing/paypal/webhook`, live; Wix as fallback) writes `core.subscription`/`core.credit_ledger` directly via the shared `apply_subscription_event`; add a periodic **reconcile-from-PayPal** job (closes the silent-desync risk in `ARCHITECTURE.md` §6.4). Identity SoT is already `core.user` (Clerk via `auth_v2`). *(2026-06-16: this is the deferred `core.*` payment mirror — see `STATUS.md` "Not built yet" + `docs/_investigation/core_db_billing_strategy.md`.)*
 6. **Deprecate `billing.*`** once parity holds for N days.
 
 ---

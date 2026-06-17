@@ -32,8 +32,8 @@ AI tennis match analysis SaaS. Users upload match video → get ATP-grade stats 
 4. **Privacy boundary (hard):** never route **minor PII** (DOB, child names) or **biometric data**
    (pose, video) into Klaviyo / HubSpot / any marketing tool. Marketing email only to contacts with
    explicit opt-in. See `privacy_inputs.md`.
-5. **Auth is still on Wix today** (migration planned, not done). Don't assume we control signup/login
-   flows yet.
+5. **Auth is now Clerk** (LIVE 2026-06-17 — migrated off Wix; `/login`, `auth_v2/`). Payment is now
+   **direct PayPal** (LIVE 2026-06-16; off Wix). We control the signup/login + checkout flows.
 
 ## Before you suggest something, check:
 - Does it assume a data source other than `core.*`? → realign to `core.*`.

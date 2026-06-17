@@ -168,7 +168,7 @@ sequenceDiagram
     autonumber
     actor U as Visitor
     participant MKT as Marketing (locker-room)
-    participant WIX as Wix Studio
+    participant CLERK as Clerk
     participant PORTAL as Portal SPA
     participant API as webhook-server
     participant S3 as S3
@@ -179,9 +179,9 @@ sequenceDiagram
     participant SES as SES
 
     U->>MKT: Land on www.ten-fifty5.com
-    U->>WIX: Click "Start free" → Wix login
-    WIX->>PORTAL: postMessage handoff (email + CLIENT_API_KEY)
-    Note over PORTAL: Auth = email + shared CLIENT_API_KEY,<br/>forwarded to child iframes as URL params
+    U->>CLERK: Click "Start free" → /login (Clerk)
+    CLERK->>PORTAL: session JWT
+    Note over PORTAL: Auth = per-user Clerk JWT (Bearer), verified by auth_v2;<br/>legacy shared CLIENT_API_KEY remains a fallback (Phase 4 deletes it)
 
     U->>PORTAL: Upload match video (media_room.html)
     PORTAL->>API: Multipart presign → PUT parts
@@ -239,7 +239,7 @@ Ranked by how much they'd hurt at scale. Each is observed from code, not specula
 ### 6.1 Security / auth (highest)
 1. ~~**No real authentication.**~~ **✅ FIXED 2026-06-16/17 (de-Wix auth).** Was: a single shared `CLIENT_API_KEY` + `email` query param (anyone with the key could read any account by changing the email). Now: **per-user Clerk JWT** verified by `auth_v2/` (JWKS), with account + email derived SERVER-SIDE from the token — a spoofed `?email` is ignored. Dual-mode across `client_api`/cockpit/consent/feedback/`support_bot`/`tennis_coach`/`core_api`. The shared `CLIENT_API_KEY` is now a pure fallback (Phase 4 = delete it). See `AUTH-MIGRATION-PLAN.md` + `marketing_crm/STATUS.md`.
 2. **Admin allowlist is hardcoded** (`ADMIN_EMAILS` in `client_api.py`) — fine for one operator, doesn't scale to a team.
-3. **`CLIENT_API_KEY` lives in Wix Secrets Manager** and is injected into the browser. Rotation requires a Wix-side change; the key is effectively long-lived and broadly scoped.
+3. **The legacy `CLIENT_API_KEY` is still a live fallback.** No longer injected via Wix — it's a server-side env var on the Render services, accepted alongside the Clerk JWT until Phase 4 deletes it. While it exists it remains a broadly-scoped shared secret (anyone presenting it + an `?email` is trusted), so Phase 4 (verify no caller depends on it, then remove) is the real close-out of §6.1.
 
 ### 6.2 Privacy / compliance (high — and a stated business concern)
 4. **No consent capture, age-gate, or retention/purge logic** anywhere in the repo, despite storing minors' **DOB** (`billing.member.dob`), names, video, and **biometric pose data**. Confirmed (2026-06-16) there is nothing formal today. Processing minors' biometrics without parental consent + a retention policy is a material GDPR/COPPA-class risk. Soft-delete (`deleted_at`) exists but there's no hard-delete / right-to-erasure path. → **Treat as a launch-blocking workstream, not a backlog item.**

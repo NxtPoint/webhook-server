@@ -14,12 +14,15 @@ accurate as the system changes.
 | Pose / skeletal keypoints | **Biometric (likely Art. 9 special category)** | `ml_analysis.player_detections` | the sensitive one |
 | Match analytics | Derived | `silver.*` / `gold.*` / `core.match.kpi_summary` | |
 | Usage events | Behavioural | `core.usage_event` | |
-| Payment | Financial | **PayPal / Wix** (not our DB) | we store no card data |
+| Payment | Financial | **PayPal** (not our DB) | we store no card data |
 
 ## Processors / sub-processors (data leaves us to)
 SportAI API (analysis) · AWS (S3, Batch GPU, SES email — `us-east-1` + `eu-north-1`) · Anthropic
-(AI coach / support bot) · Wix + PayPal (auth + payment) · **HubSpot** (CRM — PII only, no
-minors/biometrics) · **Klaviyo** (lifecycle email — opt-in only) · **Amplitude** (product analytics).
+(AI coach / support bot) · **Clerk** (authentication — LIVE 2026-06-17) · **PayPal** (payment — direct,
+LIVE 2026-06-16) · **HubSpot** (CRM — PII only, no minors/biometrics) · **Klaviyo** (lifecycle email —
+opt-in only) · **Amplitude** (product analytics). *(Wix retired 2026-06-16/17 — no longer a processor;
+rollback path only.)* **⚠️ Cowork: update `privacy/privacy_policy_draft.md` sub-processor list to match
+(Wix→Clerk for auth; payment = PayPal, not "PayPal/Wix").**
 
 ## Consent model already built (core.consent)
 Per-type, versioned, with `subject_person` vs `granted_by_user` so a **parent consents for a minor**:

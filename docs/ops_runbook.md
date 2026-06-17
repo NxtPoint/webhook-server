@@ -211,15 +211,20 @@ Full T5 context: `.claude/handover_t5.md`. Dual-submit pipeline status: `.claude
 
 ## Billing operations (`OPS_KEY` header)
 
-### `POST /api/billing/subscription/event`
-**What**: Wix subscription lifecycle webhook receiver. Idempotent per Wix event by sha256 of canonical fields. On `PLAN_PURCHASED + ACTIVE` immediately calls `grant_entitlement()` so credits land before the monthly cron.
+### `POST /api/billing/paypal/webhook` (LIVE payment path)
+**What**: PayPal lifecycle webhook receiver (`paypal_billing/webhook.py`). Verifies PayPal's signature, **refetches** the resource from PayPal, then maps to the shared `apply_subscription_event(provider='paypal')`. Recurring grants on `PAYMENT.SALE.COMPLETED`, PAYG on capture; idempotent by PayPal resource id. **This is the live payment ingress** since 2026-06-16.
 
-**When**: Called by Wix automatically. You'd manually invoke it only to replay a missed event.
+**When**: Called by PayPal automatically (registered webhook). Auth is the PayPal signature, not `OPS_KEY`.
 
-**Body**: Wix-formatted event JSON. See `subscriptions_api.py:120` for the exact shape.
+### `POST /api/billing/subscription/event` (Wix — rollback fallback)
+**What**: Wix subscription lifecycle webhook receiver. Idempotent per event by sha256 of canonical fields. On `PLAN_PURCHASED + ACTIVE` immediately calls `grant_entitlement()`. Now feeds the SAME `apply_subscription_event(provider='wix')` — retained only as the `PAYPAL_ENABLED=0` rollback.
+
+**When**: Would only fire if payment is rolled back to Wix. Manually invoke to replay a missed event.
+
+**Body**: Wix-formatted event JSON. See `subscriptions_api.py` (`apply_subscription_event`) for the normalized shape.
 
 ### `POST /api/billing/cron/monthly_refill`
-**What**: Refills credits for all ACTIVE recurring subscriptions to their plan allowance. Idempotent per `(account_id, YYYY-MM)`. Skips unless today is the 1st (overridable).
+**What**: Refills credits for ACTIVE recurring **Wix** subscriptions (`billing_provider='wix'`) to their plan allowance. PayPal subs are excluded — they grant per renewal payment via the webhook. Idempotent per `(account_id, YYYY-MM)`. Skips unless today is the 1st (overridable).
 
 **When**: Render cron fires this on the 1st of each month via `cron_monthly_refill.py`. Manual invocation only for testing or backfill.
 

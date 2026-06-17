@@ -237,8 +237,8 @@ The single most important deliverable. The bot is only as good as this file.
 
 ## account.signup
 **Q: How do I sign up?**
-You sign up via the Wix site at ten-fifty5.com. After signup you'll get an email
-with a link to your portal.
+You sign up at ten-fifty5.com — click "Start free" / "Log in" to create your account
+(via Clerk). After signup you'll land in your portal.
 
 ## account.cancel
 **Q: How do I cancel my subscription?**

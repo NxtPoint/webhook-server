@@ -68,11 +68,12 @@ Pools never swap. A user with 10 match credits and 0 technique credits cannot do
 
 ### Where credits come from
 
-`billing.entitlement_grant.source` is constrained to four values (`billing_service.py:228-233`):
+`billing.entitlement_grant.source` is constrained to six values (`billing_service.py` `_ALLOWED_GRANT_SOURCES`):
 
 - `signup_bonus` — one-time on registration, 1 match + 5 techniques, lifetime, never expires (`billing_service.py:235-237, 363-372`)
-- `wix_subscription` — monthly grants from Wix subscription webhooks
-- `wix_payg` — one-off match-pack purchases
+- `paypal_subscription` — monthly grants from the **PayPal** subscription webhook (LIVE since 2026-06-16; `PAYMENT.SALE.COMPLETED` per renewal)
+- `paypal_payg` — one-off match-pack purchases via PayPal Orders
+- `wix_subscription` / `wix_payg` — the legacy Wix equivalents; now only the `PAYPAL_ENABLED=0` rollback (historical grant rows carry these)
 - `manual_adjustment` — admin top-ups / corrections
 
 ### Grant idempotency (the three-way rule)
@@ -218,7 +219,7 @@ The match consumption was a real billing event the customer paid for. Refunding 
 
 1. Break revenue-recognition audit trails
 2. Encourage upload-then-delete-then-upload abuse
-3. Diverge from Wix's source-of-truth subscription state
+3. Diverge from the payment processor's source-of-truth charge/subscription record (PayPal)
 
 This is why `match delete: soft-delete only, never touch billing` is one of the load-bearing rules (memory: `feedback_match_delete_design.md`; CLAUDE.md "Things not to do" #4).
 
@@ -282,18 +283,18 @@ These are load-bearing and not documented elsewhere. If you change any of these 
 
 ## 10. State today: pricing model
 
-You are **already on a credit-based model**. The mental shift to "Claude-style flat fee + credits + top-ups" is largely a Wix product reconfiguration plus a small webhook tweak. Schema doesn't change.
+You are **already on a credit-based model**. The mental shift to "Claude-style flat fee + credits + top-ups" is largely a **PayPal catalog** reconfiguration (`paypal_billing/plans.py` + `catalog.py`) plus a small webhook tweak. Schema doesn't change. *(Note: payment moved off Wix to direct PayPal 2026-06-16 — the "Wix product config" framing below is now "PayPal catalog config".)*
 
 ### What's already true
 
 - `billing.entitlements.matches_remaining = matches_granted - matches_consumed`. Credit arithmetic, not tier counters.
 - `entitlements_api.py` gates on `matches_remaining > 0`, not on plan name.
-- Wix subscription webhook already grants N matches per period via `subscription_event() → grant_entitlement()`.
-- Top-ups are a solved problem: PAYG match packs already work via `wix_payg` source.
+- The subscription webhook (PayPal live; Wix fallback) already grants N matches per period via `apply_subscription_event() → grant_entitlement()`.
+- Top-ups are a solved problem: PAYG match packs already work via the `paypal_payg` (live) / `wix_payg` (legacy) source.
 
 ### What changes for "flat-fee + credits"
 
-- Wix product config: replace tier-based plans (3 / 5 / 10 matches) with one flat monthly plan that grants N credits/month
+- PayPal catalog (`plans.py` → re-run `catalog.py`): replace tier-based plans (3 / 5 / 10 matches) with one flat monthly plan that grants N credits/month
 - `subscription_event()` handler: same logic, different grant size
 - Optional: introduce `credit_cost_per_action` config (e.g., match=1, technique=2, AI coach reanalysis=0.5). This is new — today every action costs exactly 1 from its respective pool.
 
@@ -361,13 +362,13 @@ Cheapest of the three. Schema change is one column.
 
 Already mostly possible. Today's lift:
 
-1. New Wix subscription product: flat monthly fee → grants N credits per period (existing pathway works)
+1. New PayPal Billing Plan (`paypal_billing/plans.py` → re-run `catalog.py`): flat monthly fee → grants N credits per period (existing pathway works)
 2. Decide credit cost per action. Suggested defaults:
    - Match analysis: 1 credit
    - Technique analysis: 2 credits (subsumes the technique pool — one less concept)
    - AI Coach question: 0 credits (free with subscription) or 0.1 credits (rate-limit-as-billing)
 3. If subsuming the technique pool: migration path = grant existing technique-pool holders a one-time match-credit equivalent, deprecate `techniques_*` columns
-4. Top-ups: existing `wix_payg` source covers it; just need new Wix product SKUs
+4. Top-ups: existing `paypal_payg` (live) / `wix_payg` (legacy) source covers it; just need a new PAYG pack in `paypal_billing/plans.py`
 
 **Effort: S–M.** S if technique pool stays separate; M if you collapse it into one credit pool.
 
@@ -396,13 +397,13 @@ Append-only. New rules, reversed rules, reasons.
 | 2026-04-30 | Match delete is soft-delete only; `billing.*` is never touched | Match was a real billing event; refund-on-delete breaks audit + invites abuse |
 | 2026-04-30 | PDF export rejected | Kid data privacy; opt for token-based share instead |
 | 2026-04-30 | Sharing v1 = read-only link (Option 2); perspective-flip (Option 3) deferred | Option 3 is L–XL because of `player_a` hardcoding in 12 views + frontend |
-| 2026-04-30 | Pricing pivot to flat-fee + credits + top-ups | System is already credit-based; pivot is mostly Wix product config |
+| 2026-04-30 | Pricing pivot to flat-fee + credits + top-ups | System is already credit-based; pivot is mostly catalog config (now **PayPal** — `paypal_billing/`, since payment moved off Wix 2026-06-16) |
 
 ---
 
 ## 13. Cross-references
 
-- **Pricing tier numerics** — [`pricing_strategy.md`](pricing_strategy.md) (tier prices, Wix plan IDs, AI Coach access matrix, marketing copy)
+- **Pricing tier numerics** — [`pricing_strategy.md`](pricing_strategy.md) (tier prices, plan IDs — PayPal live in `paypal_billing/` + legacy Wix, AI Coach access matrix, marketing copy)
 - **Architecture & data layers** — [`../CLAUDE.md`](../CLAUDE.md) §Architecture Overview
 - **Dashboards & gold views** — [`dashboards.md`](dashboards.md)
 - **Coach invite implementation** — `coach_invite/` module; CLAUDE.md §Coach Invite Flow

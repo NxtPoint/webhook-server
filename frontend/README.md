@@ -110,7 +110,7 @@ Each file inlines the same shape:
 
 ## iOS / iframe gotchas
 
-All authenticated pages run inside Wix → portal → page (three iframe levels deep). To survive iOS Safari's iframe quirks:
+All authenticated pages run inside portal → page (the portal is now standalone top-level on Render, reached from `/login`; it is no longer nested in a Wix iframe). To survive iOS Safari's iframe quirks:
 
 - Use `height: 100%` on `html, body` — never `100vh` (broken on iOS).
 - Include `<meta name="viewport" content="..., viewport-fit=cover">`.

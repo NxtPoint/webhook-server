@@ -28,10 +28,10 @@ No competitor bundles all three. That is the pricing moat.
 | Tier | Who | Price | Match upload | Technique | AI Coach | Dashboard view |
 |---|---|---|---|---|---|---|
 | **Free Trial** | New signups (player/parent) | £0, one-time | **1 lifetime** | **5 lifetime** | 🔒 Teaser only — aggressive upsell to paid | ✅ forever on trial content |
-| **PAYG** | Casual / dip-in users | Per Wix plan | 1 / 3 / 5 credits | ✅ unlimited | ✅ unlimited | ✅ |
-| **Starter** (monthly) | Light regular users | Per Wix plan | 3 /mo | ✅ unlimited | ✅ unlimited | ✅ |
-| **Standard** (monthly) | Core competitive player | Per Wix plan | 5 /mo | ✅ unlimited | ✅ unlimited | ✅ |
-| **Advanced** (monthly) | Serious competitor / academy | Per Wix plan | 10 /mo | ✅ unlimited | ✅ unlimited | ✅ |
+| **PAYG** | Casual / dip-in users | Per plan | 1 / 3 / 5 credits | ✅ unlimited | ✅ unlimited | ✅ |
+| **Starter** (monthly) | Light regular users | Per plan | 3 /mo | ✅ unlimited | ✅ unlimited | ✅ |
+| **Standard** (monthly) | Core competitive player | Per plan | 5 /mo | ✅ unlimited | ✅ unlimited | ✅ |
+| **Advanced** (monthly) | Serious competitor / academy | Per plan | 10 /mo | ✅ unlimited | ✅ unlimited | ✅ |
 | **Coach** (LAUNCH) | Invited coaches | Free | ❌ cannot upload | ✅ on linked players | ✅ on linked players | ✅ all linked players |
 | **Coach** (PHASE 2) | Coaches with >1 player | Free ≤1 player / paid 2+ | ❌ | ✅ | ✅ | ✅ |
 
@@ -69,7 +69,7 @@ On registration (role = `player_parent`), the account is granted:
 Three placements, in order of expected conversion:
 
 1. **AI Coach teaser in match_analysis.html.** User opens AI Coach tab → sees a locked state with "Ask a question about your match" prompt, a blurred sample response, a gold CTA: "Unlock AI Coach — upgrade to a plan." Links to `/pricing`.
-2. **Credits-exhausted modal on Upload.** User tries to upload a 2nd match with 0 credits remaining → modal listing the Wix plans + PAYG packs.
+2. **Credits-exhausted modal on Upload.** User tries to upload a 2nd match with 0 credits remaining → modal listing the plans + PAYG packs.
 3. **Dedicated Plans tab (`/pricing`).** Reference — rarely the primary conversion driver.
 
 ---
@@ -78,9 +78,13 @@ Three placements, in order of expected conversion:
 
 All player paid tiers bundle the full platform. **Technique Analysis and AI Coach are included at no extra cost** in every paid plan, for every user on that plan, with no separate credit counters.
 
+> **Plan IDs below are the legacy Wix UUIDs — fallback only (`PAYPAL_ENABLED=0`).** Live billing
+> (since 2026-06-16) uses the PayPal Product/Billing-Plan ids in `paypal_billing/catalog.json`,
+> matched by plan `code`; prices live in `paypal_billing/plans.py`. See `paypal_billing/README.md`.
+
 ### PAYG credit packs
 
-| Pack | Wix plan ID | Match credits |
+| Pack | Wix plan ID (legacy) | Match credits |
 |---|---|---|
 | 1-match | `33d94f21-e1b3-467c-b355-8b6aa225b815` | 1 |
 | 3-match | `3f4b2758-d92b-42fc-9df4-b73d42b51fc5` | 3 |
@@ -90,7 +94,7 @@ Credits never expire. Technique + AI Coach included for as long as the account h
 
 ### Monthly subscriptions
 
-| Plan | Wix plan ID | Matches / month | Featured |
+| Plan | Wix plan ID (legacy) | Matches / month | Featured |
 |---|---|---|---|
 | Starter | `9b8b3bd1-430b-45d9-8d1e-bdd75ffed130` | 3 | No |
 | Standard | `64f83c88-6720-4ab2-a1c4-858f49eda7a7` | 5 | Yes ⭐ |
@@ -108,7 +112,7 @@ This is the authoritative definition. If the code does anything different, that 
 
 - `billing.account.active` — account-level kill-switch
 - `billing.member.role` — `player_parent` or `coach`
-- `billing.subscription_state.status` — `ACTIVE`, `CANCELLED`, `EXPIRED` (from Wix webhook)
+- `billing.subscription_state.status` — `ACTIVE`, `CANCELLED`, `EXPIRED` (from the PayPal webhook; Wix webhook = fallback)
 - `billing.entitlement_grant.matches_granted` / `techniques_granted` — credits granted
 - `billing.entitlement_consumption.consumed_matches` / `consumed_techniques` — credits used
 
@@ -191,7 +195,7 @@ Why coaches are free at launch:
 
 - First linked player: **free forever**
 - 2nd+ linked player: coach must subscribe to a paid Coach Pro plan
-- Paid coach plan Wix IDs: `82694b71-888d-471a-9f6c-1e99feb5a253` (1 month), `d0f5eda4-380b-416c-ae08-a3d26c63d840` (ongoing). Upgrade URL constant: `COACH_PRO_UPGRADE_URL` in `billing_service.py`.
+- Paid coach plan Wix IDs: `82694b71-888d-471a-9f6c-1e99feb5a253` (1 month), `d0f5eda4-380b-416c-ae08-a3d26c63d840` (ongoing). Upgrade URL constant: `COACH_PRO_UPGRADE_URL` in `billing_service.py`. **⚠️ NOT migrated to PayPal:** Coach Pro was deliberately left out of the PayPal catalog (`paypal_billing/`) — coaches are free at launch and Coach Pro is "when we build it" (§ below). When Coach Pro is actually sold, add it to `paypal_billing/plans.py` + `catalog.json` and repoint `COACH_PRO_UPGRADE_URL` off this legacy Wix plan.
 - Grandfather rule: existing `ACCEPTED + active` permissions are untouched — the gate only fires at ACCEPT time for new invites. Coaches already at 2+ players keep their stable.
 - Free Coach Access plan (`cd2b6772…`) does NOT count as paid. Free-Coach-Access subscribers still hit the 1-player cap.
 - Metric to watch: % of player signups via coach invite, 402 `COACH_UPGRADE_REQUIRED` rate.
@@ -290,7 +294,7 @@ Add to each paid plan's features list:
 
 ## 9. Marketing copy — primary CTAs
 
-Consistent across Wix public pages and the in-product upsell surfaces.
+Consistent across the public marketing pages (Render) and the in-product upsell surfaces.
 
 | Context | CTA text |
 |---|---|
