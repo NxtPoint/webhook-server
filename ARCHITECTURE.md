@@ -71,9 +71,10 @@ Schema is **idempotent, no migration framework** — `bronze_init()`/`gold_init(
 
 ```
 Browser ──HTTPS──> locker-room (static SPAs)         # serves HTML only
-Browser ──HTTPS──> webhook-server (main API)         # all data via X-Client-Key
-Wix iframe ──postMessage──> portal.html              # auth handoff (email + CLIENT_API_KEY)
-Wix ──webhook──> webhook-server                      # POST /api/billing/subscription/event
+Browser ──HTTPS──> webhook-server (main API)         # per-user Clerk JWT (Bearer); legacy X-Client-Key fallback
+Clerk ──session JWT──> portal.html                   # login; auth_v2 verifies via Clerk JWKS
+PayPal ──webhook──> webhook-server                   # POST /api/billing/paypal/webhook (signature-verified)
+# (Wix retired: postMessage handoff + Pricing Plans checkout + /api/billing/subscription/event kept only as rollback)
 
 webhook-server ──HTTP 202──> ingest-worker  (/ingest, Bearer INGEST_WORKER_OPS_KEY)
 ingest-worker  ──HTTP 202──> video-worker   (/trim,   Bearer VIDEO_WORKER_OPS_KEY)
@@ -101,13 +102,13 @@ Key patterns:
 flowchart TB
     subgraph Browser["User browser"]
         MKT["Marketing site\n(home/pricing/blog)"]
-        PORTAL["Portal SPA\n(portal.html in Wix iframe)"]
+        PORTAL["Portal SPA\n(standalone Render portal)"]
         DASH["Dashboards\n(match_analysis / practice)"]
     end
 
-    subgraph Wix["Wix Studio (external)"]
-        WAUTH["Member auth\n(login, session)"]
-        WPAY["Pricing Plans\n→ PayPal checkout"]
+    subgraph Ident["Identity + Payment (external — Wix retired)"]
+        CLERK["Clerk\n(login, session JWT)"]
+        PP["PayPal\n(Subscriptions + Orders)"]
     end
 
     subgraph Render["Render (4 Flask services + crons)"]
@@ -133,11 +134,11 @@ flowchart TB
     PG[("Postgres\nbronze/silver/gold/\nml_analysis/billing")]
 
     MKT --> LR
-    WAUTH -- "postMessage: email + CLIENT_API_KEY" --> PORTAL
-    WPAY -- "subscription webhook" --> API
-    PORTAL -- "wix-checkout postMessage" --> WPAY
+    CLERK -- "session JWT (Bearer)" --> PORTAL
+    PP -- "signed webhook → /paypal/webhook" --> API
+    PORTAL -- "PayPal SDK + /api/billing/paypal/* (checkout)" --> PP
     PORTAL --> LR
-    PORTAL -- "X-Client-Key API calls" --> API
+    PORTAL -- "Clerk JWT API calls (legacy key fallback)" --> API
     DASH -- "gold.* via /api/client/*" --> API
 
     API <--> PG
@@ -245,13 +246,13 @@ Ranked by how much they'd hurt at scale. Each is observed from code, not specula
 5. **PII + video + biometrics in one Postgres + one S3 bucket** with no visible encryption-at-rest config, RLS, or column-level protection in the repo (may exist at the infra layer — unverified).
 
 ### 6.3 Single points of failure / operational
-6. **Wix is a hard dependency for both auth and payment.** If Wix is down or misconfigured (e.g. Velo handoff breaks), no one can log in or pay. No fallback auth path exists (the 5s URL-param fallback just renders "Configuration Required").
+6. **Auth + payment now depend on Clerk + PayPal (external SaaS); Wix is retired (rollback only).** Login requires Clerk (`auth_v2` verifies its JWT; the legacy `CLIENT_API_KEY` is the only fallback and is still active — Phase 4 deletes it). Payment requires PayPal (`PAYPAL_ENABLED=0` falls back to the retained Wix checkout). A Clerk outage blocks new logins; retiring/rotating the shared key before Phase-4 verification would lock out any client still on it.
 7. **Cron schedules live only in the Render dashboard**, not in `render.yaml` or code. They are undocumented infrastructure — easy to lose on a service rebuild and invisible to code review.
 8. **One shared Postgres for everything** (raw video-frame detections in `ml_analysis.*` + billing + PII). T5 detection tables are high-volume; they share capacity with billing/customer-facing queries. No read replica.
-9. **`BATCH_JOB_QUEUE` / `BATCH_JOB_DEF` and several secrets are `sync=false`** env vars set only in the Render UI — not reproducible from the repo. Disaster recovery requires Wix + Render + AWS console knowledge that isn't captured anywhere.
+9. **`BATCH_JOB_QUEUE` / `BATCH_JOB_DEF` and several secrets are `sync=false`** env vars set only in the Render UI — not reproducible from the repo. Disaster recovery requires Clerk + PayPal + Render + AWS console knowledge that isn't captured anywhere.
 
 ### 6.4 Data integrity / correctness
-10. **Source-of-truth split across Wix and our DB** (auth identity + subscription state in Wix; everything else in our DB) means reconciliation drift is possible — e.g. a Wix subscription change whose webhook fails leaves `billing.subscription_state` stale (idempotent webhook helps, but there's no periodic reconcile *from* Wix).
+10. **Subscription state is webhook-fed with no periodic reconcile.** `billing.subscription_state` is our authoritative copy, written by the PayPal webhook (Wix webhook only as the rollback fallback). A dropped/failed webhook leaves it stale — the signature-verified + idempotent receiver and PayPal's retries help, but there's no periodic reconcile *from* PayPal. (Auth identity now lives in Clerk + `core.user`, not Wix.)
 11. **No automated test suite** (by deliberate policy — only the `bench` ML regression gate). Billing, auth, and ingest logic have no unit/integration coverage; regressions surface in production against the live DB.
 
 ### 6.5 Scaling mechanics
@@ -262,7 +263,7 @@ Ranked by how much they'd hurt at scale. Each is observed from code, not specula
 
 ## 7. What we could NOT determine from code
 
-- Wix-side internals: Velo handoff code, Secrets Manager rotation, Pricing Plan definitions (only UUIDs are in our code), PayPal config, what Wix stores about members long-term.
+- **PayPal config is now ours** (`paypal_billing/` + dashboard secrets), not Wix. Remaining external unknowns: Clerk-side config (session-token template, OAuth app); and — only for the retained rollback path — Wix Velo handoff code, Secrets Manager, and the legacy Pricing Plan UUIDs.
 - Infra-layer config not in the repo: Render cron schedules, IP allowlist entries, S3 bucket policy/encryption, Lambda deployment, ECR registry.
 - Whether any external analytics/warehouse/support tooling is wired up (none found in this repo).
 - The exact `VIDEO_TRIM_CALLBACK_URL` and `WIX_NOTIFY_UPLOAD_COMPLETE_URL` values (secrets); the Wix-notify path appears inactive/legacy.

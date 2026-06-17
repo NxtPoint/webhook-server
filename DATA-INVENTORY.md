@@ -16,10 +16,11 @@
 | **Postgres `ml_analysis.*`** | us | T5 detections, job tracking, training corpus | T5 ML facts, GPU job state |
 | **Postgres `billing.*`** | us | Accounts, members, entitlements, sub state | Customer profiles, credits/usage, coach links |
 | **AWS S3** | us | Uploaded + trimmed video, ML outputs, training labels, profile photos | Video + binary artefacts |
-| **Wix Studio** | Wix (external) | Member auth/identity, password, plan catalogue, payment, full subscription ledger | **Auth identity, payment, current subscription state** |
-| **PayPal** (via Wix) | PayPal/Wix | Card/payment records | Payment instruments + charges (we never see these) |
+| **Clerk** (external) | Clerk | Login identity, password, session JWT, social/OAuth | **Auth identity** (LIVE 2026-06-17; `auth_v2` verifies the JWT, maps to `core.user`) |
+| **PayPal** (direct) | PayPal | Card/payment records, plan catalogue, subscription billing | Payment instruments + charges (we never see these); plan catalogue mirrored in `paypal_billing/catalog.json` |
+| ~~**Wix Studio**~~ (RETIRED 2026-06-17) | — | Was auth + Pricing Plans + subscription webhook | **Inert; rollback only** (`PAYPAL_ENABLED=0` / legacy `CLIENT_API_KEY`). See `WIX-DEPENDENCY.md` |
 
-**The split that matters for migration:** our DB owns *everything about the analysis and the customer profile we collect*; **Wix owns the front door — identity, payment, and the authoritative subscription state** (pushed to us one-way via webhook). See `WIX-DEPENDENCY.md`.
+**The split that matters now:** our DB owns *everything about the analysis, the customer profile, billing state, and (since the Clerk cutover) the identity mapping in `core.user`*. The **external front door is Clerk (identity) + PayPal (payment)**; the **authoritative subscription state is our `billing.subscription_state`**, written one-way by the PayPal webhook. Wix is retired (rollback only). See `WIX-DEPENDENCY.md`.
 
 ---
 
@@ -104,9 +105,9 @@ Recreated on every boot (`DROP+CREATE` in one transaction). Consumed by `client_
 - **`billing.vw_customer_usage`** — computed granted/consumed/remaining per account.
 - **`billing.entitlements`** *(cache)* — upserted summary on each `/api/entitlements/summary` call (can_upload, block_reason, remaining counts). Derived cache, not truth.
 
-### Subscription state (fed by Wix webhook)
-- **`billing.subscription_state`** *(inferred)* — `account_id` (UNIQUE), `plan_id` (Wix UUID), `plan_code`, `plan_type` (`recurring`/`payg`), `matches_granted`, `status` (ACTIVE/CANCELLED/EXPIRED), period dates. **Our authoritative copy of subscription state — but it is a one-way mirror of Wix** (see below).
-- **`billing.subscription_event_log`** *(inferred)* — audit log of Wix webhooks, dedup by `event_id` (sha256).
+### Subscription state (fed by the PayPal webhook; Wix webhook = rollback)
+- **`billing.subscription_state`** *(inferred)* — `account_id` (UNIQUE), `plan_id` (PayPal Billing-Plan id, or legacy Wix UUID), `plan_code`, `plan_type` (`recurring`/`payg`), `matches_granted`, `status` (ACTIVE/CANCELLED/EXPIRED), period dates, **`billing_provider`** (`wix`/`paypal` — the monthly cron refills only `wix`), **`provider_subscription_id`** (PayPal `I-…` for cancel). **Our authoritative copy of subscription state — a one-way mirror written by the PayPal webhook** (see below).
+- **`billing.subscription_event_log`** *(inferred)* — audit log of PayPal + Wix webhooks, dedup by `event_id` (sha256).
 - **`billing.monthly_refill_log`** *(inferred)* — idempotency for the refill cron, UNIQUE `(account_id, year_month)`.
 
 ### Coach access
@@ -132,20 +133,20 @@ Bucket = `S3_BUCKET` env (prod: `nextpoint-prod-uploads`); region `AWS_REGION`. 
 
 ---
 
-## 8. Wix-held data (NOT in our DB)
+## 8. Externally-held data (Clerk / PayPal; Wix retired 2026-06-17)
 
-| Data | In Wix | We hold | Sync direction | Truth |
+| Data | Held by | We hold | Sync direction | Truth |
 |---|---|---|---|---|
-| Login credentials / password | ✅ | ❌ | — | **Wix** |
-| Member auth session | ✅ | ❌ | — | **Wix** |
-| Email | ✅ | `billing.account.email` | Wix → us (handoff) | **Wix** (master), our copy on first contact |
-| First/last name | ✅ | `billing.member.full_name`/`surname` | Wix → us (handoff) | **Wix** initially, editable our side |
-| `wixMemberId` | ✅ | `billing.account.external_wix_id` | Wix → us | **Wix** |
-| Plan catalogue (prices, intervals) | ✅ | only UUIDs hardcoded in `frontend/pricing.html` | manual | **Wix** |
-| Payment / PayPal records | ✅ (PayPal) | ❌ | — | **PayPal/Wix** |
-| Full subscription ledger/history | ✅ | only current state in `billing.subscription_state` | Wix → us (webhook) | **Wix** |
+| Login credentials / password | Clerk | ❌ | — | **Clerk** |
+| Auth session / JWT | Clerk | verified per-request (`auth_v2`) | Clerk → us (Bearer JWT) | **Clerk** |
+| Email | Clerk (login) | `billing.account.email` + `core.user`/`core.account` | Clerk → us (signup + JWT claim) | **Clerk** login master; our copy authoritative for billing |
+| First/last name | entered at signup | `billing.member.full_name`/`surname` | user → us | **us** (editable our side) |
+| `wixMemberId` | — (legacy) | `billing.account.external_wix_id` | — | **inert** (Wix retired) |
+| Plan catalogue (prices, intervals) | PayPal | `paypal_billing/plans.py` + `catalog.json` (live ids) | us → PayPal (catalog script) | **us** — `plans.py` is canonical; legacy Wix UUIDs in `pricing.html` = fallback only |
+| Payment / card records | PayPal | ❌ | — | **PayPal** (we never see card data) |
+| Full subscription ledger/history | PayPal | current state in `billing.subscription_state` | PayPal → us (webhook) | **PayPal** (full history); our DB = authoritative current state |
 
-Our profile-only fields (UTR, dominant hand, country, children, coach permissions, all match/analysis data) have **no Wix copy** — we are already the source of truth for those.
+Our profile-only fields (UTR, dominant hand, country, children, coach permissions, all match/analysis data) have **no external copy** — we are already the source of truth for those.
 
 ---
 
@@ -153,9 +154,9 @@ Our profile-only fields (UTR, dominant hand, country, children, coach permission
 
 | Data category | Source of truth | Table(s) |
 |---|---|---|
-| Auth identity / login | **Wix** | (external) → mirrored as `account.external_wix_id` |
-| Payment | **PayPal via Wix** | (external) |
-| Current subscription state | **Wix** (one-way mirror) | `billing.subscription_state` |
+| Auth identity / login | **Clerk** | (external) → mapped to `core.user.auth_provider_uid` |
+| Payment | **PayPal (direct)** | (external); catalogue in `paypal_billing/` |
+| Current subscription state | **us** (PayPal-webhook-fed) | `billing.subscription_state` |
 | Customer account | us | `billing.account` (email UNIQUE) |
 | Player/child/coach profile | us | `billing.member` |
 | Credits / usage | us | `entitlement_grant` + `entitlement_consumption` (task_id UNIQUE) |
@@ -172,14 +173,14 @@ Our profile-only fields (UTR, dominant hand, country, children, coach permission
 
 - **PII:** `account.email`, `member.{full_name, surname, phone, profile_photo_url}`, `submission_context.{email, customer_name, player_a_name, player_b_name}`.
 - **Minors:** `member.dob`, `skill_level`, `club_school`, `notes` (child profiles) + **video + biometric pose keypoints** (`ml_analysis.player_detections.keypoints`). ⚠️ No consent/age-gate/retention logic in code (confirmed none formal today).
-- **Financial:** `entitlement_grant.matches_granted`, `subscription_state.status`+periods, `video_analysis_jobs.estimated_cost_usd`. Card data never touches our systems (PayPal/Wix).
+- **Financial:** `entitlement_grant.matches_granted`, `subscription_state.status`+periods, `video_analysis_jobs.estimated_cost_usd`. Card data never touches our systems (PayPal).
 
 ---
 
 ## 11. Cannot determine from code
 
-1. What Wix stores internally about members (full profile, auth tokens, event history).
-2. PayPal/Wix payment ledger + reconciliation.
+1. What Clerk stores internally about members (full identity profile, auth tokens, session/event history).
+2. PayPal payment ledger + reconciliation (we hold current subscription state only). Legacy Wix internals matter only for the retained rollback path.
 3. Whether any analytics warehouse / CDP / support tool is wired (none found here).
 4. SES email *template* content (only trigger points are in-repo).
 5. S3 bucket policy, encryption-at-rest, lifecycle rules.
