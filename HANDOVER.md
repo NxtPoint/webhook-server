@@ -85,3 +85,56 @@ Scope (propose the file plan + sequence for approval BEFORE coding):
 Env to expect: PAYPAL_CLIENT_ID, PAYPAL_SECRET, PAYPAL_WEBHOOK_ID, PAYPAL_ENV (sandbox|live).
 Start by confirming the plan; don't write code until I approve.
 ```
+
+## KICKOFF PROMPT — CORE.* BILLING/USAGE STRATEGY (due-diligence session, NEW chat)
+
+> Added 2026-06-16 after the PayPal launch deferred the `core.*` payment mirror. This is a
+> **think-first** session: produce a recommendation, not code. Background: payments (PayPal),
+> auth (Clerk prod), and marketing (Render) are all LIVE — fully off Wix.
+
+```
+Focused DUE-DILIGENCE + RECOMMENDATION session on the core.* data layer — specifically whether
+(and how) to make core.* the canonical home for BILLING + USAGE data, or to keep billing.* as the
+system of record. This is THINK-FIRST: deliver a recommendation doc; do NOT implement until I approve
+a direction.
+
+Context: we're fully live (marketing→Render, auth→Clerk prod, payments→direct PayPal; off Wix).
+billing.* is the live system of record for entitlements/credits and is correct. The newer core.*
+schema (core_db/) is the canonical model (account/user/person, subscription, credit_ledger, matches,
+usage_event, consent). IDENTITY already fills going forward (signup/consent + auth_v2 new signups
+write core.account/user/person), but the BILLING slice (core.subscription, core.credit_ledger) and
+matches/usage are NOT fed from the billing/payment/upload paths — so cockpit MRR/credit views read
+empty tables. The PayPal launch deliberately deferred the payment→core mirror (marketing_crm/STATUS.md
+"Not built yet").
+
+Read-order:
+1. marketing_crm/STATUS.md — current state + the deferred core.* mirror note.
+2. core_db/README.md + DB-SCHEMA-PROPOSAL.md — the canonical model + rationale.
+3. core_db/repositories/ (accounts/subscriptions/matches) + core_db/schema.py (vw_account_credits,
+   vw_subscription_current, vw_mrr).
+4. subscriptions_api.py::apply_subscription_event (grant path) + billing_service.py (grant/consume)
+   + the consumption path (match upload → billing.entitlement_consumption).
+5. marketing_crm/backoffice/ — what the cockpit actually reads from core.*.
+6. ARCHITECTURE.md / DATA-INVENTORY.md — medallion + where data lives.
+
+Answer (the DD):
+- Trace exactly what is fed into core.* today vs not (identity vs billing vs matches vs usage).
+- Who CONSUMES core.* (cockpit, CRM sync, customer-facing)? What under-reports because billing/usage
+  are empty?
+- Intended end-state options, each with effort/risk: (A) billing.* stays SoR + core.* mirror for
+  analytics; (B) core.* becomes the true SoR, billing.* derived/retired; (C) skip the second
+  write-path — feed the cockpit with SQL views over billing.* instead. Recommend one.
+- The ledger trap: core.credit_ledger balance = grants − consumption; both sides must be wired
+  together (grants in payment path, consumption in upload path) or balances are wrong.
+- Identity reconciliation: billing.account vs core.account mapping (ensure_identity) — drift/dupes?
+- Is the value (MRR/credit/churn analytics, referrals, unified identity) worth the dual-write cost
+  now, or is a leaner path better?
+
+Deliverable: docs/_investigation/core_db_billing_strategy.md — what core.* is for, the options, a
+clear recommendation with effort/risk, and (only if "proceed") a phased plan
+(identity → subscriptions → credit ledger both-sides → matches/usage → cockpit cutover). Propose for
+approval BEFORE any code.
+
+Constraints: billing.* stays SoR until an explicit cutover; additive + dark-by-default + env-gated;
+lane guard (CLAUDE_CODE=1 on code commits); commit+push to main; seed→assert→purge for any prod write.
+```
