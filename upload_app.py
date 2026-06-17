@@ -205,36 +205,44 @@ try:
 except Exception:
     app.logger.exception("diag_sql.diag_sql_bp register failed on boot")
 
-# ---------- Internal admin cockpit (marketing_crm) — DARK by default ----------
-# Registers /api/client/backoffice/cockpit/* only when COCKPIT_ENABLED=1. Creating the
-# cockpit views on boot is additive + safe (core.* never touches billing/bronze data).
+# ---------- Internal admin cockpit (marketing_crm) — always on (de-gated 2026-06-17) ----------
+# Registers /api/client/backoffice/cockpit/* (admin-gated per route). Creating the cockpit
+# views on boot is additive + safe (core.* never touches billing/bronze data).
 try:
     from marketing_crm.backoffice import register as register_cockpit
     if register_cockpit(app):
         from marketing_crm.backoffice import init_cockpit_views
         init_cockpit_views()
-        app.logger.info("marketing_crm cockpit registered (COCKPIT_ENABLED=1)")
+        app.logger.info("marketing_crm cockpit registered")
 except Exception:
     app.logger.exception("marketing_crm cockpit register failed on boot")
 
-# ---------- In-app feedback + NPS (marketing_crm) — DARK by default ----------
-# Registers /api/client/feedback/* only when FEEDBACK_ENABLED=1.
+# ---------- In-app feedback + NPS (marketing_crm) — always on (de-gated 2026-06-17) ----------
 try:
     from marketing_crm.feedback import register as register_feedback
     if register_feedback(app):
-        app.logger.info("marketing_crm feedback registered (FEEDBACK_ENABLED=1)")
+        app.logger.info("marketing_crm feedback registered")
 except Exception:
     app.logger.exception("marketing_crm feedback register failed on boot")
 
-# ---------- Consent capture (marketing_crm) — DARK by default ----------
-# Registers /api/client/consent/* only when CONSENT_ENABLED=1. Recording consent also creates the
-# core identity (account/user/person) — the forward write-path into core.*.
+# ---------- Consent capture (marketing_crm) — always on (de-gated 2026-06-17) ----------
+# /api/client/consent/*; recording consent also creates the core identity
+# (account/user/person) — the forward write-path into core.*.
 try:
     from marketing_crm.consent import register as register_consent
     if register_consent(app):
-        app.logger.info("marketing_crm consent registered (CONSENT_ENABLED=1)")
+        app.logger.info("marketing_crm consent registered")
 except Exception:
     app.logger.exception("marketing_crm consent register failed on boot")
+
+# ---------- Canonical core.* HTTP layer (core_api) — always on (de-gated 2026-06-17) ----------
+# /api/core/* over core_db repositories; dual-mode auth (Clerk JWT or CORE_API_KEY/CLIENT_API_KEY).
+try:
+    from core_api import register as register_core_api
+    if register_core_api(app):
+        app.logger.info("core_api registered (/api/core/*)")
+except Exception:
+    app.logger.exception("core_api register failed on boot")
 
 # ---------- Page-view beacon (marketing_crm) — self-gates on TRACKING_ENABLED ----------
 # Public POST /api/track/page for navigation analytics (sendBeacon). Records nothing unless
