@@ -195,7 +195,7 @@ Why coaches are free at launch:
 
 - First linked player: **free forever**
 - 2nd+ linked player: coach must subscribe to a paid Coach Pro plan
-- Paid coach plan Wix IDs: `82694b71-888d-471a-9f6c-1e99feb5a253` (1 month), `d0f5eda4-380b-416c-ae08-a3d26c63d840` (ongoing). Upgrade URL constant: `COACH_PRO_UPGRADE_URL` in `billing_service.py`. **⚠️ NOT migrated to PayPal:** Coach Pro was deliberately left out of the PayPal catalog (`paypal_billing/`) — coaches are free at launch and Coach Pro is "when we build it" (§ below). When Coach Pro is actually sold, add it to `paypal_billing/plans.py` + `catalog.json` and repoint `COACH_PRO_UPGRADE_URL` off this legacy Wix plan.
+- **Coach Pro is sold via direct PayPal** (`plan_code 'coach pro'`, $50/mo recurring, unlimited linked players — `paypal_billing/plans.py` + `catalog.json`, LIVE 2026-06-17). `COACH_PRO_UPGRADE_URL` (`billing_service.py`) points at our `/plans` page — its coach view renders a PayPal subscribe button. No gate change was needed: `coach_has_pro_subscription()` passes any ACTIVE non-free coach sub regardless of provider. The legacy Wix coach IDs (`82694b71…` 1-month, `d0f5eda4…` ongoing) are rollback only (`PAYPAL_ENABLED=0`).
 - Grandfather rule: existing `ACCEPTED + active` permissions are untouched — the gate only fires at ACCEPT time for new invites. Coaches already at 2+ players keep their stable.
 - Free Coach Access plan (`cd2b6772…`) does NOT count as paid. Free-Coach-Access subscribers still hit the 1-player cap.
 - Metric to watch: % of player signups via coach invite, 402 `COACH_UPGRADE_REQUIRED` rate.
