@@ -21,6 +21,13 @@ core_bp = Blueprint("core_api", __name__, url_prefix="/api/core")
 
 
 def _auth_ok():
+    # Dual-mode (de-Wix): a verified Clerk JWT OR the legacy X-Core-Key/X-Client-Key.
+    try:
+        from auth_v2 import resolve_principal
+        if resolve_principal(request) is not None:
+            return True
+    except Exception:
+        pass
     expected = os.getenv("CORE_API_KEY") or os.getenv("CLIENT_API_KEY")
     if not expected:
         return False

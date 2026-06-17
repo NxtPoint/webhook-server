@@ -334,15 +334,8 @@ const STATE = {
   alreadyRegistered: false,
 };
 
-// Listen for postMessage from Wix (if Wix sends email that way instead of URL)
-window.addEventListener('message', function(event) {
-  if (!event.data || typeof event.data !== 'object') return;
-  const d = event.data;
-  if (d.type !== 'wix-handoff' && !d.email) return;
-  STATE.email = (d.email || STATE.email || '').trim().toLowerCase();
-  STATE.wixMemberId = (d.wixMemberId || d.wix_member_id || STATE.wixMemberId || '').trim();
-  if (STATE.step === 'welcome' && !STATE.email) render();
-});
+// (Wix postMessage email handoff retired 2026-06-17 — Clerk is the only login door;
+//  init() resolves STATE.email from the Clerk session via TFAuth.)
 
 function esc(s) {
   if (s == null) return '';

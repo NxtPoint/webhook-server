@@ -634,33 +634,17 @@ window.addEventListener('message', function(event) {
     return;
   }
 
-  // Wix postMessage handoff — Wix reads CLIENT_API_KEY from its Secrets
-  // Manager and posts it to us. Apply to our own AUTH state, then forward
-  // to the currently-loaded child iframe so it can pick up the same key.
-  if (d.type === 'wix-handoff' || d.email) {
-    applyAuth(d);
-    const frame = document.getElementById('contentFrame');
-    if (frame && frame.contentWindow) {
-      frame.contentWindow.postMessage(event.data, '*');
-    }
-  }
+  // (Wix postMessage auth handoff retired 2026-06-17 — Clerk is the only login door.)
 });
 
-// Signal to the Wix parent that we're mounted and ready to receive
-// the wix-handoff message. Wix re-posts the handoff on this signal,
-// which removes the race where Wix posts before our listener attaches.
-try { window.parent.postMessage({ type: 'portal-ready' }, '*'); } catch (e) {}
-
-// If URL params already supplied email + key, boot straight away.
-// Otherwise wait for the Wix postMessage handoff (handled in applyAuth).
-// Safety net: if no handoff arrives within 5s, init anyway so the profile
-// screen / error state can render instead of an endless spinner.
+// Auth resolution (Wix handoff retired 2026-06-17 — Clerk is the only door):
+//   1. Legacy ?email=&key= URL params (shared-key path, slated for removal) -> init.
+//   2. Otherwise resolve a Clerk session via TFAuth -> clerk mode.
+//   3. Neither -> the config-required state inside init().
 if (AUTH.email && AUTH.apiKey) {
   _initStarted = true;
   init();
-} else if (window.self === window.top) {
-  // Top-level (reached standalone from /login, NOT embedded in the Wix iframe) —
-  // try a Clerk session. Falls through to the config-required state if none.
+} else {
   (async () => {
     try {
       await TFAuth.ready();
@@ -670,14 +654,6 @@ if (AUTH.email && AUTH.apiKey) {
     } catch (e) {}
     if (!_initStarted) { _initStarted = true; init(); }
   })();
-} else {
-  // Embedded (Wix) — wait for the postMessage handoff; safety-net init after 5s.
-  setTimeout(() => {
-    if (!_initStarted) {
-      _initStarted = true;
-      init();
-    }
-  }, 5000);
 }
 
 </script>

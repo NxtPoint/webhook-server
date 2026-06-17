@@ -46,6 +46,13 @@ MAX_MESSAGE_LEN = 1000
 # ---------- auth ----------
 
 def _check_client_key() -> bool:
+    # Dual-mode (de-Wix): a verified Clerk JWT OR the legacy shared key. resolve_principal
+    # handles both; falls back to the bare key check if auth_v2 is unavailable.
+    try:
+        from auth_v2 import resolve_principal
+        return resolve_principal(request) is not None
+    except Exception:
+        pass
     hk = (request.headers.get("X-Client-Key") or "").strip()
     return bool(CLIENT_API_KEY) and hmac.compare_digest(hk, CLIENT_API_KEY)
 

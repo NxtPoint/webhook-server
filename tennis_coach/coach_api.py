@@ -73,6 +73,13 @@ _ADMIN_EMAILS = {"info@ten-fifty5.com", "tomo.stojakovic@gmail.com"}
 # ---------------------------------------------------------------------------
 
 def _guard() -> bool:
+    # Dual-mode (de-Wix): a verified Clerk JWT OR the legacy shared key.
+    try:
+        from auth_v2 import resolve_principal
+        if resolve_principal(request) is not None:
+            return True
+    except Exception:
+        pass
     hk = request.headers.get("X-Client-Key") or ""
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
