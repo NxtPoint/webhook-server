@@ -91,6 +91,22 @@ string**, **retention day-counts**, and **age threshold** come back into `core.c
     CONSUMPTION side** (match-upload path → `consume_match`) or the ledger balance will be inflated —
     that's why it's a scoped session, not a payment-only bolt-on. No payment impact; `billing.*` stays
     the system of record. Repos already exist in `core_db/repositories/subscriptions.py`.
+- **Wix PAYMENT deprecation (migration — NOT done in the PayPal launch, by agreement).** PayPal is live;
+  the Wix payment path is retained ONLY as the `PAYPAL_ENABLED=0` rollback. Retiring it is a **migration,
+  not a delete**, and overlaps the auth lane's `external_wix_id` work — keep it in that lane.
+  **SOAK GATE: do not start until PayPal has processed real customer traffic cleanly (~first paying
+  customers / ~2 weeks).** Scope:
+  - **Load-bearing — must migrate, not delete:** `billing.entitlement_grant.external_wix_id` is **reused
+    by live PayPal** (`purchase:{order_id}:{account_id}`) — rename `external_wix_id → external_id` across
+    the unique index `(account_id, source, plan_code, external_wix_id)`, `billing_service.grant_entitlement`,
+    `subscriptions_api.apply_subscription_event`, `monthly_refill`, `models_billing.py`. The `wix_subscription`/
+    `wix_payg` grant sources + CHECK constraint stay (historical rows carry them). The Wix webhook endpoint
+    `/api/billing/subscription/event` + `provider='wix'` path and the `pricing.html` Wix `postMessage`
+    fallback stay until the soak gate clears, then retire.
+  - **Dead now — safe to remove in the same migration:** `WIX_NOTIFY_UPLOAD_COMPLETE_URL` +
+    `RENDER_TO_WIX_OPS_KEY` (render.yaml both services + the notify code in `coach_invite/video_complete_email.py`/
+    ingest — already inactive); verify `account.external_wix_id` (stored wixMemberId) is truly unused before dropping.
+  - Kickoff prompt: `HANDOVER.md` → "WIX PAYMENT DEPRECATION".
 - Referral system.
 - **De-Wix auth — LIVE 2026-06-16 (Phases 0-3 done; Phase 4 hardening pending).**
   Clerk auth is the front door: marketing CTAs → `/login`, all 10 portal SPAs run

@@ -138,3 +138,42 @@ approval BEFORE any code.
 Constraints: billing.* stays SoR until an explicit cutover; additive + dark-by-default + env-gated;
 lane guard (CLAUDE_CODE=1 on code commits); commit+push to main; seed→assert→purge for any prod write.
 ```
+
+## KICKOFF PROMPT — WIX PAYMENT DEPRECATION (migration, NEW chat)
+
+> Added 2026-06-17. Direct PayPal is LIVE; the Wix payment path remains ONLY as the
+> `PAYPAL_ENABLED=0` rollback. **SOAK GATE: do not start until PayPal has processed real
+> customer traffic cleanly (first paying customers / ~2 weeks).** This OVERLAPS the auth lane's
+> `external_wix_id` work — coordinate; it's a migration, not a delete. Full scope in
+> `marketing_crm/STATUS.md` "Not built yet" → Wix PAYMENT deprecation.
+
+```
+We're deprecating the Wix PAYMENT path now that direct PayPal is live and soaked. This is a
+MIGRATION, not a delete — propose the plan + migration steps for approval BEFORE writing code.
+
+Read first: marketing_crm/STATUS.md ("Not built yet" → Wix PAYMENT deprecation), WIX-DEPENDENCY.md,
+paypal_billing/README.md, billing_service.py, subscriptions_api.py, frontend/pricing.html, render.yaml.
+
+Hard constraint — `external_wix_id` is NOT dead: live PayPal grants reuse
+billing.entitlement_grant.external_wix_id as their idempotency key (`purchase:{order_id}:{account_id}`).
+So it CANNOT be dropped — it must be RENAMED `external_wix_id -> external_id`, migrating in lockstep:
+the unique index (account_id, source, plan_code, external_wix_id), billing_service.grant_entitlement,
+subscriptions_api.apply_subscription_event, monthly_refill, models_billing.py. Keep `wix_subscription`/
+`wix_payg` grant sources + CHECK (historical rows carry them). This overlaps the auth lane's
+external_wix_id work — confirm ownership/coordination before touching shared schema.
+
+Two buckets:
+1. Load-bearing — migrate, don't delete: the external_wix_id rename above; the Wix webhook endpoint
+   `/api/billing/subscription/event` + the `provider='wix'` path in apply_subscription_event; the
+   pricing.html Wix `postMessage`/`wixPlanId` fallback. These stay until the soak gate clears, then retire.
+2. Dead now — safe to remove: WIX_NOTIFY_UPLOAD_COMPLETE_URL + RENDER_TO_WIX_OPS_KEY (render.yaml both
+   services + notify code in coach_invite/video_complete_email.py + ingest paths — already inactive);
+   account.external_wix_id (stored wixMemberId) IF verified unused.
+
+Deliverable: a migration plan (idempotent schema rename + code cutover + the dead-code removals + a
+verification step that live PayPal idempotency still holds), proposed for approval first. Confirm PayPal
+has soaked (real purchases processed cleanly) before executing. No automated tests — validate against the
+live DB with seed->assert->purge; keep PAYPAL_ENABLED=0 rollback intact until the very last step.
+Constraints: lane guard (CLAUDE_CODE=1), commit+push to main, coordinate the shared external_wix_id with
+the auth lane.
+```
