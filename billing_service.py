@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
@@ -536,9 +537,14 @@ FREE_COACH_WIX_IDS = frozenset({
     "cd2b6772-1880-42ec-9049-4d9e4decc42b",
 })
 
-# Upgrade target — Wix Coach Pro plan (ongoing / monthly).
-COACH_PRO_WIX_ID = "d0f5eda4-380b-416c-ae08-a3d26c63d840"
-COACH_PRO_UPGRADE_URL = f"https://www.ten-fifty5.com/plans?planSlug={COACH_PRO_WIX_ID}"
+# Coach Pro is now sold via DIRECT PAYPAL (plan_code 'coach pro' in paypal_billing/).
+# The upgrade CTA points at our Plans page — its coach view renders a PayPal subscribe
+# button — NOT the legacy Wix coach plan. Override via COACH_PRO_UPGRADE_URL / PLANS_PAGE_URL.
+COACH_PRO_WIX_ID = "d0f5eda4-380b-416c-ae08-a3d26c63d840"  # legacy Wix coach plan (rollback only)
+COACH_PRO_UPGRADE_URL = os.getenv(
+    "COACH_PRO_UPGRADE_URL",
+    os.getenv("PLANS_PAGE_URL", "https://www.ten-fifty5.com/plans"),
+).strip()
 
 FREE_COACH_LINK_LIMIT = 1  # first linked player free
 

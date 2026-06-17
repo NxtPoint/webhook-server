@@ -446,6 +446,21 @@ const COACH_PLANS = [
   // 'd0f5eda4-380b-416c-ae08-a3d26c63d840' — ongoing (coach)
 ];
 
+// Coach Pro — $50/mo recurring (direct PayPal). Lifts the 1-linked-player cap.
+// wixPlanId is the legacy fallback only (PAYPAL_ENABLED=0).
+const COACH_PRO_PLAN = {
+  code: 'coach pro',
+  wixPlanId: 'd0f5eda4-380b-416c-ae08-a3d26c63d840',
+  name: 'Coach Pro',
+  price: 50,
+  period: '/mo',
+  type: 'recurring',
+  matches: 0,
+  featured: false,
+  desc: 'Unlimited linked players. Cancel anytime.',
+  features: ['Unlimited linked players', "View all your players' matches", 'Full point-by-point data access', 'Performance analytics dashboard'],
+};
+
 // Free membership plan (auto-assigned, not shown on pricing page):
 // 'b2fa29b9-f406-4a50-8469-be8476f05ff5' — free membership, 5 matches
 
@@ -487,6 +502,7 @@ function applyPayPalPrices() {
   const pg = Object.fromEntries((PAYPAL.payg || []).map(p => [p.code, p.amount]));
   PLAYER_PLANS.forEach(p => { if (rec[p.code] != null) p.price = rec[p.code]; });
   TOPUP_PACKS.forEach(p => { if (pg[p.code] != null) p.price = pg[p.code]; });
+  if (rec[COACH_PRO_PLAN.code] != null) COACH_PRO_PLAN.price = rec[COACH_PRO_PLAN.code];
 }
 
 // Two SDK instances (different namespaces) so one page can do both intents:
@@ -794,12 +810,31 @@ function renderTopUpView(currentPlanCode, periodEnd) {
 
 function renderCoachView() {
   let html = '';
+  const planCode = entitlements?.plan_code || null;
+  const subStatus = (entitlements?.subscription_status || '').toUpperCase();
+  const isPro = planCode === 'coach pro' && subStatus === 'ACTIVE';
 
   html += `<div class="section-heading">Coach Access</div>`;
-  html += `<div class="section-sub">Coaches are added by player or parent accounts. There is no cost for coach access.</div>`;
+
+  if (isPro) {
+    html += `<div class="section-sub">You're on <strong>Coach Pro</strong> — unlimited linked players.</div>`;
+    html += `<div class="status-bar">
+      <div class="status-bar-left">
+        <div class="status-bar-label">Current Plan</div>
+        <div class="status-bar-plan" style="color:var(--green)">Coach Pro &mdash; $${COACH_PRO_PLAN.price}/mo</div>
+        <button class="cancel-sub-btn" onclick="cancelSubscription()">Cancel subscription</button>
+      </div>
+    </div>`;
+  } else {
+    html += `<div class="section-sub">Your first linked player is free. <strong>Coach Pro</strong> unlocks unlimited linked players for $${COACH_PRO_PLAN.price}/mo — cancel anytime.</div>`;
+  }
+
   html += `<div class="plan-grid">`;
   for (const plan of COACH_PLANS) {
     html += renderPlanCard(plan, true);
+  }
+  if (!isPro) {
+    html += renderPlanCard(COACH_PRO_PLAN, false);
   }
   html += `</div>`;
 

@@ -36,6 +36,8 @@ PRICES = {
     "player starter":   25.00,   # 3 matches / mo   (Wix "Player – Starter")
     "player standard":  40.00,   # 5 matches / mo   (Wix "Player – Standard")
     "player advances":  70.00,   # 10 matches / mo  (Wix "Player – Advanced")
+    # Coach Pro (recurring) — unlimited linked players, no match credits
+    "coach pro":        50.00,   # $50/mo (replaces the legacy Wix coach plan)
     # PAYG one-off packs
     "once off":         25.00,   # 1 match   (Wix "Once off")
     "payg 3 matches":   50.00,   # 3 matches (Wix "Pay as you go - 3 matches")
@@ -48,6 +50,9 @@ PLANS = [
     {"code": "player starter",  "name": "Starter",  "plan_type": "recurring", "matches": 3,  "interval": "MONTH"},
     {"code": "player standard", "name": "Standard", "plan_type": "recurring", "matches": 5,  "interval": "MONTH"},
     {"code": "player advances", "name": "Advanced", "plan_type": "recurring", "matches": 10, "interval": "MONTH"},
+    # Coach Pro — recurring; coaches with 2+ linked players. No match credits (matches=0);
+    # an ACTIVE non-free coach subscription lifts the 1-player cap (billing_service.coach_has_pro_subscription).
+    {"code": "coach pro",       "name": "Coach Pro", "plan_type": "recurring", "matches": 0,  "interval": "MONTH"},
     # Pay-as-you-go credit packs (one-off Orders, not Billing Plans)
     {"code": "once off",        "name": "1 Match Credit",  "plan_type": "payg", "matches": 1, "interval": None},
     {"code": "payg 3 matches",  "name": "3 Match Credits", "plan_type": "payg", "matches": 3, "interval": None},
