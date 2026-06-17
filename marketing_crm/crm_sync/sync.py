@@ -18,16 +18,18 @@ from marketing_crm.crm_sync import hubspot, klaviyo
 log = logging.getLogger("marketing_crm.crm_sync")
 
 # Account-level traits only — vw_customer_list is owner/account-scoped, no child PII.
+# Option C (2026-06-17): vw_customer_list is now BILLING-account-driven, so cl.account_id is a
+# billing id — bridge to core.* by EMAIL (not id) for the opt-in / acquisition extras core feeds.
 _TRAITS_SQL = text("""
     SELECT cl.email, cl.display_name, cl.role, cl.stage, cl.plan_code, cl.plan_type,
            cl.mrr_cents, cl.matches_uploaded, cl.matches_remaining, cl.last_activity,
            cl.nps_latest, cl.public_id,
            u.marketing_opt_in, acq.source, acq.medium, acq.campaign
     FROM core.vw_customer_list cl
-    JOIN core.account a ON a.id = cl.account_id
+    LEFT JOIN core.account a   ON lower(a.email) = lower(cl.email) AND a.deleted_at IS NULL
     LEFT JOIN core.app_user u  ON u.account_id = a.id AND u.is_account_owner
     LEFT JOIN core.acquisition acq ON acq.user_id = u.id
-    WHERE lower(a.email) = :e
+    WHERE lower(cl.email) = :e
     LIMIT 1
 """)
 

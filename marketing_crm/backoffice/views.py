@@ -1,98 +1,183 @@
-# marketing_crm/backoffice/views.py — cockpit analytic views over core.* (+ bronze for ops).
+# marketing_crm/backoffice/views.py — cockpit analytic views.
 #
-# Lifecycle stages + business-health definitions follow marketing_crm/contracts/lifecycle_stages.md
-# exactly — one definition, no drift. Idempotent (CREATE OR REPLACE). Aggregation in SQL (rule #2).
+# OPTION C (2026-06-17): the cockpit reads the LIVE system-of-record directly —
+#   • billing.* (subscription_state, vw_customer_usage, entitlement_grant, coaches_permission)
+#   • bronze.submission_context (match / processing state)
+# and LEFT JOINs core.* ONLY for the extras core actually feeds today (usage_event for
+# activity/report-views, nps_response). No payment→core mirror; billing.* stays SoR, so the
+# cockpit can never drift from it. See docs/_investigation/core_db_billing_strategy.md.
 #
-# Dependency: core.vw_account_credits / vw_subscription_current / vw_mrr (from core_db.schema).
-# init_cockpit_views() calls core_init() first so those exist.
+# Population spine = billing.account (every paying/uploading customer), bridged to core.account
+# by lower(email) for the live usage/NPS extras (sparse until core fills — degrades to 0/NULL).
+#
+# Plan economics (MRR / PAYG revenue) need a price per plan_code, which the SoR has no column
+# for. core.vw_plan_pricing supplies it, built from the canonical paypal_billing.plans table
+# (PRICES/PLANS) + an explicit legacy-Wix code map below — ONE place to edit plan economics.
+#
+# Aggregation in SQL (rule #2). Idempotent (CREATE OR REPLACE). View names + output columns are
+# unchanged so blueprint.py and frontend/cockpit.html need no edits.
 
 from sqlalchemy import text
 
 from core_db.schema import core_init
+from paypal_billing.plans import PLANS, PRICES
+
+# ── Legacy Wix plan_codes seen in the live DB but absent from the current catalogue ──────────
+# (plan_class, price_major_or_None). Mapped to the closest current tier so legacy active subs
+# still contribute MRR. price=None → counted as $0 MRR but still visible (it only appears in
+# entitlement_grant history, never as an active subscription, so it can't affect live MRR).
+# CONFIRM these legacy mappings with the business; this dict is the single source for them.
+_LEGACY_PLAN_PRICING = {
+    "MONTHLY_10":     ("recurring", 70.00),  # 10 matches/mo ≈ Advanced ($70)
+    "coach_sub_ong":  ("recurring", 50.00),  # coach ongoing  ≈ Coach Pro ($50)
+    "player_sub_5":   ("recurring", 40.00),  # 5 matches/mo   ≈ Standard ($40)
+    "player_sub_100": ("recurring", None),   # legacy bulk pack — price unknown (grants only)
+    "free membership": ("free", 0.00),
+    "signup_trial":   ("free", 0.00),
+}
+
+
+def _plan_pricing_rows():
+    """plan_code → (plan_class, mrr_cents, payg_cents). Recurring carries mrr_cents; payg carries
+    payg_cents (per-pack price); free carries neither. Single source = plans.py + legacy map."""
+    rows = {}
+    for p in PLANS:
+        code = p["code"]
+        price = PRICES.get(code)
+        cents = int(round(price * 100)) if price else 0
+        if p["plan_type"] == "recurring":
+            rows[code] = ("recurring", cents, 0)
+        elif p["plan_type"] == "payg":
+            rows[code] = ("payg", 0, cents)
+        else:
+            rows[code] = ("free", 0, 0)
+    for code, (cls, price) in _LEGACY_PLAN_PRICING.items():
+        cents = int(round(price * 100)) if price else 0
+        rows.setdefault(code, (cls, cents if cls == "recurring" else 0,
+                               cents if cls == "payg" else 0))
+    return rows
+
+
+def _pricing_view_sql():
+    rows = _plan_pricing_rows()
+    values = ",\n        ".join(
+        "('{}', '{}', {}, {})".format(code.replace("'", "''"), cls, mrr, payg)
+        for code, (cls, mrr, payg) in sorted(rows.items())
+    )
+    return f"""
+    CREATE OR REPLACE VIEW core.vw_plan_pricing AS
+    SELECT * FROM (VALUES
+        {values}
+    ) AS p(plan_code, plan_class, mrr_cents, payg_cents)
+    """
+
 
 _VIEWS = [
-    # ── Base: per-account facts + derived lifecycle stage ────────────────────
+    # ── Base: per-account facts + derived lifecycle stage (billing-account-driven) ──────────
     """
     CREATE OR REPLACE VIEW core.vw_account_lifecycle AS
     SELECT
-        a.id AS account_id, a.public_id, a.email, a.display_name, a.created_at,
-        pp.role,
-        COALESCE(mc.matches_uploaded, 0)  AS matches_uploaded,
-        COALESCE(mc.matches_completed, 0) AS matches_completed,
-        COALESCE(rv.reports_viewed, 0)    AS reports_viewed,
-        act.last_activity,
-        COALESCE(cr.matches_remaining, 0) AS matches_remaining,
-        sc.plan_code, sc.plan_type, sc.status AS sub_status,
-        COALESCE(sc.mrr_cents, 0)         AS mrr_cents,
-        np.nps_latest,
-        ((COALESCE(mc.matches_completed,0) >= 1) AND (COALESCE(rv.reports_viewed,0) >= 1)) AS activated,
+        b.account_id, b.public_id, b.email, b.display_name, b.created_at, b.role,
+        b.matches_uploaded, b.matches_completed, b.reports_viewed, b.last_activity,
+        b.matches_remaining, b.plan_code, b.plan_type, b.sub_status,
+        CASE WHEN UPPER(COALESCE(b.sub_status,'')) = 'ACTIVE' AND b.plan_class = 'recurring'
+             THEN b.plan_mrr_cents ELSE 0 END                          AS mrr_cents,
+        b.nps_latest,
+        (b.matches_completed >= 1)                                     AS activated,
         CASE
-            WHEN sc.status = 'active' AND sc.plan_type = 'recurring' THEN
-                CASE WHEN act.last_activity IS NULL OR act.last_activity < now() - interval '30 days'
+            WHEN UPPER(COALESCE(b.sub_status,'')) = 'ACTIVE' AND b.plan_class = 'recurring' THEN
+                CASE WHEN b.last_activity IS NULL OR b.last_activity < now() - interval '30 days'
                      THEN 'at_risk' ELSE 'paid' END
-            WHEN COALESCE(cr.matches_remaining, 0) > 0 THEN 'payg'
-            WHEN sc.status IN ('cancelled', 'expired')  THEN 'churned'
-            WHEN COALESCE(mc.matches_uploaded, 0) >= 1  THEN 'trial'
+            WHEN COALESCE(b.matches_remaining, 0) > 0                   THEN 'payg'
+            WHEN UPPER(COALESCE(b.sub_status,'')) IN ('CANCELLED','EXPIRED')
+                 OR b.cancelled_at IS NOT NULL                         THEN 'churned'
+            WHEN COALESCE(b.matches_uploaded, 0) >= 1                   THEN 'trial'
             ELSE 'signup'
         END AS stage
-    FROM core.account a
-    LEFT JOIN LATERAL (
-        SELECT role FROM core.person pr
-        WHERE pr.account_id = a.id AND pr.deleted_at IS NULL
-        ORDER BY pr.is_primary DESC, pr.id LIMIT 1
-    ) pp ON true
-    LEFT JOIN core.vw_account_credits cr     ON cr.account_id = a.id
-    LEFT JOIN core.vw_subscription_current sc ON sc.account_id = a.id
-    LEFT JOIN LATERAL (
-        SELECT count(*) FILTER (WHERE m.deleted_at IS NULL) AS matches_uploaded,
-               count(*) FILTER (WHERE m.status = 'complete' AND m.deleted_at IS NULL) AS matches_completed
-        FROM core.match m WHERE m.account_id = a.id
-    ) mc ON true
-    LEFT JOIN LATERAL (
-        SELECT count(*) AS reports_viewed FROM core.usage_event ue
-        WHERE ue.account_id = a.id AND ue.event_type IN ('report_view','report_viewed','dashboard_view')
-    ) rv ON true
-    LEFT JOIN LATERAL (
-        SELECT max(occurred_at) AS last_activity FROM core.usage_event ue WHERE ue.account_id = a.id
-    ) act ON true
-    LEFT JOIN LATERAL (
-        SELECT score AS nps_latest FROM core.nps_response n
-        WHERE n.account_id = a.id ORDER BY submitted_at DESC LIMIT 1
-    ) np ON true
-    WHERE a.deleted_at IS NULL
+    FROM (
+        SELECT
+            ba.id AS account_id, ca.public_id, ba.email,
+            ba.primary_full_name AS display_name, ba.created_at,
+            COALESCE(pm.role, 'player_parent') AS role,
+            COALESCE(mc.matches_uploaded, 0)  AS matches_uploaded,
+            COALESCE(mc.matches_completed, 0) AS matches_completed,
+            COALESCE(ue.reports_viewed, 0)    AS reports_viewed,
+            GREATEST(mc.match_last_activity, ue.usage_last) AS last_activity,
+            COALESCE(cu.matches_remaining, 0) AS matches_remaining,
+            ss.plan_code, ss.plan_type, ss.status AS sub_status, ss.cancelled_at,
+            pp.plan_class,
+            COALESCE(pp.mrr_cents, 0)         AS plan_mrr_cents,
+            np.nps_latest
+        FROM billing.account ba
+        LEFT JOIN core.account ca
+               ON lower(ca.email) = lower(ba.email) AND ca.deleted_at IS NULL
+        LEFT JOIN billing.subscription_state ss ON ss.account_id = ba.id
+        LEFT JOIN core.vw_plan_pricing pp       ON pp.plan_code = ss.plan_code
+        LEFT JOIN billing.vw_customer_usage cu  ON cu.account_id = ba.id
+        LEFT JOIN LATERAL (
+            SELECT role FROM billing.member m
+            WHERE m.account_id = ba.id AND m.active
+            ORDER BY m.is_primary DESC, m.id LIMIT 1
+        ) pm ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) FILTER (WHERE sc.deleted_at IS NULL) AS matches_uploaded,
+                   count(*) FILTER (WHERE sc.ingest_finished_at IS NOT NULL
+                                      AND sc.deleted_at IS NULL)  AS matches_completed,
+                   max(COALESCE(sc.ingest_finished_at, sc.ingest_started_at)) AS match_last_activity
+            FROM bronze.submission_context sc
+            WHERE lower(sc.email) = lower(ba.email)
+        ) mc ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) FILTER (WHERE ue.event_type IN
+                       ('report_view','report_viewed','dashboard_view')) AS reports_viewed,
+                   max(ue.occurred_at) AS usage_last
+            FROM core.usage_event ue WHERE ue.account_id = ca.id
+        ) ue ON true
+        LEFT JOIN LATERAL (
+            SELECT score AS nps_latest FROM core.nps_response n
+            WHERE n.account_id = ca.id ORDER BY submitted_at DESC LIMIT 1
+        ) np ON true
+        WHERE ba.active
+    ) b
     """,
 
     # ── Tab 1: business health (single row of scalars) ───────────────────────
     """
     CREATE OR REPLACE VIEW core.vw_business_health AS
     SELECT
-        (SELECT count(*) FROM core.account WHERE deleted_at IS NULL)                           AS total_accounts,
-        (SELECT mrr_cents_total FROM core.vw_mrr)                                              AS mrr_cents,
-        (SELECT active_subscriptions FROM core.vw_mrr)                                         AS active_subscriptions,
-        (SELECT count(*) FROM core.account
-           WHERE deleted_at IS NULL AND created_at >= date_trunc('month', now()))             AS new_accounts_this_month,
-        (SELECT count(*) FROM core.subscription
-           WHERE cancelled_at >= date_trunc('month', now()))                                  AS churned_this_month,
-        (SELECT count(*) FROM core.vw_account_lifecycle WHERE activated)                       AS activated_accounts,
-        (SELECT count(*) FROM core.vw_account_lifecycle WHERE stage IN ('paid','at_risk'))     AS paid_accounts,
+        (SELECT count(*) FROM billing.account WHERE active)                                   AS total_accounts,
+        (SELECT COALESCE(SUM(mrr_cents), 0) FROM core.vw_account_lifecycle)                   AS mrr_cents,
+        (SELECT count(*) FROM core.vw_account_lifecycle WHERE mrr_cents > 0)                  AS active_subscriptions,
+        (SELECT count(*) FROM billing.account
+           WHERE active AND created_at >= date_trunc('month', now()))                        AS new_accounts_this_month,
+        (SELECT count(*) FROM billing.subscription_state
+           WHERE COALESCE(cancelled_at, payment_cancelled_at) >= date_trunc('month', now())) AS churned_this_month,
+        (SELECT count(*) FROM core.vw_account_lifecycle WHERE activated)                      AS activated_accounts,
+        (SELECT count(*) FROM core.vw_account_lifecycle WHERE stage IN ('paid','at_risk'))    AS paid_accounts,
         ROUND( (SELECT count(*) FROM core.vw_account_lifecycle WHERE activated)::numeric
-               / NULLIF((SELECT count(*) FROM core.account WHERE deleted_at IS NULL), 0), 4)   AS activation_rate,
-        ROUND( (SELECT count(DISTINCT account_id) FROM core.subscription)::numeric
-               / NULLIF((SELECT count(DISTINCT account_id) FROM core.match WHERE deleted_at IS NULL), 0), 4)
-                                                                                              AS free_to_paid_rate,
-        (SELECT COALESCE(SUM(p.price_cents), 0)
-           FROM core.credit_ledger cl JOIN core.plan p ON p.code = cl.plan_code
-          WHERE cl.source = 'payg_purchase' AND cl.entry_type = 'grant')                       AS payg_revenue_cents
+               / NULLIF((SELECT count(*) FROM billing.account WHERE active), 0), 4)           AS activation_rate,
+        ROUND( (SELECT count(*) FROM core.vw_account_lifecycle WHERE mrr_cents > 0)::numeric
+               / NULLIF((SELECT count(*) FROM core.vw_account_lifecycle
+                          WHERE matches_uploaded >= 1), 0), 4)                                AS free_to_paid_rate,
+        (SELECT COALESCE(SUM(pp.payg_cents), 0)
+           FROM billing.entitlement_grant eg
+           JOIN core.vw_plan_pricing pp ON pp.plan_code = eg.plan_code
+          WHERE eg.source ILIKE '%payg%')                                                    AS payg_revenue_cents,
+        (SELECT count(*) FROM billing.subscription_state ss
+           LEFT JOIN core.vw_plan_pricing pp ON pp.plan_code = ss.plan_code
+          WHERE UPPER(COALESCE(ss.status,'')) = 'ACTIVE' AND pp.plan_code IS NULL)            AS unpriced_active_subs
     """,
 
     # ── Tab 1: active subscriptions by plan ──────────────────────────────────
     """
     CREATE OR REPLACE VIEW core.vw_subs_by_plan AS
-    SELECT COALESCE(plan_code, '(none)') AS plan_code, plan_type,
-           count(*) AS active_count, COALESCE(SUM(mrr_cents), 0) AS mrr_cents
-    FROM core.subscription
-    WHERE status = 'active'
-    GROUP BY plan_code, plan_type
+    SELECT COALESCE(ss.plan_code, '(none)') AS plan_code, ss.plan_type,
+           count(*) AS active_count,
+           COALESCE(SUM(CASE WHEN pp.plan_class = 'recurring' THEN pp.mrr_cents ELSE 0 END), 0) AS mrr_cents
+    FROM billing.subscription_state ss
+    LEFT JOIN core.vw_plan_pricing pp ON pp.plan_code = ss.plan_code
+    WHERE UPPER(COALESCE(ss.status,'')) = 'ACTIVE'
+    GROUP BY ss.plan_code, ss.plan_type
     ORDER BY mrr_cents DESC
     """,
 
@@ -102,14 +187,13 @@ _VIEWS = [
     SELECT l.account_id, l.public_id, l.email, l.display_name, l.role, l.stage, l.activated,
            l.plan_code, l.plan_type, l.sub_status, l.mrr_cents,
            l.matches_uploaded, l.matches_remaining, l.last_activity, l.nps_latest, l.created_at,
-           COALESCE(ln.linked_count, 0) AS linked_count
+           COALESCE(cp.linked_count, 0) AS linked_count
     FROM core.vw_account_lifecycle l
     LEFT JOIN LATERAL (
         SELECT count(*) AS linked_count
-        FROM core.relationship r
-        JOIN core.person ps ON (ps.id = r.from_person_id OR ps.id = r.to_person_id)
-        WHERE ps.account_id = l.account_id AND r.status = 'active'
-    ) ln ON true
+        FROM billing.coaches_permission cp
+        WHERE cp.coach_account_id = l.account_id AND cp.active
+    ) cp ON true
     """,
 
     # ── Tab 3: at-risk & opportunity (one row-set, category-tagged) ──────────
@@ -129,16 +213,13 @@ _VIEWS = [
            'Coach — ' || COALESCE(lc.cnt, 0) || ' linked player(s)', COALESCE(lc.cnt, 0)::numeric, l.last_activity
     FROM core.vw_account_lifecycle l
     JOIN LATERAL (
-        SELECT count(*) AS cnt FROM core.relationship r
-        JOIN core.person cp ON cp.id = r.from_person_id
-        WHERE cp.account_id = l.account_id AND r.type = 'coach_player' AND r.status = 'active'
+        SELECT count(*) AS cnt FROM billing.coaches_permission cp
+        WHERE cp.coach_account_id = l.account_id AND cp.active
     ) lc ON true
-    WHERE l.role = 'coach'
+    WHERE lc.cnt > 0
     """,
 
-    # ── Tab 4: match / processing ops ────────────────────────────────────────
-    # Reads bronze.submission_context (the LIVE ingest/processing state) so this tab is
-    # useful with real data immediately — core.match mirrors it post-migration.
+    # ── Tab 4: match / processing ops (reads bronze — the live ingest state) ─────────────────
     """
     CREATE OR REPLACE VIEW core.vw_processing_ops AS
     SELECT
@@ -155,7 +236,7 @@ _VIEWS = [
     WHERE sc.deleted_at IS NULL
     """,
 
-    # ── Feedback: NPS summary (scalars) ──────────────────────────────────────
+    # ── Feedback: NPS summary (scalars) — reads core.nps_response (fed live) ──────────────────
     """
     CREATE OR REPLACE VIEW core.vw_nps_summary AS
     SELECT
@@ -184,9 +265,12 @@ _VIEWS = [
 
 
 def init_cockpit_views(engine=None):
-    """Create/refresh the cockpit views (idempotent). Ensures core base schema/views first."""
-    engine = core_init(engine)  # guarantees core.* tables + vw_account_credits/subscription_current/mrr
+    """Create/refresh the cockpit views (idempotent). Ensures core base schema/views first
+    (core_init guarantees core.* tables + vw_account_credits/subscription_current/mrr exist, even
+    though Option C no longer reads the billing-slice ones)."""
+    engine = core_init(engine)
     with engine.begin() as conn:
+        conn.execute(text(_pricing_view_sql()))
         for stmt in _VIEWS:
             conn.execute(text(stmt))
     return engine

@@ -1,6 +1,8 @@
 # core.* as the home for BILLING + USAGE — due diligence & recommendation
 
-**Status:** PROPOSAL — think-first. No code until a direction is approved.
+**Status:** ✅ APPROVED + IMPLEMENTED (Option C) — 2026-06-17. Cockpit + CRM traits now read the
+`billing.*` SoR directly; the deferred `core.*` payment mirror is decided-against. See §10 for the
+implementation record.
 **Date:** 2026-06-17
 **Author:** DD session (handover from prior session)
 **Decision owner:** Tomo
@@ -170,6 +172,31 @@ identity backfill (`billing.*`→`core.*`) → subscriptions cutover → credit 
 3. **Any near-term driver for B** I should know about (auth-SoR cutover date, referrals product) that would change the calculus toward investing in `core.*` as SoR sooner?
 
 ---
+
+## 10. Implementation record (Option C — shipped 2026-06-17)
+
+- **`marketing_crm/backoffice/views.py`** rewritten: `vw_account_lifecycle` / `vw_business_health` /
+  `vw_subs_by_plan` / `vw_customer_list` / `vw_at_risk` now read `billing.subscription_state` +
+  `billing.vw_customer_usage` + `bronze.submission_context` + `billing.coaches_permission`, driven off
+  `billing.account` as the population, LEFT-JOINing `core.*` (`usage_event`, `nps_response`) by email
+  for the live extras. `vw_processing_ops` + the NPS views unchanged. View names + output columns
+  unchanged → `blueprint.py` and `frontend/cockpit.html` needed no edits.
+- **New `core.vw_plan_pricing`** (`plan_code → plan_class, mrr_cents, payg_cents`) built from
+  `paypal_billing.plans` (`PRICES`/`PLANS`) + an explicit legacy-Wix code map. The single edit point for
+  plan economics. `vw_business_health.unpriced_active_subs` flags any active sub whose plan_code isn't
+  mapped, so a new code can never silently vanish from MRR.
+- **`crm_sync._TRAITS_SQL`** repointed to bridge `core.*` by **email** (was a now-invalid join on
+  `core.account.id = vw_customer_list.account_id`, which is a billing id post-rewrite).
+- **Validated read-only against the live Render DB:** MRR `$120` (`MONTHLY_10` $70 + `coach_sub_ong`
+  $50; PAYG `once off` correctly excluded), `active_subscriptions=2`, `total_accounts=10` (real billing
+  population vs 1 in core), `payg_revenue=$50`, `unpriced_active_subs=0`, and **per-account
+  `matches_remaining` reconciles exactly with `billing.vw_customer_usage`** (zero mismatches).
+- **Legacy price assumptions to confirm** (in `_LEGACY_PLAN_PRICING`): `MONTHLY_10`→$70 (≈Advanced),
+  `coach_sub_ong`→$50 (≈Coach Pro), `player_sub_5`→$40 (≈Standard), `player_sub_100`→$0 (grants-only).
+- **Activation metric** changed to `matches_completed >= 1` (was `… AND reports_viewed >= 1`): report-view
+  tracking lives only in `core.usage_event` (forward-only since 2026-06-17), so gating on it would
+  zero-out every historical account. A completed match is the real activation moment; `reports_viewed`
+  stays available as a column. Flag for confirmation.
 
 ### Appendix — key evidence (file:line)
 - core schema/views: `core_db/schema.py:56-95` (`vw_account_credits`/`vw_subscription_current`/`vw_mrr`); models `core_db/models.py:50-444`; balance `core_db/repositories/subscriptions.py:152`.

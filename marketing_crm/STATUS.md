@@ -81,16 +81,24 @@ string**, **retention day-counts**, and **age threshold** come back into `core.c
 
 ## Not built yet
 - Consent-capture UI + loading `policy_version`/`retention_rule` (privacy spec Part B).
-- §7 live-data backfill (`billing.*`/`bronze.*` → `core.*`) — or a write-path so `core.*` fills going forward.
-  - **`core.*` payment mirror (deferred from the PayPal launch, 2026-06-16).** Direct PayPal writes
-    `billing.*` only (entitlement_grant + subscription_state) — same as the Wix flow always did; `core.*`
-    is unfed for billing. To populate `core.subscription` / `core.credit_ledger` (cockpit MRR + credit
-    analytics), wire a fire-and-forget mirror inside `subscriptions_api.apply_subscription_event`
-    (resolve the core account via `core_db.repositories.accounts.ensure_identity`, then
-    `repositories.subscriptions.upsert_subscription` + `grant_credits`). **Do it together with the
-    CONSUMPTION side** (match-upload path → `consume_match`) or the ledger balance will be inflated —
-    that's why it's a scoped session, not a payment-only bolt-on. No payment impact; `billing.*` stays
-    the system of record. Repos already exist in `core_db/repositories/subscriptions.py`.
+- Consent-capture UI is still pending (privacy spec Part B); core identity (account/user/person/consent)
+  + `usage_event` already fill forward via the consent/auth_v2/tracking paths.
+  - **`core.*` payment mirror — DECIDED AGAINST (2026-06-17, Option C).** We will NOT build the
+    payment→core / upload→core mirror that would feed `core.subscription` / `core.credit_ledger`.
+    Reason: a mirror is a non-authoritative copy that drifts from the SoR and walks into the ledger
+    trap (grants + consumption + refill/expiry parity). Instead the **cockpit now reads the live SoR
+    directly** — `marketing_crm/backoffice/views.py` was rewritten over `billing.subscription_state` +
+    `billing.vw_customer_usage` + `bronze.submission_context` + `billing.coaches_permission`, with
+    `core.*` LEFT-JOINed by email only for the extras core actually feeds (`usage_event`, `nps`). MRR /
+    credits / churn / matches are correct and reconcile with `billing.*` (validated: MRR $120, credits
+    match `vw_customer_usage` exactly). Plan economics come from `core.vw_plan_pricing` (built from
+    `paypal_billing.plans` + a legacy-Wix code map — the one edit point). DD + rationale:
+    `docs/_investigation/core_db_billing_strategy.md`. `core.*` as a true billing SoR (Option B) is
+    deferred to a real driver (auth-SoR cutover / referrals / unified-identity CRM), done as a cutover
+    — never via this mirror. `billing.*` remains the system of record.
+  - §7 live-data backfill (`billing.account` → `core.account`) remains OPTIONAL — de-risks a future
+    Option-B cutover and completes the core identity population, but is NOT required for the cockpit
+    (it drives off `billing.account`). Repos exist in `core_db/repositories/`.
 - **Wix PAYMENT deprecation (migration — NOT done in the PayPal launch, by agreement).** PayPal is live;
   the Wix payment path is retained ONLY as the `PAYPAL_ENABLED=0` rollback. Retiring it is a **migration,
   not a delete**, and overlaps the auth lane's `external_wix_id` work — keep it in that lane.
