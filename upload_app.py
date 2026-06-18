@@ -4322,6 +4322,24 @@ def ops_backfill_pair_labels():
     return jsonify(result), 200
 
 
+@app.post("/ops/load-retention-rules")
+def ops_load_retention_rules():
+    """Idempotently load the interim retention policy into core.retention_rule (the values in
+    flow_build_spec.md §Privacy decisions / docs/business/privacy-and-consent.md). Re-run after the
+    lawyer finalises to update. Header-only auth (OPS_KEY)."""
+    if not _guard():
+        return Response("Forbidden", 403)
+    try:
+        from core_db.db import session_scope
+        from core_db.repositories.consent import load_interim_retention_rules, CURRENT_POLICY_VERSION
+        with session_scope() as s:
+            rules = load_interim_retention_rules(s)
+        return jsonify({"ok": True, "policy_version": CURRENT_POLICY_VERSION, "rules": rules})
+    except Exception as e:
+        app.logger.exception("ops_load_retention_rules failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.post("/ops/build-klaviyo-flows")
 def ops_build_klaviyo_flows():
     """Build (dry_run=True, default) or CREATE (dry_run=False) the two Klaviyo flows from

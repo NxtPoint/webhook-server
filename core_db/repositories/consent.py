@@ -76,6 +76,35 @@ def open_dsar(session, *, request_type, subject_person_id=None, requested_by_use
     return req
 
 
+# Current consent policy version stamped on every consent record. INTERIM-FINALISED 2026-06-18
+# (flow_build_spec.md §Privacy decisions); bump when the lawyer signs off the final policy.
+CURRENT_POLICY_VERSION = "1.0-interim-2026-06-18"
+
+# Interim retention policy — (data_class, applies_after, retention_days, note). Loaded into
+# core.retention_rule via load_interim_retention_rules() (idempotent). Source: the interim privacy
+# decisions in flow_build_spec.md / docs/business/privacy-and-consent.md.
+INTERIM_RETENTION_RULES = [
+    ("match_video",    "upload",             0,    "original upload deleted post-processing"),
+    ("match_video",    "account_closure",    90,   "trimmed review clip"),
+    ("biometrics",     "account_closure",    30,   "pose/biometric data"),
+    ("biometrics",     "consent_withdrawal", 0,    "delete immediately on biometric consent withdrawal"),
+    ("match_analysis", "account_closure",    90,   "derived analytics"),
+    ("account_pii",    "account_closure",    90,   "account PII"),
+    ("financial",      "account_closure",    2555, "anonymised financial (~7 years)"),
+]
+
+
+def load_interim_retention_rules(session, policy_version=CURRENT_POLICY_VERSION):
+    """Idempotently upsert the interim retention policy into core.retention_rule. Returns the rows."""
+    out = []
+    for data_class, applies_after, days, note in INTERIM_RETENTION_RULES:
+        upsert_retention_rule(session, data_class=data_class, applies_after=applies_after,
+                              retention_days=days, is_active=True,
+                              notes=f"{note} · {policy_version}")
+        out.append({"data_class": data_class, "applies_after": applies_after, "retention_days": days})
+    return out
+
+
 def upsert_retention_rule(session, *, data_class, retention_days, applies_after,
                           is_active=True, notes=None):
     rule = session.execute(

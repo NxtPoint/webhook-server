@@ -60,7 +60,8 @@ def record():
     if ctype not in CONSENT_TYPES:
         return jsonify({"ok": False, "error": f"unknown consent_type (allowed: {sorted(CONSENT_TYPES)})"}), 400
 
-    policy_version = body.get("policy_version")  # set once the lawyer signs off
+    # Stamp the current policy version (interim-finalised 2026-06-18) unless the client sends one.
+    policy_version = body.get("policy_version") or cons.CURRENT_POLICY_VERSION
     full_name = body.get("full_name")
     with session_scope() as s:
         acct, owner, primary = accounts.ensure_identity(s, email=email, full_name=full_name)
