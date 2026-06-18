@@ -3,6 +3,14 @@
 > **Why this exists:** the Klaviyo MCP connector (Cowork's tool) can create templates + campaigns but **cannot create flows**. Klaviyo's REST API **can** (`POST /api/flows/` with a flow definition, plus the flow-action/message endpoints). This is a **code task → Claude Code's lane.** Cowork supplies this spec; Claude Code implements it with the live `KLAVIYO_API_KEY` (the `RENDER` private key, Full Access: Events + Profiles).
 > Last updated: 2026-06-18. Author: Cowork.
 
+## Privacy decisions — INTERIM-FINALISED 2026-06-18 (unblocks consent capture + go-live gate)
+The 6 open legal decisions are now **adopted as interim values** (lawyer away ~2 weeks; full sign-off on return). Full detail + the policy in `docs/business/privacy-and-consent.md` (STATUS block at top). What CC needs:
+- **`policy_version` = `1.0-interim-2026-06-18`** → load into `core.consent.policy_version`.
+- **Retention (`core.retention_rule`, days):** video 0 · trimmed clip 90 (after closure) · biometric/pose 30 (after closure) / immediate on withdrawal · derived analytics 90 · account PII 90 · anonymised financial 2555.
+- **Minor gate:** under 16 → verifiable parental consent.
+- **Marketing:** explicit opt-in; **double opt-in for EU/UK**.
+- **Go-live gate:** build consent capture + leave flows **draft**. Do NOT flip to Live (real marketing sends / minors'-biometric at scale) until the lawyer confirms on return.
+
 ## Ground rules
 - Build both flows in **Manual/Draft status** (NOT live). Nothing sends until legal sign-off on consent → `marketing_opt_in`.
 - Audience guard on every flow: only profiles with email marketing consent = SUBSCRIBED (opt-in). Klaviyo enforces this for flow emails, but set flow filters accordingly.
@@ -179,30 +187,50 @@ Source: developers.klaviyo.com Create-and-retrieve-flows reference. These blocks
       "name": "Email #1" }, "status": "draft" } }
 ```
 
-### ⚠️ The one gap (the exact condition CC asked about)
+### ✅ CONFIRMED LITERAL (read back from a real UI-built split, 2026-06-18)
+Built the condition in the Flow Builder, read it back via the connector. The exact `conditions[0]` for **"done [metric] zero times since starting this flow"**:
+```json
+{
+  "type": "profile-metric",
+  "metric_id": "<METRIC_ID>",
+  "measurement": "count",
+  "measurement_filter": { "type": "numeric", "operator": "equals", "value": 0 },
+  "timeframe_filter": { "type": "date", "operator": "flow-start" },
+  "metric_filters": null
+}
+```
+- It nests in a **conditional-split** action as `data.profile_filter.condition_groups[0].conditions[0]`, OR — cleaner for an auto-exit — drop it straight into the **flow-level** `profile_filter.condition_groups[0].conditions[]` alongside the opt-in consent condition (Klaviyo re-checks the flow filter before each step, so the profile auto-exits the moment the count goes >0).
+- **Flow 2 exit-on-convert:** add TWO of these — `subscription_started` (THnJq4) and `credit_purchased` (S6dmAm), both `equals 0`, `flow-start`, in the same group (AND) → profile stays only while both are zero.
+- **Flow 1 exit-on-upload:** one of these with `match_uploaded` (SxXTwc).
+- **Coach Pro ≥2 entry filter (YrcjEh):** same `profile-metric` shape but `measurement_filter` operator for "is at least" + `value: 2`, timeframe **over all time** (not flow-start). The `equals/0/flow-start` literal above is verbatim-confirmed; the ≥2/all-time variant wasn't read back — capture it the same way (build once, read back) if you want it verbatim before adding.
+
+### ⚠️ (historical) The one gap — now resolved above
 The docs example does **not** include a "**what someone has done → metric → zero times → since starting this flow**" condition — it only shows `metric-property` (property filter on the trigger event) and `profile-marketing-consent`. There is also no flow in the account to read back. So the exact literal for the *conversion-exit* condition (count of `subscription_started`/`credit_purchased` = 0 since flow start) is **still unconfirmed** — don't guess it.
 
 **Recommended unblock:** create all 4 flows as **drafts now** with the verbatim blocks above + the email-opt-in gate, and **omit the conversion-exit filter for v1** (drafts send nothing; safe pre-legal). Capture the exit-filter literal before go-live by building that one condition in the UI once and reading the flow back (Cowork will paste the exact `conditions[0]`). That gets 4 clean drafts in immediately and defers only the one uncertain literal.
 
 ---
 
-## ✅ BUILD STATUS (Claude Code) — v1 created 2026-06-18 (all DRAFT)
+## ✅ BUILD STATUS (Claude Code) — v2 created 2026-06-18 (all DRAFT)
 
-Created via `POST /ops/build-klaviyo-flows` (builder `flow_builder.py`) — exactly the recommended
-unblock: verbatim send-email blocks + email opt-in gate, v1 linear, conversion-exit filters deferred.
+Current flows (v1 drafts deleted + replaced via `POST /ops/build-klaviyo-flows` with `delete_ids`).
+Each has: verbatim send-email blocks, final subjects+preview, email opt-in gate, and (trial flows)
+the **confirmed `profile-metric` exit filters at flow level** (auto-exit, no splits):
 
-| Flow | flow_id | trigger |
-|---|---|---|
-| Trial · Welcome & Activation | `XqsKqR` | account_created |
-| Trial → Paid Conversion | `UqB2RZ` | report_viewed |
-| Coach · Engagement | `WqTFg9` | coach_accepted |
-| Coach Pro upsell | `YrcjEh` | coach_accepted |
+| Flow | flow_id | trigger | exit filter |
+|---|---|---|---|
+| Trial · Welcome & Activation | `Ss984H` | account_created | consent AND match_uploaded == 0 (flow-start) |
+| Trial → Paid Conversion | `Va65qS` | report_viewed | consent AND subscription_started == 0 AND credit_purchased == 0 |
+| Coach · Engagement | `QUcfCL` | coach_accepted | consent only |
+| Coach Pro upsell | `ScQB4T` | coach_accepted | consent only — ⚠️ needs ≥2 entry filter (below) |
 
-**Now there ARE flows in the account** → Cowork can `get_flows`/`get_flow` to verify, and the v2
-exit-filter literal can be read back from a UI-built split.
+The exit filters were accepted by Klaviyo (HTTP 201) → the `profile-metric` / `flow-start` literal is
+confirmed correct end-to-end.
 
-**v2 TODO before go-live:** (1) read back the canonical `flows-profile-metric` literal → patch
-`flow_builder._done_metric_condition`; (2) add exit filters — Flow1 exit-on-`match_uploaded`, Flow2
-exit-on-(`subscription_started` OR `credit_purchased`) + per-email splits; (3) **`YrcjEh` Coach Pro
-MUST get the `coach_accepted` ≥ 2 (all-time) entry filter** or it targets a coach's first player;
-(4) add via API re-create OR directly in the Klaviyo UI on these drafts; (5) legal consent → set Live.
+**Remaining before go-live:**
+1. **Coach Pro `ScQB4T`** still needs the `coach_accepted` **≥ 2 over all time** entry filter — that
+   literal (operator for "at least", all-time timeframe) was NOT read back. Build it once in the UI,
+   read it back, paste CC → patch `_metric_condition` + re-fire. Without it, this flow would target a
+   coach on their FIRST connected player. (Harmless while draft.)
+2. **Legal sign-off** (lawyer's return) → flip all flows Live. Consent capture is ready:
+   `policy_version=1.0-interim-2026-06-18` is stamped, retention rules are loaded (`core.retention_rule`).
