@@ -1308,7 +1308,68 @@ def add_member():
         member_id = int(row.scalar_one())
         session.commit()
 
+    # Privacy scope v2 §4 — adding a junior captures parental consent
+    # (minor_processing_parental). Best-effort + exception-safe (never blocks the add).
+    if role == "player_parent":
+        _record_minor_parental_consent(
+            owner_email=email,
+            junior_name=full_name,
+            junior_dob=(payload.get("dob") or "").strip() or None,
+            member_id=member_id,
+            attested=_truthy_flag(payload.get("attest_guardianship")),
+        )
+
     return jsonify({"ok": True, "member_id": member_id})
+
+
+def _truthy_flag(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def _record_minor_parental_consent(*, owner_email, junior_name, junior_dob, member_id, attested):
+    """Record minor_processing_parental consent when an adult adds a junior.
+
+    GAP (documented): the add-junior flow writes to billing.member only, NOT core.person.
+    The consent repo keys on a core.person subject. We therefore create the junior as a
+    core.person (the consent endpoint's own minor path does the same) so the subject is the
+    actual child, with granted_by = the adult owner. `source` carries the billing.member id
+    so the two records can be reconciled until core.person is the single profile store.
+    Best-effort: any failure is logged and swallowed (must never block adding a player)."""
+    if not owner_email or not junior_name:
+        return
+    try:
+        from core_db.db import session_scope
+        from core_db.repositories import accounts as _acc, consent as _cons
+        from datetime import date as _date
+
+        def _parse_dob(v):
+            if not v:
+                return None
+            try:
+                return _date.fromisoformat(str(v)[:10])
+            except Exception:
+                return None
+
+        with session_scope() as s:
+            acct, owner, _primary = _acc.ensure_identity(s, email=owner_email)
+            junior = _acc.create_person(
+                s, account_id=acct.id, full_name=junior_name, role="player",
+                dob=_parse_dob(junior_dob),
+            )
+            _cons.record_consent(
+                s, subject_person_id=junior.id, consent_type="minor_processing_parental",
+                granted_by_user_id=owner.id, status="granted",
+                policy_version=_cons.CURRENT_POLICY_VERSION,
+                source=f"add_member:billing.member#{member_id}",
+                evidence={"attested": bool(attested), "billing_member_id": member_id},
+            )
+    except Exception:
+        log.exception("minor_processing_parental consent record failed (owner=%s, member=%s)",
+                      owner_email, member_id)
 
 
 # ----------------------------

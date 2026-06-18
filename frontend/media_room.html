@@ -1374,6 +1374,13 @@ function renderSinglesForm(el) {
         </div>
       </div>
 
+      <div class="edit-field" style="margin-top:8px">
+        <label style="display:flex;gap:9px;align-items:flex-start;font-size:0.82rem;font-weight:500;cursor:pointer">
+          <input type="checkbox" id="fd-footage_permission" style="margin-top:3px">
+          <span>Everyone in this video &mdash; and any under-18's parent/guardian &mdash; has agreed to be recorded and analysed.</span>
+        </label>
+      </div>
+
       <button class="btn-primary" id="btnSubmitDetails" onclick="submitMatchDetails()">Submit &amp; Start Analysis &rarr;</button>
       <button class="btn-secondary" onclick="goToStep(2)">&larr; Back</button>
       <div class="msg-bar" id="detailsMsg"></div>
@@ -1446,6 +1453,13 @@ function renderPracticeForm(el) {
       <div class="edit-field">
         <label class="edit-label">Seconds from video start to first point</label>
         <input class="edit-input" type="number" step="1" min="0" id="fd-start_time" placeholder="e.g. 30">
+      </div>
+
+      <div class="edit-field" style="margin-top:8px">
+        <label style="display:flex;gap:9px;align-items:flex-start;font-size:0.82rem;font-weight:500;cursor:pointer">
+          <input type="checkbox" id="fd-footage_permission" style="margin-top:3px">
+          <span>Everyone in this video &mdash; and any under-18's parent/guardian &mdash; has agreed to be recorded and analysed.</span>
+        </label>
       </div>
 
       <button class="btn-primary" id="btnSubmitDetails" onclick="submitMatchDetails()">Submit &amp; Start Analysis &rarr;</button>
@@ -1576,6 +1590,16 @@ async function submitMatchDetails() {
     }
   }
 
+  // Per-upload footage-permission attestation — required for MATCH uploads
+  // (singles / serve / rally), NOT technique (technique uses biometric consent above).
+  if (STATE.gameType !== 'technique') {
+    const fp = document.getElementById('fd-footage_permission');
+    if (!fp || !fp.checked) {
+      showDetailsMsg('error', 'Please confirm everyone in the video agreed to be recorded before submitting.');
+      return;
+    }
+  }
+
   const btn = document.getElementById('btnSubmitDetails');
   btn.disabled = true;
   btn.textContent = 'Submitting...';
@@ -1620,6 +1644,11 @@ async function submitMatchDetails() {
       body.dominant_hand = STATE._dominantHand || 'right';
       const heightCm = parseInt(val('fd-technique-height-cm') || '180', 10);
       body.player_height_mm = heightCm * 10;  // convert cm to mm
+    }
+
+    // Per-upload footage-permission attestation (match uploads only).
+    if (!isTechnique) {
+      body.footage_permission = true;
     }
 
     // Singles-only fields (opponent, score, first server)

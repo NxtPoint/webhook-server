@@ -1004,6 +1004,12 @@ function renderLinkedPlayersContent() {
         </div>
         <div class="member-card-field" style="grid-column:1/-1"><label>Notes</label><input id="new-notes"></div>
       </div>
+      <div id="new-guardian-wrap" style="grid-column:1/-1;margin-top:10px;">
+        <label style="display:flex;gap:9px;align-items:flex-start;font-size:0.82rem;font-weight:500;cursor:pointer">
+          <input type="checkbox" id="new-attest_guardianship" style="margin-top:3px">
+          <span>I am the parent or legal guardian of this player and I consent to Ten-Fifty5 processing this player's data, as described in the Privacy Policy. (Required when adding a player who may be under 18.)</span>
+        </label>
+      </div>
       <div class="member-card-actions" style="margin-top:10px;">
         <button class="btn-sm btn-sm-primary" onclick="addMember()">Add</button>
         <button class="btn-sm" style="background:var(--white);color:var(--text-sec);border:1px solid var(--border);" onclick="toggleAddMember()">Cancel</button>
@@ -1014,6 +1020,21 @@ function renderLinkedPlayersContent() {
 
 function toggleAddMember() {
   document.getElementById('addMemberForm').classList.toggle('open');
+  // Wire the role selector so the guardianship attestation only shows for players.
+  const roleSel = document.getElementById('new-role');
+  if (roleSel && !roleSel._guardianWired) {
+    roleSel._guardianWired = true;
+    roleSel.addEventListener('change', updateGuardianVisibility);
+    updateGuardianVisibility();
+  }
+}
+
+function updateGuardianVisibility() {
+  const roleSel = document.getElementById('new-role');
+  const wrap = document.getElementById('new-guardian-wrap');
+  if (!roleSel || !wrap) return;
+  // Coaches are adults, not managed juniors — only show the attestation for players.
+  wrap.style.display = (roleSel.value === 'coach') ? 'none' : 'block';
 }
 
 async function saveMember(mid) {
@@ -1081,6 +1102,19 @@ async function addMember() {
     return;
   }
   const msg = document.getElementById('addMemberMsg');
+  // Adding a player (not a coach) requires the parent/guardian attestation —
+  // this captures minor_processing_parental consent server-side. Privacy scope v2 §4.
+  const attestEl = document.getElementById('new-attest_guardianship');
+  const isPlayer = (data.role || 'player_parent') !== 'coach';
+  if (isPlayer && (!attestEl || !attestEl.checked)) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'Please confirm you are the parent/guardian to add a player.';
+    setTimeout(() => { msg.textContent = ''; }, 4000);
+    return;
+  }
+  if (isPlayer && attestEl && attestEl.checked) {
+    data.attest_guardianship = true;
+  }
   try {
     const res = await apiFetch('/api/client/members', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),

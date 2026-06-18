@@ -559,6 +559,12 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS a_starts_near BOOLEAN DEFAULT TRUE",
 
+        # Privacy scope v2 — per-upload footage-permission attestation (match uploads only).
+        # Not a standing core.consent type; stored on the submission record. See
+        # docs/business/privacy-and-consent.md §4b.
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS footage_permission_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS footage_permission_by TEXT",
+
         # PowerBI integration removed 2026-05-20. DROP IF EXISTS is idempotent
         # (no-op after the first deploy drops them). Safe to delete this block
         # once we're confident every running replica has run boot at least once.
@@ -568,6 +574,70 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context DROP COLUMN IF EXISTS pbi_refresh_error",
     ):
         conn.execute(sql_text(ddl))
+
+
+def _truthy(v) -> bool:
+    """Lenient truthiness for request-body flags (accepts true, "true", 1, "yes", "on")."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def _set_footage_permission(task_id: str, by_email: str | None):
+    """Stamp the per-upload footage-permission attestation on a submission row.
+    Best-effort + exception-safe — the gate itself (in api_submit_s3_task) is what
+    enforces the requirement; this only records the audit timestamp/email.
+    Privacy scope v2 §4b — match uploads only (technique uses biometric_processing)."""
+    if not engine:
+        return
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET footage_permission_at = now(),
+                       footage_permission_by = :by
+                 WHERE task_id = :t
+            """), {"t": task_id, "by": (by_email or None)})
+    except Exception:
+        app.logger.exception("footage_permission stamp failed task_id=%s", task_id)
+
+
+def _has_biometric_consent(email: str, subject_person_public_id: str | None = None) -> bool:
+    """Privacy scope v2 §3 — does the subject have a CURRENT biometric_processing consent?
+
+    Subject = the junior (subject_person_public_id) if supplied, else the account owner's
+    primary person. Reuses core_db.repositories.consent.has_consent (no duplicated logic).
+    Returns False on any error (the technique gate fails closed)."""
+    if not email:
+        return False
+    try:
+        from core_db.db import session_scope
+        from core_db.repositories import accounts as _acc, consent as _cons
+        with session_scope() as s:
+            subject_id = None
+            if subject_person_public_id:
+                from core_db.models import Person
+                from sqlalchemy import select as _select
+                p = s.execute(
+                    _select(Person).where(Person.public_id == subject_person_public_id)
+                ).scalar_one_or_none()
+                if p:
+                    subject_id = p.id
+            if subject_id is None:
+                acct = _acc.get_account_by_email(s, email)
+                if acct is None:
+                    return False
+                primary = _acc.get_primary_person(s, acct.id)
+                if primary is None:
+                    return False
+                subject_id = primary.id
+            return bool(_cons.has_consent(s, subject_id, "biometric_processing"))
+    except Exception:
+        app.logger.exception("biometric consent check failed email=%s", email)
+        return False
 
 
 def _as_int(x):
@@ -3725,6 +3795,19 @@ def api_submit_s3_task():
     is_t5 = sport_type in T5_SPORT_TYPES
     is_technique = sport_type in TECHNIQUE_SPORT_TYPES
 
+    # ── Privacy scope v2 consent gates ──────────────────────────────────────
+    # (1) Match uploads (everything that is NOT technique) require a per-upload
+    #     footage-permission attestation. See docs/business/privacy-and-consent.md §4b.
+    if not is_technique:
+        if not _truthy(body.get("footage_permission")):
+            return jsonify({"ok": False, "error": "FOOTAGE_PERMISSION_REQUIRED"}), 400
+    # (3) Technique uploads require a current biometric_processing consent for the
+    #     subject (the account owner, or a junior if subject_person_public_id is sent).
+    #     Match uploads are NOT gated on biometric. See §3.
+    else:
+        if not _has_biometric_consent(email, (body.get("subject_person_public_id") or "").strip() or None):
+            return jsonify({"ok": False, "error": "BIOMETRIC_CONSENT_REQUIRED"}), 403
+
     try:
         if is_technique:
             task_id = _technique_submit(s3_key, email=email, meta=meta)
@@ -3743,6 +3826,11 @@ def api_submit_s3_task():
             s3_key=s3_key,
             sport_type=sport_type,
         )
+
+        # Privacy scope v2 §4b — record the footage-permission attestation on the
+        # submission row (match uploads only; the gate above guaranteed it is truthy).
+        if not is_technique:
+            _set_footage_permission(task_id, email)
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
