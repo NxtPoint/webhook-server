@@ -294,6 +294,8 @@ def create_flows(dry_run: bool = True) -> dict:
     key = (os.getenv("KLAVIYO_API_KEY") or "").strip()
     if not key:
         raise RuntimeError("KLAVIYO_API_KEY not set in this environment")
+    import time
+
     import requests
     headers = {
         "Authorization": f"Klaviyo-API-Key {key}",
@@ -302,10 +304,17 @@ def create_flows(dry_run: bool = True) -> dict:
         "content-type": "application/vnd.api+json",
     }
     results = []
-    for p in payloads:
+    for i, p in enumerate(payloads):
         name = p["data"]["attributes"]["name"]
+        if i:
+            time.sleep(4)  # flow-create is heavily rate-limited — space the POSTs out
         try:
-            r = requests.post(_BASE, headers=headers, json=p, timeout=20)
+            r = None
+            for attempt in range(3):  # retry on 429 (Klaviyo: "available in 1 second")
+                r = requests.post(_BASE, headers=headers, json=p, timeout=20)
+                if r.status_code != 429:
+                    break
+                time.sleep(2 + attempt * 2)
             ok = r.status_code < 300
             body = r.json() if r.content else {}
             results.append({
