@@ -262,10 +262,10 @@ def build_flow_coach_engagement():
 # ── Flow 4: Coach Pro upsell ─────────────────────────────────────────────────
 
 def build_flow_coach_pro_upsell():
-    """Coach Pro upsell on a 2nd player connecting.
-    V1: opt-in gate only (drops the unconfirmed `coach_accepted` >= 2 all-time entry filter).
-    ⚠️ V2 MUST add that >= 2 filter before go-live — without it this would target a coach on their
-    FIRST connected player too. Safe in draft (sends nothing)."""
+    """Coach Pro upsell on a 2nd player connecting. Entry filter uses the VERBATIM literal read back
+    from ScQB4T (2026-06-18): opt-in AND coach_accepted >= 2 ALL-TIME. NB the timeframe operator is
+    `alltime` (no hyphen) — confirmed from the saved flow, not guessed — so this fires only once a
+    coach has 2+ connected players, never on their first."""
     actions = [
         _delay("delay1", 1, f"email_{T_COACH_UPSELL}"),
         _email(T_COACH_UPSELL, None),
@@ -277,7 +277,10 @@ def build_flow_coach_pro_upsell():
                 "name": "Coach Pro upsell",
                 "definition": {
                     "triggers": [{"type": "metric", "id": M_COACH_ACCEPTED}],
-                    "profile_filter": _consent_gate(),
+                    "profile_filter": _filter(_group(
+                        _consent_condition(),
+                        _metric_condition(M_COACH_ACCEPTED, op="greater-than-or-equal",
+                                          value=2, timeframe="alltime"))),
                     "entry_action_id": "delay1",
                     "actions": actions,
                 },
@@ -306,11 +309,15 @@ def build_all():
             build_flow_coach_engagement(), build_flow_coach_pro_upsell()]
 
 
-def create_flows(dry_run: bool = True, delete_ids=None) -> dict:
+def create_flows(dry_run: bool = True, delete_ids=None, only=None) -> dict:
     """dry_run=True → return the payloads (no key, nothing sent). dry_run=False → (optionally DELETE
     delete_ids first, to replace prior drafts cleanly) then POST each to Klaviyo's beta Create Flow
-    API in draft and return ids/errors."""
+    API in draft and return ids/errors. `only` = list of flow names to build (case-insensitive) —
+    e.g. ["Coach Pro upsell"] to rebuild just that one without churning the others."""
     payloads = build_all()
+    if only:
+        wanted = {n.strip().lower() for n in only}
+        payloads = [p for p in payloads if p["data"]["attributes"]["name"].lower() in wanted]
     if dry_run:
         return {"payloads": payloads,
                 "note": "DRY RUN — nothing sent. v2: final subjects + confirmed profile-metric exit "
