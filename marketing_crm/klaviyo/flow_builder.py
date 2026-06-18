@@ -31,6 +31,7 @@ M_REPORT_VIEWED        = "RRcmqL"
 M_MATCH_UPLOADED       = "SxXTwc"
 M_SUBSCRIPTION_STARTED = "THnJq4"
 M_CREDIT_PURCHASED     = "S6dmAm"
+M_COACH_ACCEPTED       = "Wi6bdW"
 
 # Email templates (Trial→Paid)
 T_WELCOME       = "U4uKSv"  # 1.1 Welcome — first match free
@@ -40,17 +41,41 @@ T_GAP           = "TwGdDC"  # 2.1 The gap — one match vs a trend
 T_AICOACH       = "SDMpYP"  # 2.2 AI Coach tease
 T_LONGGAME      = "VEenA3"  # 2.3 The long game — progression
 T_LASTCALL      = "QWA2S6"  # 2.4 Last call — PAYG $25
+# Email templates (Coach Engagement)
+T_COACH_ORIENT  = "WuiVMV"  # C0 How it works (orientation)
+T_COACH_CONNECT = "SW5qXQ"  # C1 A player connected
+T_COACH_VIEWS   = "RTU6Cf"  # C2 Three views
+T_COACH_AI      = "SEaDM9"  # C3 AI coach
+T_COACH_UPSELL  = "TfaGff"  # Coach Pro upsell (2nd player)
 
-# ⚠️ PLACEHOLDER subject lines — Cowork to replace with the real copy (the spec maps template IDs
-# but not subjects, and Klaviyo's send-email action needs a subject_line per message).
+# Final copy from Cowork (flow_build_spec.md §Subject lines). Brand voice: NO emoji.
 SUBJECTS = {
-    T_WELCOME:  "Your first match is on us 🎾",
-    T_FRICTION: "Any phone camera works — here's how",
-    T_PROOF:    "What one match actually tells you",
-    T_GAP:      "One match is a snapshot. A trend is the story.",
-    T_AICOACH:  "Meet your AI coach",
-    T_LONGGAME: "Where this takes your game",
-    T_LASTCALL: "Last call — analyse your next match for $25",
+    T_WELCOME:       "Your first match analysis is on us",
+    T_FRICTION:      "Still sitting on your first match?",
+    T_PROOF:         "What one match actually tells you",
+    T_GAP:           "You've seen one match. Here's what you're not seeing yet.",
+    T_AICOACH:       "Ask your data why you lose the second set",
+    T_LONGGAME:      "Every match teaches you something. Don't let it fade.",
+    T_LASTCALL:      "One more match? It's $25 — and your credits never expire.",
+    T_COACH_ORIENT:  "How Ten-Fifty5 works for coaches",
+    T_COACH_CONNECT: "A player just shared their game with you",
+    T_COACH_VIEWS:   "The 3 views that change how you coach",
+    T_COACH_AI:      "Ask the data about any player",
+    T_COACH_UPSELL:  "A second player connected — time to go unlimited",
+}
+PREVIEW = {
+    T_WELCOME:       "One upload. 450+ data points. No card needed.",
+    T_FRICTION:      "Any camera works. One MP4 is all we need.",
+    T_PROOF:         "The stat that ended a two-year losing streak.",
+    T_GAP:           "One match is a snapshot. Your game is a trend.",
+    T_AICOACH:       "A tour coach, trained on your matches.",
+    T_LONGGAME:      "Your progression chart compounds. Your memory doesn't.",
+    T_LASTCALL:      "Not ready to subscribe? Pay as you go.",
+    T_COACH_ORIENT:  "When a player shares a match, it lands here.",
+    T_COACH_CONNECT: "Their dashboard is live on your roster.",
+    T_COACH_VIEWS:   "Serve zones, rally drop-off, technique scores.",
+    T_COACH_AI:      "A tour coach's read, grounded in their matches.",
+    T_COACH_UPSELL:  "Coach Pro: every player who shares with you, one price.",
 }
 
 
@@ -66,6 +91,7 @@ def _email(tid, nxt):
                 "from_email": FROM_EMAIL,
                 "from_label": FROM_LABEL,
                 "subject_line": SUBJECTS.get(tid, ""),
+                "preview_text": PREVIEW.get(tid, ""),
                 "template_id": tid,
                 "smart_sending_enabled": True,
                 "transactional": False,
@@ -84,16 +110,19 @@ def _delay(tid, days, nxt):
     }
 
 
-def _done_metric_condition(metric_id, *, times, op):
-    """A `flows-profile-metric` condition: profile has done METRIC_ID `op` `times` since the flow
-    started. op ∈ {'equals' (e.g. 0 → has NOT done), 'greater-than-or-equal' (e.g. 1 → has done)}.
-    NOTE: beta schema — confirm field names with Cowork from the dry_run output."""
+def _done_metric_condition(metric_id, *, times, op, timeframe="since-starting-flow"):
+    """A `flows-profile-metric` condition: profile has done METRIC_ID `op` `times` within `timeframe`.
+    op ∈ {'equals' (0 → has NOT done), 'greater-than-or-equal' (1 → has done)}.
+    timeframe ∈ {'since-starting-flow', 'all-time'} (Coach-Pro upsell uses all-time ≥2).
+    NOTE: beta schema — the exact literals (measurement/operator/timeframe keys) are UNCONFIRMED
+    (Cowork can't verify blind either). Cowork reads them back from the first created flow's
+    definition via the connector, then we mirror the canonical shape. See flow_build_spec.md."""
     return {
         "type": "flows-profile-metric",
         "metric_id": metric_id,
         "measurement": "count",
         "measurement_filter": {"type": "numeric", "operator": op, "value": times},
-        "timeframe": {"type": "since-starting-flow"},
+        "timeframe": {"type": timeframe},
     }
 
 
@@ -192,8 +221,66 @@ def build_flow_conversion():
     }
 
 
+# ── Flow 3: Coach · Engagement ───────────────────────────────────────────────
+
+def build_flow_coach_engagement():
+    """coach_accepted (a player granted access) → orient the coach over the first week.
+    (Trigger A / C0 orientation on account_created+role=coach is deferred — account_created
+    doesn't carry a role property yet; spec says rely on Trigger B until it does.)"""
+    actions = [
+        _email(T_COACH_CONNECT, "delay1"),       # C1 immediately
+        _delay("delay1", 2, f"email_{T_COACH_VIEWS}"),
+        _email(T_COACH_VIEWS, "delay2"),          # C2 after 2 days
+        _delay("delay2", 4, f"email_{T_COACH_AI}"),
+        _email(T_COACH_AI, None),                 # C3 after a further 4 days
+    ]
+    return {
+        "data": {
+            "type": "flow",
+            "attributes": {
+                "name": "Coach · Engagement",
+                "definition": {
+                    "triggers": [{"type": "metric", "id": M_COACH_ACCEPTED}],
+                    "profile_filter": None,
+                    "entry_action_id": f"email_{T_COACH_CONNECT}",
+                    "actions": actions,
+                },
+            },
+        }
+    }
+
+
+# ── Flow 4: Coach Pro upsell ─────────────────────────────────────────────────
+
+def build_flow_coach_pro_upsell():
+    """A 2nd player connecting (coach_accepted >= 2 over all time) = the coach outgrew the free
+    1-player cap. (When a coach-linked-player-count trait exists, switch to that.)"""
+    second_player = _filter(_group(
+        _done_metric_condition(M_COACH_ACCEPTED, times=2, op="greater-than-or-equal",
+                               timeframe="all-time")))
+    actions = [
+        _delay("delay1h", 0, f"email_{T_COACH_UPSELL}"),  # short delay; value 0 days = ~immediate
+        _email(T_COACH_UPSELL, None),
+    ]
+    return {
+        "data": {
+            "type": "flow",
+            "attributes": {
+                "name": "Coach Pro upsell",
+                "definition": {
+                    "triggers": [{"type": "metric", "id": M_COACH_ACCEPTED}],
+                    "profile_filter": second_player,
+                    "entry_action_id": "delay1h",
+                    "actions": actions,
+                },
+            },
+        }
+    }
+
+
 def build_all():
-    return [build_flow_welcome(), build_flow_conversion()]
+    return [build_flow_welcome(), build_flow_conversion(),
+            build_flow_coach_engagement(), build_flow_coach_pro_upsell()]
 
 
 def create_flows(dry_run: bool = True) -> dict:
