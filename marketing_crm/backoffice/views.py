@@ -85,6 +85,7 @@ _VIEWS = [
         b.nps_latest,
         (b.matches_completed >= 1)                                     AS activated,
         CASE
+            WHEN NOT b.active THEN 'terminated'
             WHEN UPPER(COALESCE(b.sub_status,'')) = 'ACTIVE' AND b.plan_class = 'recurring' THEN
                 CASE WHEN b.last_activity IS NULL OR b.last_activity < now() - interval '30 days'
                      THEN 'at_risk' ELSE 'paid' END
@@ -93,11 +94,12 @@ _VIEWS = [
                  OR b.cancelled_at IS NOT NULL                         THEN 'churned'
             WHEN COALESCE(b.matches_uploaded, 0) >= 1                   THEN 'trial'
             ELSE 'signup'
-        END AS stage
+        END AS stage,
+        b.active
     FROM (
         SELECT
             ba.id AS account_id, ca.public_id, ba.email,
-            ba.primary_full_name AS display_name, ba.created_at,
+            ba.primary_full_name AS display_name, ba.created_at, ba.active,
             COALESCE(pm.role, 'player_parent') AS role,
             COALESCE(mc.matches_uploaded, 0)  AS matches_uploaded,
             COALESCE(mc.matches_completed, 0) AS matches_completed,
@@ -137,7 +139,9 @@ _VIEWS = [
             SELECT score AS nps_latest FROM core.nps_response n
             WHERE n.account_id = ca.id ORDER BY submitted_at DESC LIMIT 1
         ) np ON true
-        WHERE ba.active
+        -- NB: ALL accounts (incl terminated active=false) — terminated are bucketed as the
+        -- 'terminated' stage above. The active funnel metrics (vw_business_health, vw_at_risk)
+        -- guard with `active` so terminated don't pollute them; the customer list/360 show them.
     ) b
     """,
 
@@ -146,19 +150,19 @@ _VIEWS = [
     CREATE OR REPLACE VIEW core.vw_business_health AS
     SELECT
         (SELECT count(*) FROM billing.account WHERE active)                                   AS total_accounts,
-        (SELECT COALESCE(SUM(mrr_cents), 0) FROM core.vw_account_lifecycle)                   AS mrr_cents,
-        (SELECT count(*) FROM core.vw_account_lifecycle WHERE mrr_cents > 0)                  AS active_subscriptions,
+        (SELECT COALESCE(SUM(mrr_cents), 0) FROM core.vw_account_lifecycle WHERE active)      AS mrr_cents,
+        (SELECT count(*) FROM core.vw_account_lifecycle WHERE active AND mrr_cents > 0)       AS active_subscriptions,
         (SELECT count(*) FROM billing.account
            WHERE active AND created_at >= date_trunc('month', now()))                        AS new_accounts_this_month,
         (SELECT count(*) FROM billing.subscription_state
            WHERE COALESCE(cancelled_at, payment_cancelled_at) >= date_trunc('month', now())) AS churned_this_month,
-        (SELECT count(*) FROM core.vw_account_lifecycle WHERE activated)                      AS activated_accounts,
+        (SELECT count(*) FROM core.vw_account_lifecycle WHERE active AND activated)           AS activated_accounts,
         (SELECT count(*) FROM core.vw_account_lifecycle WHERE stage IN ('paid','at_risk'))    AS paid_accounts,
-        ROUND( (SELECT count(*) FROM core.vw_account_lifecycle WHERE activated)::numeric
+        ROUND( (SELECT count(*) FROM core.vw_account_lifecycle WHERE active AND activated)::numeric
                / NULLIF((SELECT count(*) FROM billing.account WHERE active), 0), 4)           AS activation_rate,
-        ROUND( (SELECT count(*) FROM core.vw_account_lifecycle WHERE mrr_cents > 0)::numeric
+        ROUND( (SELECT count(*) FROM core.vw_account_lifecycle WHERE active AND mrr_cents > 0)::numeric
                / NULLIF((SELECT count(*) FROM core.vw_account_lifecycle
-                          WHERE matches_uploaded >= 1), 0), 4)                                AS free_to_paid_rate,
+                          WHERE active AND matches_uploaded >= 1), 0), 4)                     AS free_to_paid_rate,
         (SELECT COALESCE(SUM(pp.payg_cents), 0)
            FROM billing.entitlement_grant eg
            JOIN core.vw_plan_pricing pp ON pp.plan_code = eg.plan_code
@@ -187,7 +191,7 @@ _VIEWS = [
     SELECT l.account_id, l.public_id, l.email, l.display_name, l.role, l.stage, l.activated,
            l.plan_code, l.plan_type, l.sub_status, l.mrr_cents,
            l.matches_uploaded, l.matches_remaining, l.last_activity, l.nps_latest, l.created_at,
-           COALESCE(cp.linked_count, 0) AS linked_count
+           COALESCE(cp.linked_count, 0) AS linked_count, l.active
     FROM core.vw_account_lifecycle l
     LEFT JOIN LATERAL (
         SELECT count(*) AS linked_count
@@ -202,7 +206,7 @@ _VIEWS = [
     SELECT 'trial_no_upload' AS category, account_id, email, display_name,
            'No match uploaded yet' AS detail, 0::numeric AS metric, last_activity
     FROM core.vw_account_lifecycle
-    WHERE matches_uploaded = 0
+    WHERE matches_uploaded = 0 AND active
     UNION ALL
     SELECT 'inactive_subscriber', account_id, email, display_name,
            'No activity 30+ days', EXTRACT(day FROM now() - last_activity)::numeric, last_activity
@@ -216,7 +220,7 @@ _VIEWS = [
         SELECT count(*) AS cnt FROM billing.coaches_permission cp
         WHERE cp.coach_account_id = l.account_id AND cp.active
     ) lc ON true
-    WHERE lc.cnt > 0
+    WHERE lc.cnt > 0 AND l.active
     """,
 
     # ── Tab 4: match / processing ops (reads bronze — the live ingest state) ─────────────────

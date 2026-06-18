@@ -92,6 +92,9 @@ def customers():
     if stage:
         where.append("stage = :stage")
         params["stage"] = stage
+    else:
+        # default view hides terminated accounts; pass ?stage=terminated to see them
+        where.append("stage <> 'terminated'")
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     rows = _rows(
         f"SELECT * FROM core.vw_customer_list{clause} ORDER BY last_activity DESC NULLS LAST LIMIT 500",
