@@ -4337,7 +4337,7 @@ def ops_seed_klaviyo_events():
     if not (_os.getenv("KLAVIYO_API_KEY") or "").strip():
         return jsonify({"ok": False, "error": "KLAVIYO_API_KEY not set in this environment"}), 400
     body = request.get_json(silent=True) or {}
-    email = (body.get("email") or "info@ten-fifty5.com").strip().lower()
+    email = (body.get("email") or "tomo.stojakovic@gmail.com").strip().lower()
     try:
         from marketing_crm.tracking.events import EVENTS
         from marketing_crm.crm_sync import klaviyo
