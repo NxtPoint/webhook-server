@@ -4322,6 +4322,37 @@ def ops_backfill_pair_labels():
     return jsonify(result), 200
 
 
+@app.post("/ops/seed-klaviyo-events")
+def ops_seed_klaviyo_events():
+    """One-time (pre-launch): fire a test event of EACH type into Klaviyo for a test profile, so
+    Cowork can wire flow triggers — Klaviyo won't let a flow trigger on a metric it has never seen.
+    Must run in the Render service (where KLAVIYO_API_KEY lives). Header-only auth (OPS_KEY).
+
+    Body (optional): {"email": "info@ten-fifty5.com", "events": ["account_created", ...]}
+    Default: every event in the canonical taxonomy (marketing_crm/tracking/events.py).
+    Returns per-event Klaviyo accept status. Safe to re-run (just sends more test events)."""
+    if not _guard():
+        return Response("Forbidden", 403)
+    import os as _os
+    if not (_os.getenv("KLAVIYO_API_KEY") or "").strip():
+        return jsonify({"ok": False, "error": "KLAVIYO_API_KEY not set in this environment"}), 400
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or "info@ten-fifty5.com").strip().lower()
+    try:
+        from marketing_crm.tracking.events import EVENTS
+        from marketing_crm.crm_sync import klaviyo
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"import_failed: {e}"}), 500
+    events = body.get("events") or sorted(EVENTS)
+    results = {}
+    for ev in events:
+        try:
+            results[ev] = bool(klaviyo.track_event(email, ev, {"test": True, "source": "seed"}))
+        except Exception as ex:
+            results[ev] = f"error: {ex}"
+    return jsonify({"ok": True, "email": email, "klaviyo": results})
+
+
 @app.post("/ops/sync-feedback-signals")
 def ops_sync_feedback_signals():
     """Backfill/safety-net: sync NPS detractors + cancellation/widget surveys from core.* into
