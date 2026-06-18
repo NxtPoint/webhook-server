@@ -255,6 +255,16 @@ try:
 except Exception:
     app.logger.exception("core_api register failed on boot")
 
+# ---------- Cowork CRM pull API (marketing_crm) — always registered; closed until CRM_API_KEY set ----------
+# Read-only /api/crm/* for the growth partner to pull customer 360 + events and build Klaviyo
+# segments/flows. Owner-level traits only (no minor/biometric PII); consent-aware (marketing_opt_in).
+try:
+    from marketing_crm.crm_api import register as register_crm_api
+    if register_crm_api(app):
+        app.logger.info("marketing_crm crm_api registered (/api/crm/*)")
+except Exception:
+    app.logger.exception("marketing_crm crm_api register failed on boot")
+
 # ---------- Page-view beacon (marketing_crm) — self-gates on TRACKING_ENABLED ----------
 # Public POST /api/track/page for navigation analytics (sendBeacon). Records nothing unless
 # TRACKING_ENABLED=1; always registered so the route exists.
