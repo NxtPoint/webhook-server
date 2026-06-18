@@ -7,118 +7,212 @@
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <style>
   :root{
-    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
-    --txt:#e7ebf0; --muted:#9aa4b2; --green:#22c55e; --amber:#f59e0b; --red:#ef4444; --blue:#3b82f6;
-    --radius:12px; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --panel3:#232834; --line:#2a2f3a; --line2:#363c4a;
+    --txt:#e7ebf0; --muted:#9aa4b2; --muted2:#6b7587;
+    --green:#22c55e; --amber:#f59e0b; --red:#ef4444; --blue:#3b82f6; --violet:#a78bfa;
+    --radius:12px; --radius-sm:8px;
+    --sp1:6px; --sp2:10px; --sp3:14px; --sp4:18px; --sp5:24px;
+    --focus:#60a5fa;
+    font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);font-size:14px}
-  header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.2px}
-  .badge{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:2px 10px}
-  .tabs{display:flex;gap:6px;padding:12px 20px 0;flex-wrap:wrap}
-  .tab{padding:8px 14px;border:1px solid var(--line);border-bottom:none;border-radius:10px 10px 0 0;
-       background:var(--panel);color:var(--muted);cursor:pointer;font-weight:500}
-  .tab.active{background:var(--panel2);color:var(--txt)}
-  main{padding:20px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
-  .card .k{font-size:12px;color:var(--muted);margin-bottom:6px}
-  .card .v{font-size:24px;font-weight:700}
-  .card .s{font-size:12px;color:var(--muted);margin-top:4px}
-  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--txt);font-size:14px;line-height:1.45;
+       -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  /* ---- Focus / a11y ---------------------------------------------------- */
+  a:focus-visible,button:focus-visible,[tabindex]:focus-visible,input:focus-visible,
+  select:focus-visible,textarea:focus-visible,.tab:focus-visible,.chip:focus-visible{
+    outline:2px solid var(--focus); outline-offset:2px; border-radius:6px;
+  }
+  .skip{position:absolute;left:-999px;top:0;background:var(--blue);color:#fff;padding:8px 14px;
+        border-radius:0 0 8px 0;z-index:50}
+  .skip:focus{left:0}
+
+  /* ---- Top bar --------------------------------------------------------- */
+  header{padding:14px 24px;border-bottom:1px solid var(--line);
+         display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+         background:linear-gradient(180deg,#13161d,var(--bg))}
+  header .brand{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;letter-spacing:.2px;margin:0}
+  header .brand .logo{font-size:18px}
+  header .grow{flex:1}
+  .badge{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:3px 11px;
+         display:inline-flex;align-items:center;gap:5px;background:var(--panel)}
+  .badge.dot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
+  .reloadBtn{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:99px;
+             padding:4px 12px;background:var(--panel);cursor:pointer}
+  .reloadBtn:hover{color:var(--txt);border-color:var(--line2)}
+
+  /* ---- Tab nav --------------------------------------------------------- */
+  .tabs{display:flex;gap:4px;padding:12px 24px 0;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+  .tab{padding:9px 16px;border:1px solid transparent;border-bottom:none;border-radius:10px 10px 0 0;
+       background:transparent;color:var(--muted);cursor:pointer;font-weight:500;font-size:13px;
+       position:relative;top:1px;user-select:none}
+  .tab:hover{color:var(--txt)}
+  .tab.active{background:var(--panel2);color:var(--txt);border-color:var(--line)}
+  .tab.active::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--blue)}
+
+  main{padding:20px 24px 80px}
+
+  /* ---- KPI cards ------------------------------------------------------- */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--sp3);margin-bottom:var(--sp5)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;
+        display:flex;flex-direction:column;gap:4px;min-height:92px}
+  .card .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600}
+  .card .v{font-size:26px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+  .card .s{font-size:12px;color:var(--muted)}
+  .card.accent-green{border-left:3px solid var(--green)}
+  .card.accent-amber{border-left:3px solid var(--amber)}
+  .card.accent-red{border-left:3px solid var(--red)}
+  .card.accent-blue{border-left:3px solid var(--blue)}
+  .trend{font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:3px}
+  .trend.up{color:var(--green)} .trend.down{color:var(--red)} .trend.flat{color:var(--muted)}
+
+  /* ---- Tables ---------------------------------------------------------- */
+  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);
+        border-radius:var(--radius);overflow:hidden}
   th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}
-  th{color:var(--muted);font-weight:600;background:var(--panel2);position:sticky;top:0}
+  th{color:var(--muted);font-weight:600;background:var(--panel2);position:sticky;top:0;z-index:1}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:rgba(255,255,255,.02)}
+  th.sortable{cursor:pointer;user-select:none}
+  th.sortable:hover{color:var(--txt)}
+  th.sortable .arrow{opacity:.4;font-size:10px;margin-left:4px}
+  th.sortable.asc .arrow,th.sortable.desc .arrow{opacity:1;color:var(--blue)}
+
   .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;text-transform:capitalize}
-  .pill.paid{background:rgba(34,197,94,.15);color:var(--green)}
-  .pill.at_risk,.pill.failed{background:rgba(239,68,68,.15);color:var(--red)}
-  .pill.trial,.pill.payg,.pill.processing,.pill.queued{background:rgba(245,158,11,.15);color:var(--amber)}
-  .pill.signup,.pill.churned{background:rgba(154,164,178,.15);color:var(--muted)}
+  .pill.paid,.pill.active,.pill.approved,.pill.resolved,.pill.promoter{background:rgba(34,197,94,.15);color:var(--green)}
+  .pill.at_risk,.pill.failed,.pill.rejected,.pill.high,.pill.detractor{background:rgba(239,68,68,.15);color:var(--red)}
+  .pill.trial,.pill.payg,.pill.processing,.pill.queued,.pill.draft,.pill.open,.pill.passive,.pill.medium{background:rgba(245,158,11,.15);color:var(--amber)}
+  .pill.signup,.pill.churned,.pill.low,.pill.closed{background:rgba(154,164,178,.15);color:var(--muted)}
   .pill.complete,.pill.activated{background:rgba(59,130,246,.15);color:var(--blue)}
-  .controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
-  input,select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:8px 12px;border-radius:8px;font-size:13px}
+
+  .controls{display:flex;gap:10px;margin-bottom:var(--sp3);flex-wrap:wrap;align-items:center}
+  input,select,textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+        padding:8px 12px;border-radius:var(--radius-sm);font-size:13px;font-family:inherit}
+  input::placeholder{color:var(--muted2)}
+  textarea{width:100%;resize:vertical;line-height:1.5}
+
   .sec{margin-bottom:26px}
-  .sec h2{font-size:14px;margin:0 0 10px;font-weight:600}
+  .sec > h2{font-size:14px;margin:0 0 10px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .sec > h2 .count{font-size:12px;color:var(--muted);font-weight:500}
   .muted{color:var(--muted)}
-  .err{background:rgba(239,68,68,.12);border:1px solid var(--red);color:#fecaca;padding:12px 16px;border-radius:10px;margin-bottom:16px}
-  .empty{color:var(--muted);padding:24px;text-align:center}
-  .wrap{max-height:60vh;overflow:auto;border-radius:var(--radius)}
-  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-  .chip{padding:6px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel);cursor:pointer;font-size:12px}
+
+  /* ---- States ---------------------------------------------------------- */
+  .err{background:rgba(239,68,68,.12);border:1px solid var(--red);color:#fecaca;padding:12px 16px;
+       border-radius:10px;margin-bottom:16px;display:flex;gap:10px;align-items:flex-start}
+  .empty{color:var(--muted);padding:28px;text-align:center}
+  .empty .big{font-size:14px;color:var(--txt);font-weight:600;margin-bottom:4px}
+  .empty .hint{font-size:12px;color:var(--muted2)}
+  .banner{background:rgba(59,130,246,.10);border:1px solid rgba(59,130,246,.4);color:#bfdbfe;
+          padding:11px 15px;border-radius:10px;margin-bottom:16px;font-size:12.5px;display:flex;gap:8px;align-items:flex-start}
+  .banner.warn{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.4);color:#fde68a}
+  .toast{position:fixed;right:20px;bottom:20px;background:var(--panel3);border:1px solid var(--line2);
+         color:var(--txt);padding:12px 16px;border-radius:10px;font-size:13px;z-index:60;
+         box-shadow:0 8px 24px rgba(0,0,0,.4);max-width:340px;opacity:0;transform:translateY(8px);
+         transition:opacity .2s,transform .2s}
+  .toast.show{opacity:1;transform:translateY(0)}
+  .toast.ok{border-left:3px solid var(--green)} .toast.bad{border-left:3px solid var(--red)}
+
+  /* skeleton loader */
+  .skel{display:grid;gap:12px}
+  .skel .row{height:46px;border-radius:var(--radius-sm);
+        background:linear-gradient(90deg,var(--panel) 25%,var(--panel2) 37%,var(--panel) 63%);
+        background-size:400% 100%;animation:shimmer 1.3s ease infinite}
+  .skel.cards{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+  .skel.cards .row{height:92px}
+  @keyframes shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+  .spinner{width:18px;height:18px;border:2px solid var(--line2);border-top-color:var(--blue);
+           border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:-3px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.skel .row,.spinner{animation:none}}
+
+  .wrap{max-height:62vh;overflow:auto;border-radius:var(--radius)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:var(--sp3)}
+  .chip{padding:6px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel);
+        cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
+  .chip:hover{color:var(--txt)}
   .chip.active{background:var(--panel2);color:var(--txt);border-color:var(--blue)}
   .hidden{display:none}
+
+  /* buttons */
+  .btn{font-size:12px;font-weight:600;border:1px solid var(--line2);border-radius:7px;padding:5px 11px;
+       background:var(--panel3);color:var(--txt);cursor:pointer;white-space:nowrap}
+  .btn:hover{border-color:var(--blue)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+  .btn.good{background:rgba(34,197,94,.15);border-color:var(--green);color:var(--green)}
+  .btn.bad{background:rgba(239,68,68,.12);border-color:var(--red);color:#fca5a5}
+  .btn.ghost{background:transparent}
+  .btn-sm{padding:3px 9px;font-size:11px}
+
   tbody tr.clickable{cursor:pointer}
   tbody tr.clickable:hover td{background:var(--panel2)}
+
+  /* ---- Customer 360 ---------------------------------------------------- */
   .c360{margin-top:20px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
-  .c360 .c360-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:12px}
+  .c360 .c360-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;
+        border-bottom:1px solid var(--line);padding-bottom:12px}
   .c360 .c360-head h2{font-size:16px;margin:0;font-weight:600}
-  .c360 .closeBtn{margin-left:auto;cursor:pointer;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:4px 12px;background:var(--panel2)}
-  .c360 .meta{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:18px}
-  .c360 .meta .m{font-size:13px}
-  .c360 .meta .m b{display:block;color:var(--muted);font-size:11px;font-weight:600;margin-bottom:2px}
-  .chartgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;margin-bottom:22px}
+  .c360 .closeBtn{margin-left:auto;cursor:pointer;color:var(--muted);border:1px solid var(--line);
+        border-radius:8px;padding:5px 12px;background:var(--panel2);font-size:12px}
+  .c360 .closeBtn:hover{color:var(--txt)}
+  .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px 18px}
+  .meta .m{font-size:13px}
+  .meta .m b{display:block;color:var(--muted);font-size:10.5px;font-weight:600;margin-bottom:2px;
+        text-transform:uppercase;letter-spacing:.3px}
+
+  /* ---- Charts ---------------------------------------------------------- */
+  .chartgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:22px}
   .chartcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
   .chartcard h3{font-size:13px;margin:0 0 4px;font-weight:600}
   .chartcard .sub{font-size:11px;color:var(--muted);margin-bottom:8px}
   .chart{width:100%;height:240px;position:relative}
-  .chart .nodata{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px}
+  .chart .nodata{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px}
+
+  /* workflow two-col */
+  .cols2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media (max-width:900px){.cols2{grid-template-columns:1fr}}
+  .candidate{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:14px 16px;margin-bottom:12px}
+  .candidate .ctitle{font-weight:600;font-size:13.5px;margin-bottom:6px}
+  .candidate .cmeta{font-size:11px;color:var(--muted);margin-bottom:8px;display:flex;gap:12px;flex-wrap:wrap}
+  .candidate textarea{min-height:72px;margin-bottom:10px;font-size:12.5px}
+  .candidate .actions{display:flex;gap:8px;flex-wrap:wrap}
 </style>
 </head>
 <body>
+<a href="#main" class="skip">Skip to content</a>
 <header>
-  <h1>🎾 Ten-Fifty5 — Internal Cockpit</h1>
-  <span class="badge" id="srcBadge">core.* + bronze</span>
+  <h1 class="brand"><span class="logo" aria-hidden="true">🎾</span> Ten-Fifty5 — Internal Cockpit</h1>
+  <span class="badge dot" id="srcBadge">core.* + bronze</span>
+  <span class="grow"></span>
+  <span class="badge muted" id="rangeBadge">trailing 90 days</span>
   <span class="badge muted" id="whoBadge"></span>
+  <button class="reloadBtn" id="reloadBtn" title="Reload current tab">↻ Refresh</button>
 </header>
-<div class="tabs">
-  <div class="tab active" data-tab="health">Business health</div>
-  <div class="tab" data-tab="customers">Customers</div>
-  <div class="tab" data-tab="risk">At-risk &amp; opportunity</div>
-  <div class="tab" data-tab="ops">Processing ops</div>
-  <div class="tab" data-tab="feedback">Feedback</div>
-  <div class="tab" data-tab="performance">Performance</div>
-</div>
-<main>
-  <div id="err" class="err hidden"></div>
 
-  <section id="tab-health" class="tabpane">
+<nav class="tabs" id="tabnav" role="tablist" aria-label="Cockpit sections">
+  <div class="tab active" role="tab" tabindex="0" data-tab="health"      aria-selected="true">Business health</div>
+  <div class="tab"        role="tab" tabindex="0" data-tab="performance" aria-selected="false">Performance</div>
+  <div class="tab"        role="tab" tabindex="0" data-tab="customers"   aria-selected="false">Customers</div>
+  <div class="tab"        role="tab" tabindex="0" data-tab="risk"        aria-selected="false">At-risk &amp; opportunity</div>
+  <div class="tab"        role="tab" tabindex="0" data-tab="ops"         aria-selected="false">Processing ops</div>
+  <div class="tab"        role="tab" tabindex="0" data-tab="feedback"    aria-selected="false">Feedback (NPS)</div>
+  <div class="tab"        role="tab" tabindex="0" data-tab="kb"          aria-selected="false">Feedback &amp; KB</div>
+</nav>
+
+<main id="main">
+  <div id="err" class="err hidden" role="alert"></div>
+
+  <!-- ================= Business health ================= -->
+  <section id="tab-health" class="tabpane" role="tabpanel" aria-label="Business health">
     <div class="grid" id="healthCards"></div>
     <div class="sec"><h2>Active subscriptions by plan</h2><div class="wrap"><table id="byPlan"></table></div></div>
   </section>
 
-  <section id="tab-customers" class="tabpane hidden">
-    <div class="controls">
-      <input id="custSearch" placeholder="Search email / name…" style="min-width:240px">
-      <select id="custStage">
-        <option value="">All stages</option>
-        <option>signup</option><option>trial</option><option>payg</option>
-        <option>paid</option><option>at_risk</option><option>churned</option>
-      </select>
-      <span class="muted" id="custCount"></span>
-    </div>
-    <div class="wrap"><table id="custTable"></table></div>
-    <div id="c360" class="c360 hidden"></div>
-  </section>
-
-  <section id="tab-risk" class="tabpane hidden">
-    <div class="sec"><h2>Trials that haven't uploaded <span class="muted" id="c1"></span></h2><div class="wrap"><table id="r1"></table></div></div>
-    <div class="sec"><h2>Subscribers inactive 30+ days <span class="muted" id="c2"></span></h2><div class="wrap"><table id="r2"></table></div></div>
-    <div class="sec"><h2>Coaches (linkable players) <span class="muted" id="c3"></span></h2><div class="wrap"><table id="r3"></table></div></div>
-  </section>
-
-  <section id="tab-ops" class="tabpane hidden">
-    <div class="chips" id="opsChips"></div>
-    <div class="wrap"><table id="opsTable"></table></div>
-  </section>
-
-  <section id="tab-feedback" class="tabpane hidden">
-    <div class="grid" id="npsCards"></div>
-    <div class="sec"><h2>Recent verbatims</h2><div class="wrap"><table id="verbatims"></table></div></div>
-    <div class="sec"><h2>Recent feedback &amp; cancellations</h2><div class="wrap"><table id="recentFb"></table></div></div>
-  </section>
-
-  <section id="tab-performance" class="tabpane hidden">
+  <!-- ================= Performance ================= -->
+  <section id="tab-performance" class="tabpane hidden" role="tabpanel" aria-label="Performance">
     <div class="grid" id="perfCards"></div>
     <div class="chartgrid">
       <div class="chartcard"><h3>Daily active accounts</h3><div class="sub">DAU (distinct accounts with events / day)</div><div class="chart" id="chDau"></div></div>
@@ -130,232 +224,437 @@
       <div class="chartcard"><h3>Support / day</h3><div class="sub">questions vs resolved vs escalated</div><div class="chart" id="chSupport"></div></div>
       <div class="chartcard"><h3>AI-coach queries / day</h3><div class="sub">coach queries &amp; distinct users</div><div class="chart" id="chCoach"></div></div>
     </div>
-    <div class="sec"><h2>Usage by event type <span class="muted" id="usageNote"></span></h2><div class="wrap"><table id="usageTable"></table></div></div>
+    <div class="sec"><h2>Usage by event type <span class="count" id="usageNote"></span></h2><div class="wrap"><table id="usageTable"></table></div></div>
+  </section>
+
+  <!-- ================= Customers ================= -->
+  <section id="tab-customers" class="tabpane hidden" role="tabpanel" aria-label="Customers">
+    <div class="chips" id="stageChips" role="group" aria-label="Filter by stage"></div>
+    <div class="controls">
+      <input id="custSearch" placeholder="Search email / name…" style="min-width:240px" aria-label="Search customers">
+      <span class="muted" id="custCount"></span>
+    </div>
+    <div class="wrap"><table id="custTable"></table></div>
+    <div id="c360" class="c360 hidden"></div>
+  </section>
+
+  <!-- ================= At-risk ================= -->
+  <section id="tab-risk" class="tabpane hidden" role="tabpanel" aria-label="At-risk and opportunity">
+    <div class="sec"><h2>Trials that haven't uploaded <span class="count" id="c1"></span></h2><div class="wrap"><table id="r1"></table></div></div>
+    <div class="sec"><h2>Subscribers inactive 30+ days <span class="count" id="c2"></span></h2><div class="wrap"><table id="r2"></table></div></div>
+    <div class="sec"><h2>Coaches (linkable players) <span class="count" id="c3"></span></h2><div class="wrap"><table id="r3"></table></div></div>
+  </section>
+
+  <!-- ================= Processing ops ================= -->
+  <section id="tab-ops" class="tabpane hidden" role="tabpanel" aria-label="Processing ops">
+    <div class="chips" id="opsChips"></div>
+    <div class="wrap"><table id="opsTable"></table></div>
+  </section>
+
+  <!-- ================= Feedback (NPS) ================= -->
+  <section id="tab-feedback" class="tabpane hidden" role="tabpanel" aria-label="Feedback NPS">
+    <div class="grid" id="npsCards"></div>
+    <div class="sec"><h2>Recent verbatims</h2><div class="wrap"><table id="verbatims"></table></div></div>
+    <div class="sec"><h2>Recent feedback &amp; cancellations</h2><div class="wrap"><table id="recentFb"></table></div></div>
+  </section>
+
+  <!-- ================= Feedback & KB (self-learning) ================= -->
+  <section id="tab-kb" class="tabpane hidden" role="tabpanel" aria-label="Feedback and Knowledge Base">
+    <div class="grid" id="kbCards"></div>
+    <div class="sec">
+      <h2>Top unanswered questions <span class="count" id="kbSigCount"></span></h2>
+      <p class="muted" style="margin:-4px 0 10px;font-size:12px">
+        Recurring questions the bot couldn't confidently answer. Draft a FAQ candidate (Haiku writes a grounded answer for review) or route to a feature ticket.</p>
+      <div class="wrap"><table id="kbUnanswered"></table></div>
+    </div>
+    <div class="sec">
+      <div class="banner warn">
+        <span aria-hidden="true">⚠️</span>
+        <span><b>Approving does not publish.</b> The backend never writes <code>faq.md</code>. After approval a human still edits <code>support_bot/faq.md</code> and commits — approval only records the decision.</span>
+      </div>
+      <h2>FAQ candidate review queue <span class="count" id="kbCandCount"></span></h2>
+      <div class="chips" id="kbStatusChips" role="group" aria-label="Filter candidates by status"></div>
+      <div id="kbCandidates"></div>
+    </div>
+    <div class="cols2">
+      <div class="sec">
+        <h2>Cancellation themes <span class="count" id="kbCancelCount"></span></h2>
+        <div class="wrap"><table id="kbCancel"></table></div>
+      </div>
+      <div class="sec">
+        <h2>NPS detractor comments <span class="count" id="kbDetractCount"></span></h2>
+        <div class="wrap"><table id="kbDetract"></table></div>
+      </div>
+    </div>
+    <div class="sec">
+      <h2>Feature backlog (tickets) <span class="count" id="kbTicketCount"></span></h2>
+      <div class="wrap"><table id="kbTickets"></table></div>
+    </div>
   </section>
 </main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script>
 const params = new URLSearchParams(location.search);
 const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
 const API_KEY  = params.get('key') || '';
 let EMAIL      = (params.get('email') || '').trim();
-const C = '/api/client/backoffice/cockpit';
+const C  = '/api/client/backoffice/cockpit';   // cockpit (core.* + bronze) base
+const SB = '/api/support/admin';                // support-bot self-learning admin base
 
-function showErr(msg){ const e=document.getElementById('err'); e.textContent=msg; e.classList.remove('hidden'); }
+/* ---------------------------------------------------------------- helpers */
+function showErr(msg){ const e=document.getElementById('err'); e.innerHTML='<span aria-hidden="true">⚠️</span><span>'+esc(msg)+'</span>'; e.classList.remove('hidden'); }
 function clearErr(){ document.getElementById('err').classList.add('hidden'); }
+function num(n){ return (n==null||n==='') ? '—' : Number(n).toLocaleString(); }
 function money(c){ return '$' + ((c||0)/100).toLocaleString(undefined,{maximumFractionDigits:0}); }
 function pct(x){ return x==null ? '—' : (x*100).toFixed(1)+'%'; }
 function when(t){ if(!t) return '—'; const d=new Date(t); return isNaN(d)?'—':d.toLocaleDateString(); }
-function pill(v){ return v ? `<span class="pill ${v}">${String(v).replace('_',' ')}</span>` : '—'; }
+function whenT(t){ if(!t) return '—'; const d=new Date(t); return isNaN(d)?'—':d.toLocaleString(); }
+function pill(v){ return v ? `<span class="pill ${String(v).toLowerCase()}">${esc(String(v).replace(/_/g,' '))}</span>` : '—'; }
+function esc(s){ return (s==null?'':s).toString().replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
 
-async function api(path){
-  // Dual-mode via TFAuth (/auth_client.js): clerk Bearer or legacy X-Client-Key + ?email.
-  const r = await TFAuth.apiFetch(path);
+let _toastT;
+function toast(msg, kind){
+  const el=document.getElementById('toast');
+  el.className='toast show '+(kind||'');
+  el.textContent=msg;
+  clearTimeout(_toastT);
+  _toastT=setTimeout(()=>el.classList.remove('show'), 3200);
+}
+
+/* TFAuth dual-mode fetch: clerk Bearer or legacy X-Client-Key + ?email. */
+async function api(path, base){
+  const r = await TFAuth.apiFetch((base||C)+path);
   if(!r.ok){ throw new Error(`${path} → ${r.status} ${r.statusText}`); }
   return r.json();
 }
-function tbl(el, cols, rows, render){
-  const thead = '<tr>' + cols.map(c=>`<th>${c}</th>`).join('') + '</tr>';
-  if(!rows || !rows.length){ el.innerHTML = thead + `<tr><td colspan="${cols.length}" class="empty">No rows</td></tr>`; return; }
-  el.innerHTML = thead + rows.map(render).join('');
+async function post(path, body, base){
+  const r = await TFAuth.apiFetch((base||SB)+path, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body||{}),
+  });
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok || j.ok===false){ throw new Error(j.error || `${path} → ${r.status} ${r.statusText}`); }
+  return j;
 }
 
-// ---- Tabs ----
-document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
-  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  t.classList.add('active');
+/* table renderer. cols = ['Label', ...] or [{label,num:true}, ...].
+   render(row) returns a <tr>…</tr> string. Empty state is graceful. */
+function tbl(el, cols, rows, render, emptyMsg){
+  const thead = '<tr>' + cols.map(c=>{
+    const label = (typeof c==='object')? c.label : c;
+    const cls = (typeof c==='object' && c.num)? ' class="num"' : '';
+    return `<th${cls}>${esc(label)}</th>`;
+  }).join('') + '</tr>';
+  if(!rows || !rows.length){
+    el.innerHTML = thead + `<tr><td colspan="${cols.length}" class="empty">
+      <div class="big">${esc(emptyMsg||'No data yet')}</div>
+      <div class="hint">Nothing to show for the current view.</div></td></tr>`;
+    return;
+  }
+  el.innerHTML = thead + rows.map(render).join('');
+}
+function skel(el, kind){
+  const n = kind==='cards'?6:5;
+  el.innerHTML = '';
+  if(el.tagName==='TABLE'){
+    el.innerHTML = `<tr><td><div class="skel"><div class="row"></div><div class="row"></div><div class="row"></div></div></td></tr>`;
+    return;
+  }
+  let h='<div class="skel '+(kind==='cards'?'cards':'')+'">';
+  for(let i=0;i<n;i++) h+='<div class="row"></div>';
+  el.innerHTML = h+'</div>';
+}
+function emptyBox(msg, hint){
+  return `<div class="empty"><div class="big">${esc(msg)}</div><div class="hint">${esc(hint||'')}</div></div>`;
+}
+
+/* generic client-side sortable table. Re-renders rows on header click. */
+function sortable(tableEl, cols, rows, render, state, emptyMsg){
+  function paint(){
+    const sorted = rows.slice();
+    if(state.key!=null){
+      const k=state.key, dir=state.dir;
+      sorted.sort((a,b)=>{
+        let x=a[k], y=b[k];
+        if(x==null) x = (typeof y==='number')? -Infinity : '';
+        if(y==null) y = (typeof x==='number')? -Infinity : '';
+        if(typeof x==='string' && typeof y==='string'){ x=x.toLowerCase(); y=y.toLowerCase(); }
+        return (x<y?-1:x>y?1:0)*dir;
+      });
+    }
+    const thead = '<tr>' + cols.map((c,i)=>{
+      const label=c.label, cls=(c.num?'num ':'')+(c.key?'sortable':'')+(state.key===c.key?(' '+(state.dir>0?'asc':'desc')):'');
+      const arrow = c.key ? `<span class="arrow">${state.key===c.key?(state.dir>0?'▲':'▼'):'↕'}</span>` : '';
+      return `<th class="${cls}" data-i="${i}">${esc(label)}${arrow}</th>`;
+    }).join('') + '</tr>';
+    if(!sorted.length){
+      tableEl.innerHTML = thead + `<tr><td colspan="${cols.length}" class="empty"><div class="big">${esc(emptyMsg||'No data yet')}</div></td></tr>`;
+    }else{
+      tableEl.innerHTML = thead + sorted.map(render).join('');
+    }
+    tableEl.querySelectorAll('th.sortable').forEach(th=>{
+      th.onclick = ()=>{
+        const c = cols[+th.dataset.i];
+        if(state.key===c.key){ state.dir*=-1; } else { state.key=c.key; state.dir=1; }
+        paint();
+      };
+    });
+    if(state.onpaint) state.onpaint();
+  }
+  paint();
+}
+
+/* ---------------------------------------------------------------- tab nav */
+const tabs = [...document.querySelectorAll('.tab')];
+function activate(tab){
+  tabs.forEach(x=>{ const on = x===tab; x.classList.toggle('active',on); x.setAttribute('aria-selected', on?'true':'false'); });
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.add('hidden'));
-  document.getElementById('tab-'+t.dataset.tab).classList.remove('hidden');
-  load(t.dataset.tab);
+  document.getElementById('tab-'+tab.dataset.tab).classList.remove('hidden');
+  load(tab.dataset.tab);
+}
+tabs.forEach((t,i)=>{
+  t.onclick = ()=>activate(t);
+  t.onkeydown = (e)=>{
+    if(e.key==='Enter'||e.key===' '){ e.preventDefault(); activate(t); }
+    else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){
+      e.preventDefault();
+      const next = tabs[(i + (e.key==='ArrowRight'?1:tabs.length-1)) % tabs.length];
+      next.focus();
+    }
+  };
 });
+document.getElementById('reloadBtn').onclick = ()=>{
+  const active = document.querySelector('.tab.active');
+  if(active) load(active.dataset.tab, true);
+};
 
 const loaded = {};
 async function load(tab, force){
   if(loaded[tab] && !force) return;
   clearErr();
   try{
-    if(tab==='health') await loadHealth();
-    if(tab==='customers') await loadCustomers();
-    if(tab==='risk') await loadRisk();
-    if(tab==='ops') await loadOps();
-    if(tab==='feedback') await loadFeedback();
-    if(tab==='performance') await loadPerformance();
+    if(tab==='health')       await loadHealth();
+    if(tab==='customers')    await loadCustomers();
+    if(tab==='risk')         await loadRisk();
+    if(tab==='ops')          await loadOps();
+    if(tab==='feedback')     await loadFeedback();
+    if(tab==='performance')  await loadPerformance();
+    if(tab==='kb')           await loadKB();
     loaded[tab]=true;
   }catch(e){ showErr(e.message + '  — check that COCKPIT_ENABLED=1 on the API and your email is an admin.'); }
 }
 
+/* ---------------------------------------------------------------- HEALTH */
 async function loadHealth(){
-  const d = await api(`${C}/business-health`);
+  skel(document.getElementById('healthCards'),'cards');
+  skel(document.getElementById('byPlan'));
+  const d = await api(`/business-health`);
   const h = d.health || {};
   const cards = [
-    ['MRR', money(h.mrr_cents), `${h.active_subscriptions||0} active subs`],
-    ['New accounts (mo)', h.new_accounts_this_month||0, ''],
-    ['Churned (mo)', h.churned_this_month||0, ''],
-    ['Activation rate', pct(h.activation_rate), `${h.activated_accounts||0}/${h.total_accounts||0}`],
-    ['Free → paid', pct(h.free_to_paid_rate), ''],
-    ['PAYG revenue', money(h.payg_revenue_cents), 'all-time'],
-    ['Total accounts', h.total_accounts||0, ''],
+    ['MRR', money(h.mrr_cents), `${num(h.active_subscriptions)} active subs`, 'accent-green'],
+    ['New accounts (mo)', num(h.new_accounts_this_month), 'this calendar month', 'accent-blue'],
+    ['Churned (mo)', num(h.churned_this_month), 'this calendar month', 'accent-red'],
+    ['Activation rate', pct(h.activation_rate), `${num(h.activated_accounts)}/${num(h.total_accounts)}`, ''],
+    ['Free → paid', pct(h.free_to_paid_rate), 'conversion', ''],
+    ['PAYG revenue', money(h.payg_revenue_cents), 'all-time', 'accent-amber'],
+    ['Total accounts', num(h.total_accounts), 'lifetime', ''],
   ];
   document.getElementById('healthCards').innerHTML = cards.map(c=>
-    `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
-  tbl(document.getElementById('byPlan'), ['Plan','Type','Active','MRR'], d.by_plan,
-      r=>`<tr><td>${r.plan_code}</td><td>${r.plan_type||'—'}</td><td>${r.active_count}</td><td>${money(r.mrr_cents)}</td></tr>`);
+    `<div class="card ${c[3]||''}"><div class="k">${esc(c[0])}</div><div class="v">${c[1]}</div><div class="s">${esc(c[2]||'')}</div></div>`).join('');
+  tbl(document.getElementById('byPlan'),
+      ['Plan','Type',{label:'Active',num:true},{label:'MRR',num:true}], d.by_plan,
+      r=>`<tr><td>${esc(r.plan_code)}</td><td>${esc(r.plan_type||'—')}</td><td class="num">${num(r.active_count)}</td><td class="num">${money(r.mrr_cents)}</td></tr>`,
+      'No active plans yet');
 }
 
+/* ---------------------------------------------------------------- CUSTOMERS */
+const STAGES = ['', 'signup','trial','payg','paid','at_risk','churned'];
+let custStage = '';
+const custSortState = { key:null, dir:1 };
+function renderStageChips(){
+  document.getElementById('stageChips').innerHTML = STAGES.map(s=>{
+    const label = s||'all stages';
+    return `<span class="chip ${custStage===s?'active':''}" tabindex="0" role="button" data-s="${s}">${esc(label)}</span>`;
+  }).join('');
+  document.querySelectorAll('#stageChips .chip').forEach(c=>{
+    const go=()=>{ custStage=c.dataset.s; renderStageChips(); loadCustomers(); };
+    c.onclick=go; c.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();go();} };
+  });
+}
 async function loadCustomers(){
-  const s = encodeURIComponent(document.getElementById('custSearch').value);
-  const st = encodeURIComponent(document.getElementById('custStage').value);
-  const d = await api(`${C}/customers?search=${s}&stage=${st}`);
-  document.getElementById('custCount').textContent = `${d.count} shown`;
-  tbl(document.getElementById('custTable'),
-      ['Email','Role','Stage','Plan','MRR','Uploads','Credits','Links','NPS','Last active'], d.customers,
-      r=>`<tr class="clickable" data-email="${esc(r.email)}"><td>${r.email}</td><td>${r.role||'—'}</td><td>${pill(r.stage)}</td>
-          <td>${r.plan_code||'—'}</td><td>${money(r.mrr_cents)}</td><td>${r.matches_uploaded}</td>
-          <td>${r.matches_remaining}</td><td>${r.linked_count}</td><td>${r.nps_latest??'—'}</td>
-          <td>${when(r.last_activity)}</td></tr>`);
-  document.querySelectorAll('#custTable tr.clickable').forEach(tr=>
-    tr.onclick = ()=> open360(tr.dataset.email));
+  renderStageChips();
+  skel(document.getElementById('custTable'));
+  const s  = encodeURIComponent(document.getElementById('custSearch').value);
+  const st = encodeURIComponent(custStage);
+  const d  = await api(`/customers?search=${s}&stage=${st}`);
+  document.getElementById('custCount').textContent = `${num(d.count)} shown`;
+  const cols = [
+    {label:'Email', key:'email'}, {label:'Role', key:'role'}, {label:'Stage', key:'stage'},
+    {label:'Plan', key:'plan_code'}, {label:'MRR', key:'mrr_cents', num:true},
+    {label:'Uploads', key:'matches_uploaded', num:true}, {label:'Credits', key:'matches_remaining', num:true},
+    {label:'Links', key:'linked_count', num:true}, {label:'NPS', key:'nps_latest', num:true},
+    {label:'Last active', key:'last_activity', num:true},
+  ];
+  custSortState.onpaint = ()=>{
+    document.querySelectorAll('#custTable tr.clickable').forEach(tr=> tr.onclick = ()=> open360(tr.dataset.email));
+  };
+  sortable(document.getElementById('custTable'), cols, d.customers||[],
+    r=>`<tr class="clickable" tabindex="0" data-email="${esc(r.email)}"><td>${esc(r.email)}</td><td>${esc(r.role||'—')}</td><td>${pill(r.stage)}</td>
+        <td>${esc(r.plan_code||'—')}</td><td class="num">${money(r.mrr_cents)}</td><td class="num">${num(r.matches_uploaded)}</td>
+        <td class="num">${num(r.matches_remaining)}</td><td class="num">${num(r.linked_count)}</td><td class="num">${r.nps_latest??'—'}</td>
+        <td class="num">${when(r.last_activity)}</td></tr>`,
+    custSortState, 'No customers match this filter');
 }
 
-// ---- Customer 360 drill-down ----
+/* ---- Customer 360 drill-down ---- */
 async function open360(email){
   const box = document.getElementById('c360');
   box.classList.remove('hidden');
-  box.innerHTML = `<div class="empty">Loading 360 for ${esc(email)}…</div>`;
+  box.innerHTML = `<div class="empty"><span class="spinner"></span> &nbsp;Loading 360 for ${esc(email)}…</div>`;
   box.scrollIntoView({behavior:'smooth', block:'start'});
   try{
-    const d = await api(`${C}/customer?email=${encodeURIComponent(email)}`);
+    const d = await api(`/customer?email=${encodeURIComponent(email)}`);
     render360(d);
-  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  }catch(e){ box.innerHTML = `<div class="err"><span aria-hidden="true">⚠️</span><span>${esc(e.message)}</span></div>`; }
 }
 function close360(){ document.getElementById('c360').classList.add('hidden'); }
-
 function render360(d){
   const s = d.summary||{};
   const meta = [
-    ['Display name', s.display_name||'—'], ['Role', s.role||'—'], ['Stage', pill(s.stage)],
+    ['Display name', esc(s.display_name||'—')], ['Role', esc(s.role||'—')], ['Stage', pill(s.stage)],
     ['Enrolled', when(s.created_at)], ['Last activity', when(s.last_activity)],
     ['Marketing consent', s.consent_marketing===true?'granted':(s.consent_marketing===false?'not granted':'—')],
   ];
   const sub = [
-    ['Plan', `${s.plan_code||'—'} (${s.plan_type||'—'})`], ['Status', s.sub_status||'—'],
+    ['Plan', `${esc(s.plan_code||'—')} (${esc(s.plan_type||'—')})`], ['Status', esc(s.sub_status||'—')],
     ['MRR', money(s.mrr_cents)], ['Credits left', s.matches_remaining??'—'],
-    ['Uploaded', s.matches_uploaded??0], ['Completed', s.matches_completed??0],
-    ['Payments', `${s.payments_count||0} · ${money(s.payments_total_cents)}`],
+    ['Uploaded', num(s.matches_uploaded)], ['Completed', num(s.matches_completed)],
+    ['Payments', `${num(s.payments_count)} · ${money(s.payments_total_cents)}`],
     ['Refunds', money(s.refunds_total_cents)], ['Last payment', when(s.last_payment_at)],
-    ['Support msgs', `${s.support_msgs||0} (${s.support_escalations||0} escalated)`],
-    ['Coach msgs', s.coach_msgs||0], ['NPS', s.nps_latest??'—'], ['Failed tasks', s.tasks_failed||0],
+    ['Support msgs', `${num(s.support_msgs)} (${num(s.support_escalations)} escalated)`],
+    ['Coach msgs', num(s.coach_msgs)], ['NPS', s.nps_latest??'—'], ['Failed tasks', num(s.tasks_failed)],
   ];
-  const metaHtml = m => m.map(x=>`<div class="m"><b>${x[0]}</b>${x[1]}</div>`).join('');
+  const metaHtml = m => m.map(x=>`<div class="m"><b>${esc(x[0])}</b>${x[1]}</div>`).join('');
   const box = document.getElementById('c360');
   box.innerHTML = `
     <div class="c360-head">
       <h2>${esc(s.email||'')}</h2>
-      <span class="badge">acct ${s.account_id??'?'}</span>
-      <span class="closeBtn" id="c360close">Close ✕</span>
+      <span class="badge">acct ${esc(s.account_id??'?')}</span>
+      <span class="closeBtn" id="c360close" tabindex="0" role="button">Close ✕</span>
     </div>
     <div class="sec"><h2>Identity</h2><div class="meta">${metaHtml(meta)}</div></div>
     <div class="sec"><h2>Subscription &amp; credits</h2><div class="meta">${metaHtml(sub)}</div></div>
-    <div class="sec"><h2>Payments <span class="muted">(${(d.payments||[]).length})</span></h2>
-      <div class="wrap"><table id="t360pay"></table></div></div>
-    <div class="sec"><h2>Transaction log <span class="muted">(${(d.transaction_log||[]).length})</span></h2>
-      <div class="wrap"><table id="t360tx"></table></div></div>
-    <div class="sec"><h2>Subscription events <span class="muted">(${(d.subscription_events||[]).length})</span></h2>
-      <div class="wrap"><table id="t360se"></table></div></div>
-    <div class="sec"><h2>Support chat <span class="muted">(${(d.support_chat||[]).length})</span></h2>
-      <div class="wrap"><table id="t360sup"></table></div></div>
-    <div class="sec"><h2>AI-coach chat <span class="muted">(${(d.coach_chat||[]).length})</span></h2>
-      <div class="wrap"><table id="t360coach"></table></div></div>
-    <div class="sec"><h2>Feedback <span class="muted">(${(d.feedback||[]).length})</span></h2>
-      <div class="wrap"><table id="t360fb"></table></div></div>
-    <div class="sec"><h2>Consent <span class="muted">(${(d.consent||[]).length})</span></h2>
-      <div class="wrap"><table id="t360cons"></table></div></div>`;
-  document.getElementById('c360close').onclick = close360;
+    <div class="sec"><h2>Payments <span class="count">(${(d.payments||[]).length})</span></h2><div class="wrap"><table id="t360pay"></table></div></div>
+    <div class="sec"><h2>Transaction log <span class="count">(${(d.transaction_log||[]).length})</span></h2><div class="wrap"><table id="t360tx"></table></div></div>
+    <div class="sec"><h2>Subscription events <span class="count">(${(d.subscription_events||[]).length})</span></h2><div class="wrap"><table id="t360se"></table></div></div>
+    <div class="sec"><h2>Support chat <span class="count">(${(d.support_chat||[]).length})</span></h2><div class="wrap"><table id="t360sup"></table></div></div>
+    <div class="sec"><h2>AI-coach chat <span class="count">(${(d.coach_chat||[]).length})</span></h2><div class="wrap"><table id="t360coach"></table></div></div>
+    <div class="sec"><h2>Feedback <span class="count">(${(d.feedback||[]).length})</span></h2><div class="wrap"><table id="t360fb"></table></div></div>
+    <div class="sec"><h2>Consent <span class="count">(${(d.consent||[]).length})</span></h2><div class="wrap"><table id="t360cons"></table></div></div>`;
+  const cl=document.getElementById('c360close'); cl.onclick=close360; cl.onkeydown=(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();close360();}};
 
-  tbl(document.getElementById('t360pay'), ['When','Kind','Amount','Status','Plan','Provider'], d.payments,
-      r=>`<tr><td>${when(r.occurred_at)}</td><td>${r.kind||'—'}</td><td>${money(r.amount_cents)}</td>
-          <td>${r.status||'—'}</td><td>${r.plan_code||'—'}</td><td class="muted">${r.provider||'—'}</td></tr>`);
+  tbl(document.getElementById('t360pay'), ['When','Kind',{label:'Amount',num:true},'Status','Plan','Provider'], d.payments,
+      r=>`<tr><td>${when(r.occurred_at)}</td><td>${esc(r.kind||'—')}</td><td class="num">${money(r.amount_cents)}</td>
+          <td>${esc(r.status||'—')}</td><td>${esc(r.plan_code||'—')}</td><td class="muted">${esc(r.provider||'—')}</td></tr>`, 'No payments');
   tbl(document.getElementById('t360tx'), ['When','Task','Sport','Step','Status','Detail'], d.transaction_log,
-      r=>`<tr><td>${when(r.created_at)}</td><td>${(r.task_id||'').slice(0,8)}</td><td>${r.sport_type||'—'}</td>
-          <td>${r.step||'—'}</td><td>${pill(r.status)}</td>
-          <td class="muted">${esc((r.error||r.detail||'').slice(0,80))}</td></tr>`);
+      r=>`<tr><td>${when(r.created_at)}</td><td>${esc((r.task_id||'').slice(0,8))}</td><td>${esc(r.sport_type||'—')}</td>
+          <td>${esc(r.step||'—')}</td><td>${pill(r.status)}</td>
+          <td class="muted">${esc((r.error||r.detail||'').slice(0,80))}</td></tr>`, 'No transactions');
   tbl(document.getElementById('t360se'), ['When','Event','Payload'], d.subscription_events,
-      r=>`<tr><td>${when(r.created_at)}</td><td>${r.event_type||'—'}</td>
-          <td class="muted">${esc(JSON.stringify(r.payload||{}).slice(0,80))}</td></tr>`);
+      r=>`<tr><td>${when(r.created_at)}</td><td>${esc(r.event_type||'—')}</td>
+          <td class="muted">${esc(JSON.stringify(r.payload||{}).slice(0,80))}</td></tr>`, 'No subscription events');
   tbl(document.getElementById('t360sup'), ['When','Question','Answer','Conf','Escalated'], d.support_chat,
       r=>`<tr><td>${when(r.created_at)}</td><td>${esc((r.question||'').slice(0,80))}</td>
-          <td>${esc((r.answer||'').slice(0,80))}</td><td>${r.confidence||'—'}</td>
-          <td>${r.escalated_at?when(r.escalated_at):'—'}</td></tr>`);
+          <td>${esc((r.answer||'').slice(0,80))}</td><td>${esc(r.confidence||'—')}</td>
+          <td>${r.escalated_at?when(r.escalated_at):'—'}</td></tr>`, 'No support chats');
   tbl(document.getElementById('t360coach'), ['When','Prompt','Question','Response'], d.coach_chat,
-      r=>`<tr><td>${when(r.created_at)}</td><td>${r.prompt_key||'—'}</td>
-          <td>${esc((r.question||'').slice(0,60))}</td><td>${esc((r.response||'').slice(0,80))}</td></tr>`);
+      r=>`<tr><td>${when(r.created_at)}</td><td>${esc(r.prompt_key||'—')}</td>
+          <td>${esc((r.question||'').slice(0,60))}</td><td>${esc((r.response||'').slice(0,80))}</td></tr>`, 'No coach chats');
   tbl(document.getElementById('t360fb'), ['When','Kind','Detail','Comment'], d.feedback,
-      r=>`<tr><td>${when(r.submitted_at)}</td><td>${r.kind||'—'}</td><td>${esc(r.detail||'')}</td>
-          <td class="muted">${esc((r.comment||'').slice(0,80))}</td></tr>`);
+      r=>`<tr><td>${when(r.submitted_at)}</td><td>${esc(r.kind||'—')}</td><td>${esc(r.detail||'')}</td>
+          <td class="muted">${esc((r.comment||'').slice(0,80))}</td></tr>`, 'No feedback');
   tbl(document.getElementById('t360cons'), ['Type','Status','Version','Granted','Withdrawn','Subject'], d.consent,
-      r=>`<tr><td>${r.consent_type||'—'}</td><td>${r.status||'—'}</td><td>${r.policy_version||'—'}</td>
+      r=>`<tr><td>${esc(r.consent_type||'—')}</td><td>${esc(r.status||'—')}</td><td>${esc(r.policy_version||'—')}</td>
           <td>${when(r.granted_at)}</td><td>${r.withdrawn_at?when(r.withdrawn_at):'—'}</td>
-          <td>${esc(r.subject||'—')}</td></tr>`);
+          <td>${esc(r.subject||'—')}</td></tr>`, 'No consent records');
 }
 document.getElementById('custSearch').oninput = debounce(()=>loadCustomers(),300);
-document.getElementById('custStage').onchange = ()=>loadCustomers();
 function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};}
 
+/* ---------------------------------------------------------------- AT-RISK */
 async function loadRisk(){
-  const d = await api(`${C}/at-risk`);
+  [ 'r1','r2','r3' ].forEach(id=>skel(document.getElementById(id)));
+  const d = await api(`/at-risk`);
   const g = d.groups||{};
   document.getElementById('c1').textContent = `(${(g.trial_no_upload||[]).length})`;
   document.getElementById('c2').textContent = `(${(g.inactive_subscriber||[]).length})`;
   document.getElementById('c3').textContent = `(${(g.coach_linkable||[]).length})`;
   tbl(document.getElementById('r1'), ['Email','Name','Detail'], g.trial_no_upload,
-      r=>`<tr><td>${r.email}</td><td>${r.display_name||'—'}</td><td>${r.detail}</td></tr>`);
-  tbl(document.getElementById('r2'), ['Email','Name','Days idle','Last active'], g.inactive_subscriber,
-      r=>`<tr><td>${r.email}</td><td>${r.display_name||'—'}</td><td>${Math.round(r.metric)}</td><td>${when(r.last_activity)}</td></tr>`);
-  tbl(document.getElementById('r3'), ['Email','Name','Linked players'], g.coach_linkable,
-      r=>`<tr><td>${r.email}</td><td>${r.display_name||'—'}</td><td>${Math.round(r.metric)}</td></tr>`);
+      r=>`<tr><td>${esc(r.email)}</td><td>${esc(r.display_name||'—')}</td><td>${esc(r.detail)}</td></tr>`,
+      'No trials waiting');
+  tbl(document.getElementById('r2'), ['Email','Name',{label:'Days idle',num:true},{label:'Last active',num:true}], g.inactive_subscriber,
+      r=>`<tr><td>${esc(r.email)}</td><td>${esc(r.display_name||'—')}</td><td class="num">${num(Math.round(r.metric))}</td><td class="num">${when(r.last_activity)}</td></tr>`,
+      'No inactive subscribers');
+  tbl(document.getElementById('r3'), ['Email','Name',{label:'Linked players',num:true}], g.coach_linkable,
+      r=>`<tr><td>${esc(r.email)}</td><td>${esc(r.display_name||'—')}</td><td class="num">${num(Math.round(r.metric))}</td></tr>`,
+      'No coaches with linkable players');
 }
 
+/* ---------------------------------------------------------------- OPS */
 let opsFilter = '';
 async function loadOps(){
-  const d = await api(`${C}/processing-ops${opsFilter?`?status=${opsFilter}`:''}`);
+  skel(document.getElementById('opsTable'));
+  const d = await api(`/processing-ops${opsFilter?`?status=${opsFilter}`:''}`);
   const sum = d.summary||{};
   const states = ['','queued','processing','complete','failed'];
   document.getElementById('opsChips').innerHTML = states.map(s=>{
     const label = s||'all'; const n = s? (sum[s]||0) : Object.values(sum).reduce((a,b)=>a+b,0);
-    return `<span class="chip ${opsFilter===s?'active':''}" data-s="${s}">${label} (${n})</span>`;
+    return `<span class="chip ${opsFilter===s?'active':''}" tabindex="0" role="button" data-s="${s}">${esc(label)} (${num(n)})</span>`;
   }).join('');
-  document.querySelectorAll('#opsChips .chip').forEach(c=>c.onclick=()=>{opsFilter=c.dataset.s;loadOps();});
+  document.querySelectorAll('#opsChips .chip').forEach(c=>{
+    const go=()=>{opsFilter=c.dataset.s;loadOps();};
+    c.onclick=go; c.onkeydown=(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go();}};
+  });
   tbl(document.getElementById('opsTable'),
       ['Task','Email','Sport','Status','Trim','Started','Finished','Error'], d.matches,
-      r=>`<tr><td>${(r.task_id||'').slice(0,8)}</td><td>${r.email||'—'}</td><td>${r.sport_type||'—'}</td>
-          <td>${pill(r.derived_status)}</td><td>${r.trim_status||'—'}</td>
+      r=>`<tr><td>${esc((r.task_id||'').slice(0,8))}</td><td>${esc(r.email||'—')}</td><td>${esc(r.sport_type||'—')}</td>
+          <td>${pill(r.derived_status)}</td><td>${esc(r.trim_status||'—')}</td>
           <td>${when(r.ingest_started_at)}</td><td>${when(r.ingest_finished_at)}</td>
-          <td class="muted">${r.ingest_error? r.ingest_error.slice(0,60):''}</td></tr>`);
+          <td class="muted">${esc(r.ingest_error? r.ingest_error.slice(0,60):'')}</td></tr>`,
+      'No matches for this status');
 }
 
+/* ---------------------------------------------------------------- FEEDBACK (NPS) */
 async function loadFeedback(){
-  const d = await api(`${C}/feedback`);
+  skel(document.getElementById('npsCards'),'cards');
+  skel(document.getElementById('verbatims')); skel(document.getElementById('recentFb'));
+  const d = await api(`/feedback`);
   const s = d.summary||{};
-  const cards=[['NPS', s.nps??'—', `${s.responses||0} responses`],
-               ['Promoters', s.promoters||0,''],['Passives', s.passives||0,''],['Detractors', s.detractors||0,'']];
+  const cards=[['NPS', s.nps??'—', `${num(s.responses)} responses`,'accent-blue'],
+               ['Promoters', num(s.promoters),'','accent-green'],
+               ['Passives', num(s.passives),'','accent-amber'],
+               ['Detractors', num(s.detractors),'','accent-red']];
   document.getElementById('npsCards').innerHTML=cards.map(c=>
-    `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
-  tbl(document.getElementById('verbatims'), ['Score','Bucket','Comment','When'], d.verbatims,
-      r=>`<tr><td>${r.score}</td><td>${pill(r.bucket)}</td><td>${esc(r.comment)}</td><td>${when(r.submitted_at)}</td></tr>`);
+    `<div class="card ${c[3]||''}"><div class="k">${esc(c[0])}</div><div class="v">${c[1]}</div><div class="s">${esc(c[2])}</div></div>`).join('');
+  tbl(document.getElementById('verbatims'), [{label:'Score',num:true},'Bucket','Comment','When'], d.verbatims,
+      r=>`<tr><td class="num">${r.score}</td><td>${pill(r.bucket)}</td><td style="white-space:normal">${esc(r.comment)}</td><td>${when(r.submitted_at)}</td></tr>`,
+      'No verbatims yet');
   tbl(document.getElementById('recentFb'), ['Type','Detail','When'], d.recent_feedback, r=>{
       const j=r.responses||{};
       const detail = r.survey_key==='cancellation'
         ? `${j.reason||''}${j.comment?' — '+j.comment:''}`
         : `${j.area?('['+j.area+'] '):''}${j.message||''}`;
-      return `<tr><td>${r.survey_key}</td><td>${esc(detail)}</td><td>${when(r.submitted_at)}</td></tr>`;});
+      return `<tr><td>${esc(r.survey_key)}</td><td style="white-space:normal">${esc(detail)}</td><td>${when(r.submitted_at)}</td></tr>`;},
+      'No recent feedback');
 }
-function esc(s){ return (s||'').toString().replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
 
-// ---- Performance tab ----
-// Dark-themed ECharts helpers tuned to the cockpit palette (line/bar over time).
+/* ---------------------------------------------------------------- PERFORMANCE */
 const CHART_THEME = {
   txt:'#e7ebf0', muted:'#9aa4b2', line:'#2a2f3a', grid:'rgba(255,255,255,.06)',
-  green:'#22c55e', amber:'#f59e0b', red:'#ef4444', blue:'#3b82f6',
+  green:'#22c55e', amber:'#f59e0b', red:'#ef4444', blue:'#3b82f6', violet:'#a78bfa',
 };
 const _chartInst = {};
 function _ec(id){
@@ -375,19 +674,24 @@ function _noData(id){
 const _TT = {
   trigger:'axis', backgroundColor:'rgba(23,26,33,.96)', borderColor:CHART_THEME.line, borderWidth:1,
   textStyle:{color:CHART_THEME.txt, fontSize:12}, padding:[8,12],
+  axisPointer:{lineStyle:{color:CHART_THEME.line2||'#363c4a'}},
 };
-function _axisCat(labels){
+function _axisCat(labels, title){
   return { type:'category', data:labels, boundaryGap:true,
+    name:title||undefined, nameLocation:'middle', nameGap:30, nameTextStyle:{color:CHART_THEME.muted,fontSize:10},
     axisLabel:{fontSize:10, color:CHART_THEME.muted, hideOverlap:true},
     axisLine:{lineStyle:{color:CHART_THEME.line}}, axisTick:{show:false} };
 }
-const _axisVal = { type:'value', minInterval:1,
-  axisLabel:{fontSize:10, color:CHART_THEME.muted},
-  splitLine:{lineStyle:{color:CHART_THEME.grid, type:'dashed'}},
-  axisLine:{show:false}, axisTick:{show:false} };
-
+function _axisValN(title){
+  return { type:'value', minInterval:1,
+    name:title||undefined, nameTextStyle:{color:CHART_THEME.muted,fontSize:10},
+    axisLabel:{fontSize:10, color:CHART_THEME.muted, formatter:(v)=>v>=1000?(v/1000)+'k':v},
+    splitLine:{lineStyle:{color:CHART_THEME.grid, type:'dashed'}},
+    axisLine:{show:false}, axisTick:{show:false} };
+}
 // One or more line series over a shared category axis. series = [{name,data,color}]
-function cLine(id, labels, series){
+function cLine(id, labels, series, opts){
+  opts=opts||{};
   if(!labels || !labels.length){ _noData(id); return; }
   const chart = _ec(id); if(!chart) return;
   const multi = series.length > 1;
@@ -395,7 +699,7 @@ function cLine(id, labels, series){
     tooltip:_TT,
     legend: multi ? {bottom:0, textStyle:{color:CHART_THEME.muted, fontSize:11}, itemGap:16, icon:'roundRect'} : undefined,
     grid:{left:8, right:14, top:14, bottom: multi?34:24, containLabel:true},
-    xAxis:_axisCat(labels), yAxis:_axisVal,
+    xAxis:_axisCat(labels, opts.xName), yAxis:_axisValN(opts.yName),
     series: series.map(s=>({
       type:'line', name:s.name, data:s.data, smooth:true, showSymbol:false,
       lineStyle:{width:2, color:s.color}, itemStyle:{color:s.color},
@@ -406,15 +710,16 @@ function cLine(id, labels, series){
   _chartInst[id]=chart;
 }
 // Grouped/standalone bar series over a shared category axis. series = [{name,data,color}]
-function cBar(id, labels, series){
+function cBar(id, labels, series, opts){
+  opts=opts||{};
   if(!labels || !labels.length){ _noData(id); return; }
   const chart = _ec(id); if(!chart) return;
   const multi = series.length > 1;
   chart.setOption({
-    tooltip:_TT,
+    tooltip:Object.assign({}, _TT, {axisPointer:{type:'shadow'}}),
     legend: multi ? {bottom:0, textStyle:{color:CHART_THEME.muted, fontSize:11}, itemGap:16, icon:'roundRect'} : undefined,
     grid:{left:8, right:14, top:14, bottom: multi?34:24, containLabel:true},
-    xAxis:_axisCat(labels), yAxis:_axisVal,
+    xAxis:_axisCat(labels, opts.xName), yAxis:_axisValN(opts.yName),
     series: series.map(s=>({
       type:'bar', name:s.name, data:s.data, barMaxWidth:18,
       itemStyle:{color:s.color, borderRadius:[3,3,0,0]},
@@ -425,48 +730,44 @@ function cBar(id, labels, series){
 }
 
 function loadPerformance(){
-  return api(`${C}/performance`).then(d=>{
+  skel(document.getElementById('perfCards'),'cards');
+  skel(document.getElementById('usageTable'));
+  return api(`/performance`).then(d=>{
     const sh = d.support_health || {};
     const lastNet = (d.revenue_monthly||[]).slice(-1)[0];
     const lastNewAcct = (d.new_accounts||[]).slice(-1)[0];
     const lastDau = (d.dau||[]).slice(-1)[0];
     const cards = [
-      ['Questions 24h', sh.q_24h??0, ''],
-      ['Questions 7d', sh.q_7d??0, ''],
-      ['Questions 30d', sh.q_30d??0, `${sh.escalated_30d||0} escalated`],
-      ['Resolution rate 30d', pct(sh.resolution_rate_30d), `${sh.resolved_30d||0} resolved`],
-      ['Support cost 30d', money(sh.cost_cents_30d), ''],
-      ['DAU (latest)', lastDau? (lastDau.dau||0) : 0, lastDau? when(lastDau.day):''],
-      ['New accts (mo)', lastNewAcct? (lastNewAcct.new_accounts||0):0, lastNewAcct? lastNewAcct.month:''],
-      ['Net rev (mo)', money(lastNet? lastNet.net_cents:0), lastNet? lastNet.month:''],
+      ['Questions 24h', num(sh.q_24h), '', 'accent-blue'],
+      ['Questions 7d', num(sh.q_7d), '', ''],
+      ['Questions 30d', num(sh.q_30d), `${num(sh.escalated_30d)} escalated`, ''],
+      ['Resolution rate 30d', pct(sh.resolution_rate_30d), `${num(sh.resolved_30d)} resolved`, 'accent-green'],
+      ['Support cost 30d', money(sh.cost_cents_30d), '', 'accent-amber'],
+      ['DAU (latest)', lastDau? num(lastDau.dau) : 0, lastDau? when(lastDau.day):'', 'accent-blue'],
+      ['New accts (mo)', lastNewAcct? num(lastNewAcct.new_accounts):0, lastNewAcct? lastNewAcct.month:'', ''],
+      ['Net rev (mo)', money(lastNet? lastNet.net_cents:0), lastNet? lastNet.month:'', 'accent-green'],
     ];
     document.getElementById('perfCards').innerHTML = cards.map(c=>
-      `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
+      `<div class="card ${c[3]||''}"><div class="k">${esc(c[0])}</div><div class="v">${c[1]}</div><div class="s">${esc(c[2]||'')}</div></div>`).join('');
 
-    // DAU by day
     const dau = d.dau||[];
-    cLine('chDau', dau.map(r=>when(r.day)), [{name:'DAU', data:dau.map(r=>r.dau||0), color:CHART_THEME.blue}]);
+    cLine('chDau', dau.map(r=>when(r.day)), [{name:'DAU', data:dau.map(r=>r.dau||0), color:CHART_THEME.blue}], {yName:'accounts'});
 
-    // Unique visitors + page views
     const vis = d.visitors_daily||[];
     cLine('chVisitors', vis.map(r=>when(r.day)), [
       {name:'Unique visitors', data:vis.map(r=>r.unique_visitors||0), color:CHART_THEME.green},
       {name:'Page views', data:vis.map(r=>r.page_views||0), color:CHART_THEME.blue},
     ]);
 
-    // New accounts / month
     const na = d.new_accounts||[];
-    cBar('chNewAcct', na.map(r=>r.month), [{name:'New accounts', data:na.map(r=>r.new_accounts||0), color:CHART_THEME.green}]);
+    cBar('chNewAcct', na.map(r=>r.month), [{name:'New accounts', data:na.map(r=>r.new_accounts||0), color:CHART_THEME.green}], {yName:'accounts'});
 
-    // Net revenue / month (cents → dollars)
     const rev = d.revenue_monthly||[];
-    cBar('chRevenue', rev.map(r=>r.month), [{name:'Net revenue ($)', data:rev.map(r=>Math.round((r.net_cents||0)/100)), color:CHART_THEME.amber}]);
+    cBar('chRevenue', rev.map(r=>r.month), [{name:'Net revenue ($)', data:rev.map(r=>Math.round((r.net_cents||0)/100)), color:CHART_THEME.amber}], {yName:'USD'});
 
-    // Churn / month
     const ch = d.churn_monthly||[];
-    cBar('chChurn', ch.map(r=>r.month), [{name:'Churned', data:ch.map(r=>r.churned||0), color:CHART_THEME.red}]);
+    cBar('chChurn', ch.map(r=>r.month), [{name:'Churned', data:ch.map(r=>r.churned||0), color:CHART_THEME.red}], {yName:'subs'});
 
-    // Processing / day
     const proc = d.processing_daily||[];
     cBar('chProcessing', proc.map(r=>when(r.day)), [
       {name:'Submissions', data:proc.map(r=>r.submissions||0), color:CHART_THEME.blue},
@@ -474,7 +775,6 @@ function loadPerformance(){
       {name:'Failed', data:proc.map(r=>r.failed||0), color:CHART_THEME.red},
     ]);
 
-    // Support / day
     const sd = d.support_daily||[];
     cBar('chSupport', sd.map(r=>when(r.day)), [
       {name:'Questions', data:sd.map(r=>r.questions||0), color:CHART_THEME.blue},
@@ -482,14 +782,12 @@ function loadPerformance(){
       {name:'Escalated', data:sd.map(r=>r.escalated||0), color:CHART_THEME.amber},
     ]);
 
-    // AI-coach queries / day
     const cd = d.coach_daily||[];
     cLine('chCoach', cd.map(r=>when(r.day)), [
       {name:'Queries', data:cd.map(r=>r.queries||0), color:CHART_THEME.blue},
       {name:'Distinct users', data:cd.map(r=>r.distinct_users||0), color:CHART_THEME.green},
     ]);
 
-    // Usage by event type — aggregate the daily rows to top event types
     const agg = {};
     (d.usage_daily||[]).forEach(r=>{
       const k = r.event_type || '—';
@@ -499,12 +797,203 @@ function loadPerformance(){
     });
     const usage = Object.values(agg).sort((a,b)=>b.events-a.events).slice(0,15);
     document.getElementById('usageNote').textContent = usage.length ? `(top ${usage.length} of ${Object.keys(agg).length})` : '';
-    tbl(document.getElementById('usageTable'), ['Event type','Events','Peak distinct accounts/day'], usage,
-        r=>`<tr><td>${esc(r.event_type)}</td><td>${r.events}</td><td>${r.accounts}</td></tr>`);
+    tbl(document.getElementById('usageTable'), ['Event type',{label:'Events',num:true},{label:'Peak distinct accounts/day',num:true}], usage,
+        r=>`<tr><td>${esc(r.event_type)}</td><td class="num">${num(r.events)}</td><td class="num">${num(r.accounts)}</td></tr>`,
+        'No usage events yet');
   });
 }
 window.addEventListener('resize', ()=>{ Object.values(_chartInst).forEach(c=>{ try{ c.resize(); }catch(e){} }); });
 
+/* ================================================================ FEEDBACK & KB
+   Self-learning workflow. Endpoints live at /api/support/admin (NOT the cockpit C base). */
+let kbStatus = 'draft';
+async function loadKB(){
+  // status counts / scorecards
+  ['kbCards'].forEach(id=>skel(document.getElementById(id),'cards'));
+  skel(document.getElementById('kbUnanswered'));
+  document.getElementById('kbCandidates').innerHTML = `<div class="empty"><span class="spinner"></span> &nbsp;Loading candidates…</div>`;
+  skel(document.getElementById('kbCancel')); skel(document.getElementById('kbDetract')); skel(document.getElementById('kbTickets'));
+
+  // Fetch independently so one empty/failed section doesn't blank the others.
+  const [sig, tick] = await Promise.all([
+    api(`/signals`, SB).catch(e=>({_err:e.message})),
+    api(`/tickets`, SB).catch(e=>({_err:e.message})),
+  ]);
+
+  if(sig._err){
+    document.getElementById('kbUnanswered').innerHTML = `<tr><td class="empty">${emptyBox('Signals unavailable', sig._err)}</td></tr>`;
+  } else {
+    renderKBSignals(sig);
+  }
+  if(tick._err){
+    document.getElementById('kbTickets').innerHTML = `<tr><td class="empty">${emptyBox('Tickets unavailable', tick._err)}</td></tr>`;
+    document.getElementById('kbTicketCount').textContent='';
+  } else {
+    renderKBTickets(tick);
+  }
+  await loadKBCandidates();
+}
+
+function renderKBSignals(sig){
+  const top = sig.top_unanswered || [];
+  const cancel = sig.cancellation_themes || [];
+  const detract = sig.detractor_comments || [];
+  const counts = sig.counts || sig.open_counts || {};   // spec says counts; backend emits open_counts
+  const totalOpen = Object.values(counts).reduce((a,b)=>a+(+b||0),0);
+
+  // scorecards
+  const cards = [
+    ['Open signals', num(totalOpen), 'unprocessed', 'accent-amber'],
+    ['Unanswered Qs', num(top.length), 'distinct recurring', 'accent-blue'],
+    ['Cancellation themes', num(cancel.length), '', 'accent-red'],
+    ['Detractor comments', num(detract.length), '', ''],
+  ];
+  document.getElementById('kbCards').innerHTML = cards.map(c=>
+    `<div class="card ${c[3]||''}"><div class="k">${esc(c[0])}</div><div class="v">${c[1]}</div><div class="s">${esc(c[2]||'')}</div></div>`).join('');
+
+  // top unanswered
+  document.getElementById('kbSigCount').textContent = `(${top.length})`;
+  tbl(document.getElementById('kbUnanswered'),
+      [{label:'Type'},{label:'Question'},{label:'Freq',num:true},{label:'Most recent',num:true},{label:'Actions'}],
+      top, (r,i)=>{
+        const ids = JSON.stringify(r.signal_ids||[]);
+        const q = esc(r.question||'');
+        const firstId = (r.signal_ids&&r.signal_ids.length)? r.signal_ids[0] : '';
+        return `<tr>
+          <td>${pill(r.signal_type)}</td>
+          <td style="white-space:normal;max-width:520px">${q||'<span class="muted">(no text)</span>'}</td>
+          <td class="num">${num(r.freq)}</td>
+          <td class="num">${when(r.most_recent)}</td>
+          <td>
+            <button class="btn btn-sm primary kbDraft" data-q="${q}" data-ids='${esc(ids)}'>Draft FAQ</button>
+            ${firstId!==''?`<button class="btn btn-sm ghost kbToTicket" data-id="${firstId}">→ Ticket</button>`:''}
+          </td></tr>`;
+      }, 'No signals yet');
+
+  document.querySelectorAll('#kbUnanswered .kbDraft').forEach(b=> b.onclick = ()=>{
+    let ids=[]; try{ ids = JSON.parse(b.dataset.ids.replace(/&quot;/g,'"').replace(/&amp;/g,'&')); }catch(e){}
+    draftFAQ(b.dataset.q, ids, b);
+  });
+  document.querySelectorAll('#kbUnanswered .kbToTicket').forEach(b=> b.onclick = ()=> signalToTicket(b.dataset.id, b));
+
+  // cancellation themes
+  document.getElementById('kbCancelCount').textContent = `(${cancel.length})`;
+  tbl(document.getElementById('kbCancel'), ['Reason',{label:'Freq',num:true},{label:'Most recent',num:true}], cancel,
+      r=>`<tr><td style="white-space:normal">${esc(r.reason||'—')}</td><td class="num">${num(r.freq)}</td><td class="num">${when(r.most_recent)}</td></tr>`,
+      'No cancellation signals yet');
+
+  // detractor comments
+  document.getElementById('kbDetractCount').textContent = `(${detract.length})`;
+  tbl(document.getElementById('kbDetract'), ['Comment',{label:'Freq',num:true},{label:'Most recent',num:true}], detract,
+      r=>`<tr><td style="white-space:normal">${esc(r.comment||'—')}</td><td class="num">${num(r.freq)}</td><td class="num">${when(r.most_recent)}</td></tr>`,
+      'No detractor comments yet');
+}
+
+function renderKBTickets(tick){
+  const tickets = tick.tickets || [];
+  document.getElementById('kbTicketCount').textContent = `(${tickets.length})`;
+  const note = tick.note ? `<tr><td colspan="6" class="muted" style="padding:8px 12px">${esc(tick.note)}</td></tr>` : '';
+  tbl(document.getElementById('kbTickets'),
+      [{label:'ID',num:true},'Subject','Status','Priority','Channel',{label:'Created',num:true}], tickets,
+      r=>`<tr><td class="num">${esc(r.id)}</td><td style="white-space:normal">${esc(r.subject||'—')}</td>
+          <td>${pill(r.status)}</td><td>${pill(r.priority)}</td><td>${esc(r.channel||'—')}</td>
+          <td class="num">${when(r.created_at)}</td></tr>`,
+      'No feature tickets yet');
+  if(note && tickets.length===0){ document.getElementById('kbTickets').innerHTML += note; }
+}
+
+const KB_STATUSES = ['draft','approved','rejected'];
+async function loadKBCandidates(){
+  // status chip row
+  document.getElementById('kbStatusChips').innerHTML = KB_STATUSES.map(s=>
+    `<span class="chip ${kbStatus===s?'active':''}" tabindex="0" role="button" data-s="${s}">${esc(s)}</span>`).join('');
+  document.querySelectorAll('#kbStatusChips .chip').forEach(c=>{
+    const go=()=>{ kbStatus=c.dataset.s; loadKBCandidates(); };
+    c.onclick=go; c.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();go();} };
+  });
+  const box = document.getElementById('kbCandidates');
+  box.innerHTML = `<div class="empty"><span class="spinner"></span> &nbsp;Loading ${esc(kbStatus)} candidates…</div>`;
+  try{
+    const d = await api(`/faq-candidates?status=${encodeURIComponent(kbStatus)}`, SB);
+    renderKBCandidates(d.candidates||[]);
+  }catch(e){
+    box.innerHTML = emptyBox('Candidates unavailable', e.message);
+  }
+}
+
+function renderKBCandidates(cands){
+  document.getElementById('kbCandCount').textContent = `(${cands.length} ${kbStatus})`;
+  const box = document.getElementById('kbCandidates');
+  if(!cands.length){ box.innerHTML = emptyBox(`No ${kbStatus} candidates`, 'Draft one from a top unanswered question above.'); return; }
+  box.innerHTML = cands.map(c=>{
+    const sigs = Array.isArray(c.source_signals)? c.source_signals.length : 0;
+    return `<div class="candidate" data-id="${esc(c.id)}">
+      <div class="ctitle">${esc(c.title||'(untitled)')}</div>
+      <div class="cmeta">
+        <span>#${esc(c.id)}</span>
+        <span>status: ${pill(c.status)}</span>
+        <span>confidence: ${pill(c.confidence||'low')}</span>
+        ${sigs?`<span>${sigs} source signal${sigs>1?'s':''}</span>`:''}
+        <span>created ${when(c.created_at)}</span>
+        ${c.approved_by?`<span>approved by ${esc(c.approved_by)}</span>`:''}
+        ${c.rejected_reason?`<span>reason: ${esc(c.rejected_reason)}</span>`:''}
+      </div>
+      <textarea class="kbDraftText" aria-label="Draft answer for candidate ${esc(c.id)}" ${c.status!=='draft'?'readonly':''}>${esc(c.answer_draft||'')}</textarea>
+      <div class="actions">
+        ${c.status==='draft'?`
+          <button class="btn btn-sm good kbApprove" data-id="${esc(c.id)}">✓ Approve</button>
+          <button class="btn btn-sm bad kbReject" data-id="${esc(c.id)}">✕ Reject</button>`
+        :`<span class="muted" style="font-size:11px">No actions — already ${esc(c.status)}.</span>`}
+      </div>
+    </div>`;
+  }).join('');
+  document.querySelectorAll('#kbCandidates .kbApprove').forEach(b=> b.onclick = ()=> approveCand(b.dataset.id, b));
+  document.querySelectorAll('#kbCandidates .kbReject').forEach(b=> b.onclick = ()=> rejectCand(b.dataset.id, b));
+}
+
+async function draftFAQ(question, signalIds, btn){
+  if(!question){ toast('No question text to draft from','bad'); return; }
+  btn.disabled = true; const orig = btn.textContent; btn.innerHTML='<span class="spinner"></span>';
+  try{
+    const body = {question}; if(signalIds && signalIds.length) body.signal_ids = signalIds;
+    const j = await post(`/faq-candidate/propose`, body);
+    toast('Draft created — review it in the queue below','ok');
+    kbStatus='draft';
+    await loadKBCandidates();
+    document.getElementById('kbCandidates').scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){ toast('Draft failed: '+e.message,'bad'); }
+  finally{ btn.disabled=false; btn.textContent=orig; }
+}
+async function signalToTicket(signalId, btn){
+  btn.disabled=true; const orig=btn.textContent; btn.innerHTML='<span class="spinner"></span>';
+  try{
+    await post(`/signal/${encodeURIComponent(signalId)}/to-ticket`, {});
+    toast('Routed to a feature ticket','ok');
+    const tick = await api(`/tickets`, SB).catch(()=>null);
+    if(tick) renderKBTickets(tick);
+  }catch(e){ toast('To-ticket failed: '+e.message,'bad'); }
+  finally{ btn.disabled=false; btn.textContent=orig; }
+}
+async function approveCand(id, btn){
+  btn.disabled=true;
+  try{
+    await post(`/faq-candidate/${encodeURIComponent(id)}/approve`, {});
+    toast('Approved — remember: a human still edits faq.md + commits','ok');
+    await loadKBCandidates();
+  }catch(e){ toast('Approve failed: '+e.message,'bad'); btn.disabled=false; }
+}
+async function rejectCand(id, btn){
+  const reason = prompt('Reason for rejecting this candidate? (optional)');
+  if(reason===null) return;   // cancelled
+  btn.disabled=true;
+  try{
+    await post(`/faq-candidate/${encodeURIComponent(id)}/reject`, {reason});
+    toast('Rejected','ok');
+    await loadKBCandidates();
+  }catch(e){ toast('Reject failed: '+e.message,'bad'); btn.disabled=false; }
+}
+
+/* ---------------------------------------------------------------- boot */
 (async () => {
   await TFAuth.ready();
   EMAIL = TFAuth.email();
