@@ -261,6 +261,65 @@ _VIEWS = [
     FROM core.nps_response
     GROUP BY 1 ORDER BY 1 DESC
     """,
+
+    # ── Customer 360: one row of SUMMARY SCALARS per active billing.account ───────────────────
+    # Base = core.vw_account_lifecycle (already billing-account-driven, one row/account). LEFT JOIN
+    # rollups so unfed sources show 0/NULL (COALESCE), never error. Lists live in the endpoint.
+    #   • payments        → billing.payment        by account_id
+    #   • support/coach   → *_bot/coach conversations by lower(email)
+    #   • consent         → core.account → core.person → core.consent (latest marketing_email)
+    #   • task failures   → bronze.submission_context.email → bronze.task_event (status='failed')
+    """
+    CREATE OR REPLACE VIEW core.vw_customer_360 AS
+    SELECT
+        l.account_id, l.email, l.display_name, l.role, l.stage,
+        l.created_at, l.plan_code, l.plan_type, l.sub_status, l.mrr_cents,
+        l.matches_remaining, l.matches_uploaded, l.matches_completed,
+        COALESCE(pay.payments_count, 0)        AS payments_count,
+        COALESCE(pay.payments_total_cents, 0)  AS payments_total_cents,
+        COALESCE(pay.refunds_total_cents, 0)   AS refunds_total_cents,
+        pay.last_payment_at,
+        COALESCE(sup.support_msgs, 0)          AS support_msgs,
+        COALESCE(sup.support_escalations, 0)   AS support_escalations,
+        COALESCE(cc.coach_msgs, 0)             AS coach_msgs,
+        l.nps_latest,
+        l.last_activity,
+        cons.consent_marketing,
+        COALESCE(tf.tasks_failed, 0)           AS tasks_failed
+    FROM core.vw_account_lifecycle l
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS payments_count,
+               COALESCE(SUM(amount_cents) FILTER (WHERE amount_cents > 0), 0) AS payments_total_cents,
+               COALESCE(SUM(amount_cents) FILTER (WHERE amount_cents < 0), 0) AS refunds_total_cents,
+               max(occurred_at) AS last_payment_at
+        FROM billing.payment p WHERE p.account_id = l.account_id
+    ) pay ON true
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS support_msgs,
+               count(*) FILTER (WHERE escalated_at IS NOT NULL) AS support_escalations
+        FROM support_bot.conversations sb WHERE lower(sb.email) = lower(l.email)
+    ) sup ON true
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS coach_msgs
+        FROM tennis_coach.conversations tc WHERE lower(tc.email) = lower(l.email)
+    ) cc ON true
+    LEFT JOIN LATERAL (
+        SELECT (cn.status = 'granted') AS consent_marketing
+        FROM core.account ca
+        JOIN core.person pe ON pe.account_id = ca.id
+        JOIN core.consent cn ON cn.subject_person_id = pe.id
+                            AND cn.consent_type = 'marketing_email'
+        WHERE lower(ca.email) = lower(l.email)
+        ORDER BY cn.granted_at DESC NULLS LAST, cn.created_at DESC
+        LIMIT 1
+    ) cons ON true
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS tasks_failed
+        FROM bronze.submission_context sc
+        JOIN bronze.task_event te ON te.task_id = sc.task_id AND te.status = 'failed'
+        WHERE lower(sc.email) = lower(l.email)
+    ) tf ON true
+    """,
 ]
 
 

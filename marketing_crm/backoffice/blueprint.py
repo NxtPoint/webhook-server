@@ -100,6 +100,90 @@ def customers():
     return jsonify({"ok": True, "customers": rows, "count": len(rows)})
 
 
+@cockpit_bp.route(f"{_PREFIX}/customer", methods=["GET", "OPTIONS"])
+def customer_360():
+    """Full Customer-360 drill-down for one account, keyed by ?email=. Summary scalars come from
+    core.vw_customer_360; the lists are bounded sub-selects against the live SoR. Robust to sparse
+    core.* rows (returns [])."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    summary = _one("SELECT * FROM core.vw_customer_360 WHERE lower(email) = :e", {"e": email})
+    if not summary:
+        return jsonify({"ok": False, "error": "customer not found"}), 404
+    aid = summary.get("account_id")
+
+    payments = _rows(
+        "SELECT id, kind, amount_cents, currency, status, occurred_at, plan_code, "
+        "provider, provider_payment_id "
+        "FROM billing.payment WHERE account_id = :a ORDER BY occurred_at DESC NULLS LAST LIMIT 50",
+        {"a": aid})
+
+    transaction_log = _rows(
+        "SELECT te.task_id, te.step, te.status, te.detail, te.error, te.created_at, sc.sport_type "
+        "FROM bronze.task_event te "
+        "JOIN bronze.submission_context sc ON sc.task_id = te.task_id "
+        "WHERE lower(sc.email) = :e ORDER BY te.created_at DESC LIMIT 100",
+        {"e": email})
+
+    subscription_events = _rows(
+        "SELECT event_id, event_type, payload, created_at "
+        "FROM billing.subscription_event_log WHERE account_id = :a "
+        "ORDER BY created_at DESC LIMIT 50",
+        {"a": aid})
+
+    support_chat = _rows(
+        "SELECT question, answer, confidence, needs_human, escalated_at, feedback, created_at "
+        "FROM support_bot.conversations WHERE lower(email) = :e "
+        "ORDER BY created_at DESC LIMIT 50",
+        {"e": email})
+
+    coach_chat = _rows(
+        "SELECT task_id, prompt_key, question, response, created_at "
+        "FROM tennis_coach.conversations WHERE lower(email) = :e "
+        "ORDER BY created_at DESC LIMIT 50",
+        {"e": email})
+
+    feedback_rows = []
+    if aid is not None:
+        feedback_rows = _rows(
+            "SELECT 'nps' AS kind, score::text AS detail, bucket, comment, submitted_at "
+            "FROM core.nps_response WHERE account_id = :a "
+            "UNION ALL "
+            "SELECT 'survey' AS kind, survey_key AS detail, NULL AS bucket, "
+            "responses::text AS comment, submitted_at "
+            "FROM core.survey_response WHERE account_id = :a "
+            "ORDER BY submitted_at DESC LIMIT 50",
+            {"a": aid})
+
+    consent_rows = _rows(
+        "SELECT cn.consent_type, cn.status, cn.policy_version, cn.granted_at, cn.withdrawn_at, "
+        "pe.full_name AS subject "
+        "FROM core.account ca "
+        "JOIN core.person pe ON pe.account_id = ca.id "
+        "JOIN core.consent cn ON cn.subject_person_id = pe.id "
+        "WHERE lower(ca.email) = :e "
+        "ORDER BY cn.granted_at DESC NULLS LAST, cn.created_at DESC LIMIT 50",
+        {"e": email})
+
+    return jsonify({
+        "ok": True,
+        "summary": summary,
+        "payments": payments,
+        "transaction_log": transaction_log,
+        "subscription_events": subscription_events,
+        "support_chat": support_chat,
+        "coach_chat": coach_chat,
+        "feedback": feedback_rows,
+        "consent": consent_rows,
+    })
+
+
 @cockpit_bp.route(f"{_PREFIX}/at-risk", methods=["GET", "OPTIONS"])
 def at_risk():
     if request.method == "OPTIONS":

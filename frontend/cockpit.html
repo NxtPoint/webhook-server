@@ -47,6 +47,15 @@
   .chip{padding:6px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel);cursor:pointer;font-size:12px}
   .chip.active{background:var(--panel2);color:var(--txt);border-color:var(--blue)}
   .hidden{display:none}
+  tbody tr.clickable{cursor:pointer}
+  tbody tr.clickable:hover td{background:var(--panel2)}
+  .c360{margin-top:20px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+  .c360 .c360-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:12px}
+  .c360 .c360-head h2{font-size:16px;margin:0;font-weight:600}
+  .c360 .closeBtn{margin-left:auto;cursor:pointer;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:4px 12px;background:var(--panel2)}
+  .c360 .meta{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:18px}
+  .c360 .meta .m{font-size:13px}
+  .c360 .meta .m b{display:block;color:var(--muted);font-size:11px;font-weight:600;margin-bottom:2px}
 </style>
 </head>
 <body>
@@ -81,6 +90,7 @@
       <span class="muted" id="custCount"></span>
     </div>
     <div class="wrap"><table id="custTable"></table></div>
+    <div id="c360" class="c360 hidden"></div>
   </section>
 
   <section id="tab-risk" class="tabpane hidden">
@@ -175,10 +185,93 @@ async function loadCustomers(){
   document.getElementById('custCount').textContent = `${d.count} shown`;
   tbl(document.getElementById('custTable'),
       ['Email','Role','Stage','Plan','MRR','Uploads','Credits','Links','NPS','Last active'], d.customers,
-      r=>`<tr><td>${r.email}</td><td>${r.role||'—'}</td><td>${pill(r.stage)}</td>
+      r=>`<tr class="clickable" data-email="${esc(r.email)}"><td>${r.email}</td><td>${r.role||'—'}</td><td>${pill(r.stage)}</td>
           <td>${r.plan_code||'—'}</td><td>${money(r.mrr_cents)}</td><td>${r.matches_uploaded}</td>
           <td>${r.matches_remaining}</td><td>${r.linked_count}</td><td>${r.nps_latest??'—'}</td>
           <td>${when(r.last_activity)}</td></tr>`);
+  document.querySelectorAll('#custTable tr.clickable').forEach(tr=>
+    tr.onclick = ()=> open360(tr.dataset.email));
+}
+
+// ---- Customer 360 drill-down ----
+async function open360(email){
+  const box = document.getElementById('c360');
+  box.classList.remove('hidden');
+  box.innerHTML = `<div class="empty">Loading 360 for ${esc(email)}…</div>`;
+  box.scrollIntoView({behavior:'smooth', block:'start'});
+  try{
+    const d = await api(`${C}/customer?email=${encodeURIComponent(email)}`);
+    render360(d);
+  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+function close360(){ document.getElementById('c360').classList.add('hidden'); }
+
+function render360(d){
+  const s = d.summary||{};
+  const meta = [
+    ['Display name', s.display_name||'—'], ['Role', s.role||'—'], ['Stage', pill(s.stage)],
+    ['Enrolled', when(s.created_at)], ['Last activity', when(s.last_activity)],
+    ['Marketing consent', s.consent_marketing===true?'granted':(s.consent_marketing===false?'not granted':'—')],
+  ];
+  const sub = [
+    ['Plan', `${s.plan_code||'—'} (${s.plan_type||'—'})`], ['Status', s.sub_status||'—'],
+    ['MRR', money(s.mrr_cents)], ['Credits left', s.matches_remaining??'—'],
+    ['Uploaded', s.matches_uploaded??0], ['Completed', s.matches_completed??0],
+    ['Payments', `${s.payments_count||0} · ${money(s.payments_total_cents)}`],
+    ['Refunds', money(s.refunds_total_cents)], ['Last payment', when(s.last_payment_at)],
+    ['Support msgs', `${s.support_msgs||0} (${s.support_escalations||0} escalated)`],
+    ['Coach msgs', s.coach_msgs||0], ['NPS', s.nps_latest??'—'], ['Failed tasks', s.tasks_failed||0],
+  ];
+  const metaHtml = m => m.map(x=>`<div class="m"><b>${x[0]}</b>${x[1]}</div>`).join('');
+  const box = document.getElementById('c360');
+  box.innerHTML = `
+    <div class="c360-head">
+      <h2>${esc(s.email||'')}</h2>
+      <span class="badge">acct ${s.account_id??'?'}</span>
+      <span class="closeBtn" id="c360close">Close ✕</span>
+    </div>
+    <div class="sec"><h2>Identity</h2><div class="meta">${metaHtml(meta)}</div></div>
+    <div class="sec"><h2>Subscription &amp; credits</h2><div class="meta">${metaHtml(sub)}</div></div>
+    <div class="sec"><h2>Payments <span class="muted">(${(d.payments||[]).length})</span></h2>
+      <div class="wrap"><table id="t360pay"></table></div></div>
+    <div class="sec"><h2>Transaction log <span class="muted">(${(d.transaction_log||[]).length})</span></h2>
+      <div class="wrap"><table id="t360tx"></table></div></div>
+    <div class="sec"><h2>Subscription events <span class="muted">(${(d.subscription_events||[]).length})</span></h2>
+      <div class="wrap"><table id="t360se"></table></div></div>
+    <div class="sec"><h2>Support chat <span class="muted">(${(d.support_chat||[]).length})</span></h2>
+      <div class="wrap"><table id="t360sup"></table></div></div>
+    <div class="sec"><h2>AI-coach chat <span class="muted">(${(d.coach_chat||[]).length})</span></h2>
+      <div class="wrap"><table id="t360coach"></table></div></div>
+    <div class="sec"><h2>Feedback <span class="muted">(${(d.feedback||[]).length})</span></h2>
+      <div class="wrap"><table id="t360fb"></table></div></div>
+    <div class="sec"><h2>Consent <span class="muted">(${(d.consent||[]).length})</span></h2>
+      <div class="wrap"><table id="t360cons"></table></div></div>`;
+  document.getElementById('c360close').onclick = close360;
+
+  tbl(document.getElementById('t360pay'), ['When','Kind','Amount','Status','Plan','Provider'], d.payments,
+      r=>`<tr><td>${when(r.occurred_at)}</td><td>${r.kind||'—'}</td><td>${money(r.amount_cents)}</td>
+          <td>${r.status||'—'}</td><td>${r.plan_code||'—'}</td><td class="muted">${r.provider||'—'}</td></tr>`);
+  tbl(document.getElementById('t360tx'), ['When','Task','Sport','Step','Status','Detail'], d.transaction_log,
+      r=>`<tr><td>${when(r.created_at)}</td><td>${(r.task_id||'').slice(0,8)}</td><td>${r.sport_type||'—'}</td>
+          <td>${r.step||'—'}</td><td>${pill(r.status)}</td>
+          <td class="muted">${esc((r.error||r.detail||'').slice(0,80))}</td></tr>`);
+  tbl(document.getElementById('t360se'), ['When','Event','Payload'], d.subscription_events,
+      r=>`<tr><td>${when(r.created_at)}</td><td>${r.event_type||'—'}</td>
+          <td class="muted">${esc(JSON.stringify(r.payload||{}).slice(0,80))}</td></tr>`);
+  tbl(document.getElementById('t360sup'), ['When','Question','Answer','Conf','Escalated'], d.support_chat,
+      r=>`<tr><td>${when(r.created_at)}</td><td>${esc((r.question||'').slice(0,80))}</td>
+          <td>${esc((r.answer||'').slice(0,80))}</td><td>${r.confidence||'—'}</td>
+          <td>${r.escalated_at?when(r.escalated_at):'—'}</td></tr>`);
+  tbl(document.getElementById('t360coach'), ['When','Prompt','Question','Response'], d.coach_chat,
+      r=>`<tr><td>${when(r.created_at)}</td><td>${r.prompt_key||'—'}</td>
+          <td>${esc((r.question||'').slice(0,60))}</td><td>${esc((r.response||'').slice(0,80))}</td></tr>`);
+  tbl(document.getElementById('t360fb'), ['When','Kind','Detail','Comment'], d.feedback,
+      r=>`<tr><td>${when(r.submitted_at)}</td><td>${r.kind||'—'}</td><td>${esc(r.detail||'')}</td>
+          <td class="muted">${esc((r.comment||'').slice(0,80))}</td></tr>`);
+  tbl(document.getElementById('t360cons'), ['Type','Status','Version','Granted','Withdrawn','Subject'], d.consent,
+      r=>`<tr><td>${r.consent_type||'—'}</td><td>${r.status||'—'}</td><td>${r.policy_version||'—'}</td>
+          <td>${when(r.granted_at)}</td><td>${r.withdrawn_at?when(r.withdrawn_at):'—'}</td>
+          <td>${esc(r.subject||'—')}</td></tr>`);
 }
 document.getElementById('custSearch').oninput = debounce(()=>loadCustomers(),300);
 document.getElementById('custStage').onchange = ()=>loadCustomers();
