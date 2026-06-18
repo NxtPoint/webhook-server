@@ -135,6 +135,19 @@ def _group(*conditions):
     return {"conditions": list(conditions)}
 
 
+def _consent_gate():
+    """Email marketing opt-in gate — VERBATIM from Klaviyo docs (Cowork-confirmed). Only profiles
+    subscribed to email marketing proceed. Used as the v1 profile_filter on every flow."""
+    return _filter(_group({
+        "type": "profile-marketing-consent",
+        "consent": {
+            "channel": "email",
+            "can_receive_marketing": True,
+            "consent_status": {"subscription": "subscribed", "filters": None},
+        },
+    }))
+
+
 def _split(tid, profile_filter, *, if_true, if_false):
     return {
         "temporary_id": tid,
@@ -147,16 +160,14 @@ def _split(tid, profile_filter, *, if_true, if_false):
 # ── Flow 1: Trial · Welcome & Activation ─────────────────────────────────────
 
 def build_flow_welcome():
-    """account_created → Welcome, then nudge to upload; exit once they upload a match."""
-    uploaded_once = _filter(_group(
-        _done_metric_condition(M_MATCH_UPLOADED, times=1, op="greater-than-or-equal")))
+    """account_created → 3-email Welcome/Activation sequence.
+    V1: linear + opt-in gate. V2 (after the canonical flows-profile-metric literal is read back):
+    add the exit-on-`match_uploaded`-since-flow-start filter + conditional splits."""
     actions = [
         _email(T_WELCOME, "delay1"),
-        _delay("delay1", 1, "split1"),
-        _split("split1", uploaded_once, if_true=None, if_false=f"email_{T_FRICTION}"),
+        _delay("delay1", 1, f"email_{T_FRICTION}"),
         _email(T_FRICTION, "delay2"),
-        _delay("delay2", 2, "split2"),
-        _split("split2", uploaded_once, if_true=None, if_false=f"email_{T_PROOF}"),
+        _delay("delay2", 2, f"email_{T_PROOF}"),
         _email(T_PROOF, None),
     ]
     return {
@@ -166,9 +177,7 @@ def build_flow_welcome():
                 "name": "Trial · Welcome & Activation",
                 "definition": {
                     "triggers": [{"type": "metric", "id": M_ACCOUNT_CREATED}],
-                    # flow filter: only keep profiles who have NOT uploaded a match (exit on upload)
-                    "profile_filter": _filter(_group(
-                        _done_metric_condition(M_MATCH_UPLOADED, times=0, op="equals"))),
+                    "profile_filter": _consent_gate(),
                     "entry_action_id": f"email_{T_WELCOME}",
                     "actions": actions,
                 },
@@ -180,29 +189,17 @@ def build_flow_welcome():
 # ── Flow 2: Trial → Paid Conversion ──────────────────────────────────────────
 
 def build_flow_conversion():
-    """report_viewed → 4-email conversion sequence; exit the moment they subscribe or buy PAYG."""
-    # converted = has done subscription_started OR credit_purchased since flow start (two OR'd groups)
-    converted = _filter(
-        _group(_done_metric_condition(M_SUBSCRIPTION_STARTED, times=1, op="greater-than-or-equal")),
-        _group(_done_metric_condition(M_CREDIT_PURCHASED, times=1, op="greater-than-or-equal")),
-    )
-    # not-converted flow filter: sub_started zero AND credit_purchased zero (one group, AND'd)
-    not_converted = _filter(_group(
-        _done_metric_condition(M_SUBSCRIPTION_STARTED, times=0, op="equals"),
-        _done_metric_condition(M_CREDIT_PURCHASED, times=0, op="equals"),
-    ))
+    """report_viewed → 4-email conversion sequence.
+    V1: linear + opt-in gate. V2: add the exit-on-(`subscription_started` OR `credit_purchased`)
+    filter + per-email conditional splits once the canonical metric literal is confirmed."""
     actions = [
-        _delay("delay1", 1, "split1"),
-        _split("split1", converted, if_true=None, if_false=f"email_{T_GAP}"),
+        _delay("delay1", 1, f"email_{T_GAP}"),
         _email(T_GAP, "delay2"),
-        _delay("delay2", 2, "split2"),
-        _split("split2", converted, if_true=None, if_false=f"email_{T_AICOACH}"),
+        _delay("delay2", 2, f"email_{T_AICOACH}"),
         _email(T_AICOACH, "delay3"),
-        _delay("delay3", 3, "split3"),
-        _split("split3", converted, if_true=None, if_false=f"email_{T_LONGGAME}"),
+        _delay("delay3", 3, f"email_{T_LONGGAME}"),
         _email(T_LONGGAME, "delay4"),
-        _delay("delay4", 4, "split4"),
-        _split("split4", converted, if_true=None, if_false=f"email_{T_LASTCALL}"),
+        _delay("delay4", 4, f"email_{T_LASTCALL}"),
         _email(T_LASTCALL, None),
     ]
     return {
@@ -212,7 +209,7 @@ def build_flow_conversion():
                 "name": "Trial → Paid Conversion",
                 "definition": {
                     "triggers": [{"type": "metric", "id": M_REPORT_VIEWED}],
-                    "profile_filter": not_converted,
+                    "profile_filter": _consent_gate(),
                     "entry_action_id": "delay1",
                     "actions": actions,
                 },
@@ -241,7 +238,7 @@ def build_flow_coach_engagement():
                 "name": "Coach · Engagement",
                 "definition": {
                     "triggers": [{"type": "metric", "id": M_COACH_ACCEPTED}],
-                    "profile_filter": None,
+                    "profile_filter": _consent_gate(),
                     "entry_action_id": f"email_{T_COACH_CONNECT}",
                     "actions": actions,
                 },
@@ -253,13 +250,12 @@ def build_flow_coach_engagement():
 # ── Flow 4: Coach Pro upsell ─────────────────────────────────────────────────
 
 def build_flow_coach_pro_upsell():
-    """A 2nd player connecting (coach_accepted >= 2 over all time) = the coach outgrew the free
-    1-player cap. (When a coach-linked-player-count trait exists, switch to that.)"""
-    second_player = _filter(_group(
-        _done_metric_condition(M_COACH_ACCEPTED, times=2, op="greater-than-or-equal",
-                               timeframe="all-time")))
+    """Coach Pro upsell on a 2nd player connecting.
+    V1: opt-in gate only (drops the unconfirmed `coach_accepted` >= 2 all-time entry filter).
+    ⚠️ V2 MUST add that >= 2 filter before go-live — without it this would target a coach on their
+    FIRST connected player too. Safe in draft (sends nothing)."""
     actions = [
-        _delay("delay1h", 0, f"email_{T_COACH_UPSELL}"),  # short delay; value 0 days = ~immediate
+        _delay("delay1", 1, f"email_{T_COACH_UPSELL}"),
         _email(T_COACH_UPSELL, None),
     ]
     return {
@@ -269,8 +265,8 @@ def build_flow_coach_pro_upsell():
                 "name": "Coach Pro upsell",
                 "definition": {
                     "triggers": [{"type": "metric", "id": M_COACH_ACCEPTED}],
-                    "profile_filter": second_player,
-                    "entry_action_id": "delay1h",
+                    "profile_filter": _consent_gate(),
+                    "entry_action_id": "delay1",
                     "actions": actions,
                 },
             },
