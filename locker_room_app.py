@@ -164,9 +164,19 @@ def analytics_js():
     return _html("analytics.js")
 
 
+@app.get("/privacy")
+@app.get("/consent")
+def privacy_consent():
+    # Self-serve "Privacy & Consent" preferences screen (logged-in member).
+    # Polished SPA matching the Locker Room design system; dual-mode TFAuth;
+    # reads/writes /api/client/consent/* on the main API.
+    return _html("consent.html")
+
+
 @app.get("/privacy-settings")
 def privacy_settings():
-    # Self-serve consent management (Settings → Privacy & consent).
+    # Legacy minimal consent widget (consent.js stub). Kept as a fallback;
+    # the canonical screen is /privacy (consent.html) above.
     return _html("privacy_settings.html")
 
 

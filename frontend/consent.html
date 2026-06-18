@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Privacy &amp; Consent · TEN-FIFTY5</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+html { font-size: 15px; height: 100%; }
+@media (max-width: 768px) { input, select, textarea { font-size: 16px; } }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100%;
+}
+button { cursor: pointer; font-family: inherit; }
+a { color: var(--green); }
+
+.app { max-width: 720px; margin: 0 auto; padding: 16px 16px calc(300px + env(safe-area-inset-bottom, 0px)); }
+
+/* ===== Header ===== */
+.page-head { margin: 8px 2px 18px; }
+.page-head h1 { font-size: 1.35rem; font-weight: 700; letter-spacing: 0.3px; color: var(--text); }
+.page-head p { color: var(--text-sec); font-size: 0.88rem; margin-top: 4px; }
+
+/* ===== Cards ===== */
+.card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-bottom: 16px;
+}
+.card-head {
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  font-size: 0.78rem; font-weight: 600; color: var(--text-sec);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.card-body { padding: 16px; }
+
+/* ===== Marketing toggle (headline control) ===== */
+.toggle-row { display: flex; align-items: center; gap: 14px; }
+.toggle-row .toggle-copy { flex: 1; min-width: 0; }
+.toggle-row .toggle-copy .t-title { font-weight: 600; font-size: 0.98rem; color: var(--text); }
+.toggle-row .toggle-copy .t-sub { color: var(--text-sec); font-size: 0.82rem; margin-top: 2px; }
+
+.switch { position: relative; flex-shrink: 0; width: 50px; height: 28px; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.switch .track {
+  position: absolute; inset: 0; background: var(--text-dim); border-radius: 999px;
+  transition: background var(--transition);
+}
+.switch .track::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px;
+  background: var(--white); border-radius: 50%; transition: transform var(--transition);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.switch input:checked + .track { background: var(--green); }
+.switch input:checked + .track::after { transform: translateX(22px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--green); outline-offset: 2px; }
+.switch.busy { opacity: 0.6; pointer-events: none; }
+
+/* ===== Read-only status rows ===== */
+.status-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid var(--border);
+}
+.status-row:last-child { border-bottom: none; }
+.status-row .s-copy { min-width: 0; }
+.status-row .s-title { font-weight: 600; font-size: 0.9rem; }
+.status-row .s-sub { color: var(--text-sec); font-size: 0.8rem; margin-top: 2px; }
+.badge {
+  flex-shrink: 0; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.3px; padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+}
+.badge.granted { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
+.badge.withdrawn { background: rgba(220,38,38,0.08); color: var(--red); border: 1px solid var(--red); }
+.badge.none { background: var(--bg); color: var(--text-dim); border: 1px solid var(--border); }
+
+/* ===== Explainer ===== */
+.explainer dt { font-weight: 600; font-size: 0.86rem; color: var(--text); margin-top: 12px; }
+.explainer dt:first-child { margin-top: 0; }
+.explainer dd { color: var(--text-sec); font-size: 0.83rem; margin: 2px 0 0; }
+.explainer .links { margin-top: 16px; font-size: 0.83rem; }
+
+/* ===== States ===== */
+.loading, .empty-state { text-align: center; padding: 56px 20px; color: var(--text-sec); }
+.loading .spinner {
+  width: 28px; height: 28px; margin: 0 auto 14px;
+  border: 3px solid var(--border); border-top-color: var(--green);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty-state h3 { font-weight: 600; margin-bottom: 6px; color: var(--text); }
+.empty-state p { color: var(--text-dim); font-size: 0.88rem; max-width: 360px; margin: 0 auto; }
+.empty-state .btn-retry {
+  margin-top: 16px; padding: 8px 18px; border-radius: var(--radius); font-weight: 600;
+  font-size: 0.82rem; background: var(--green); color: var(--white); border: none;
+}
+.empty-state .btn-retry:hover { background: var(--green-light); }
+
+/* ===== Toast ===== */
+.toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%) translateY(20px);
+  background: var(--text); color: var(--white); padding: 11px 18px; border-radius: 8px;
+  font-size: 0.85rem; font-weight: 500; box-shadow: 0 8px 28px rgba(0,0,0,0.3);
+  opacity: 0; pointer-events: none; transition: opacity var(--transition), transform var(--transition);
+  z-index: 9999; max-width: calc(100vw - 32px);
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.err { background: var(--red); }
+.toast.ok { background: var(--green); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="page-head">
+    <h1>Privacy &amp; Consent</h1>
+    <p>See and manage how TEN-FIFTY5 uses your data. Changes take effect immediately.</p>
+  </div>
+
+  <div id="content">
+    <div class="loading" id="loading"><div class="spinner"></div><p>Loading your privacy choices…</p></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="/auth_client.js"></script>
+<script>
+// Dual-mode auth via TFAuth (/auth_client.js): a fresh Clerk Bearer token when signed
+// in through /login (relayed by the portal top frame when in an iframe), or the legacy
+// X-Client-Key + ?email when arriving from the Wix handoff. Legacy behaviour is unchanged.
+let EMAIL = '';
+
+const CONSENT_LABELS = {
+  terms_of_service:           'Terms of Service',
+  privacy_policy:             'Privacy Policy',
+  biometric_processing:       'Biometric (pose) processing',
+  minor_processing_parental:  'Parental / guardian consent',
+};
+const CONSENT_SUBS = {
+  terms_of_service:           'The agreement you accepted to use TEN-FIFTY5.',
+  privacy_policy:             'How we collect, use and protect your data.',
+  biometric_processing:       'Skeletal "pose" data from video, used only for technique analysis.',
+  minor_processing_parental:  'Permission to process a young player\'s data, given by their parent or guardian.',
+};
+
+function apiFetch(path, opts = {}) { return TFAuth.apiFetch(path, opts); }
+
+function showToast(msg, kind) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (kind ? ' ' + kind : '');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => { t.className = 'toast' + (kind ? ' ' + kind : ''); }, 3200);
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function statusBadge(state) {
+  if (state === 'granted')   return '<span class="badge granted">Granted</span>';
+  if (state === 'withdrawn') return '<span class="badge withdrawn">Withdrawn</span>';
+  return '<span class="badge none">Not provided</span>';
+}
+
+function statusRow(type, state) {
+  return `
+    <div class="status-row">
+      <div class="s-copy">
+        <div class="s-title">${esc(CONSENT_LABELS[type] || type)}</div>
+        <div class="s-sub">${esc(CONSENT_SUBS[type] || '')}</div>
+      </div>
+      ${statusBadge(state)}
+    </div>`;
+}
+
+// ---- record / withdraw a single consent ----------------------------------
+async function setConsent(type, grant) {
+  const path = grant ? '/api/client/consent/record' : '/api/client/consent/withdraw';
+  const body = grant ? { email: EMAIL, consent_type: type, source: 'portal' }
+                     : { email: EMAIL, consent_type: type };
+  const res = await apiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({ ok: res.ok }));
+  if (!res.ok || data.ok === false) throw new Error((data && data.error) || ('HTTP ' + res.status));
+  return data;
+}
+
+// ---- render the screen from a /state payload -----------------------------
+function render(state) {
+  const consents = (state && state.consents) || {};
+  const mktOn = !!(state && state.marketing_opt_in);
+
+  // Read-only rows: always show terms + privacy; show biometric / parental only if present.
+  let readonlyRows = statusRow('terms_of_service', consents.terms_of_service)
+                   + statusRow('privacy_policy', consents.privacy_policy);
+  ['biometric_processing', 'minor_processing_parental'].forEach(t => {
+    if (consents[t]) readonlyRows += statusRow(t, consents[t]);
+  });
+
+  document.getElementById('content').innerHTML = `
+    <div class="card">
+      <div class="card-head">Communication preferences</div>
+      <div class="card-body">
+        <div class="toggle-row">
+          <div class="toggle-copy">
+            <div class="t-title">Marketing emails</div>
+            <div class="t-sub">Tips, product updates and the occasional offer. You'll still get essential
+              service emails (like when your analysis is ready). Unsubscribe anytime.</div>
+          </div>
+          <label class="switch" id="mktSwitch" title="Marketing emails">
+            <input type="checkbox" id="mktToggle" ${mktOn ? 'checked' : ''}
+              aria-label="Marketing emails">
+            <span class="track"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">Your consents</div>
+      <div class="card-body">
+        ${readonlyRows}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">What these mean</div>
+      <div class="card-body">
+        <dl class="explainer">
+          <dt>Terms of Service &amp; Privacy Policy</dt>
+          <dd>The agreement and data policy you accepted when you joined. These are required to use TEN-FIFTY5.</dd>
+          <dt>Marketing emails</dt>
+          <dd>Optional. Lets us email you tips, news and offers. Turning this off here unsubscribes you straight away.</dd>
+          <dt>Biometric (pose) processing</dt>
+          <dd>For technique analysis we map the position of your body's joints across each video frame — skeletal
+            "pose" data, which counts as biometric data. We capture this consent before your first technique
+            analysis. Withdrawing it stops future pose processing and deletes the pose data we hold.</dd>
+          <dt>Parental / guardian consent</dt>
+          <dd>When an account covers a player under 16, their parent or guardian gives permission to process the
+            young player's data. This is captured when the junior is added.</dd>
+          <div class="links">
+            Read our full <a href="/post/privacy-policy" target="_blank" rel="noopener">Privacy Policy</a>.
+            Have a question or a specific data request? Email
+            <a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a>.
+          </div>
+        </dl>
+      </div>
+    </div>`;
+
+  wireMarketingToggle();
+}
+
+// ---- the headline marketing toggle: optimistic + rollback ----------------
+function wireMarketingToggle() {
+  const sw = document.getElementById('mktSwitch');
+  const cb = document.getElementById('mktToggle');
+  cb.addEventListener('change', async () => {
+    const desired = cb.checked;           // the user's intended new state
+    sw.classList.add('busy');
+    try {
+      await setConsent('marketing_email', desired);
+      showToast(desired ? 'Subscribed — you\'ll hear from us.' : 'Unsubscribed from marketing emails.', 'ok');
+    } catch (e) {
+      cb.checked = !desired;              // rollback the optimistic flip
+      showToast('Could not save that change. Please try again.', 'err');
+      console.warn('marketing consent change failed', e);
+    } finally {
+      sw.classList.remove('busy');
+    }
+  });
+}
+
+function renderError(msg, retry) {
+  document.getElementById('content').innerHTML = `
+    <div class="empty-state">
+      <h3>${esc(msg || 'Something went wrong')}</h3>
+      <p>We couldn't load your privacy choices. Check your connection and try again.</p>
+      ${retry ? '<button class="btn-retry" id="retryBtn">Try again</button>' : ''}
+    </div>`;
+  if (retry) { const b = document.getElementById('retryBtn'); if (b) b.onclick = load; }
+}
+
+async function load() {
+  document.getElementById('content').innerHTML =
+    '<div class="loading"><div class="spinner"></div><p>Loading your privacy choices…</p></div>';
+  try {
+    // TFAuth.apiFetch appends email server-side (clerk) or as ?email= (legacy).
+    const res = await apiFetch('/api/client/consent/state');
+    if (!res.ok) { renderError('We hit a snag (' + res.status + ')', true); return; }
+    const data = await res.json();
+    if (!data || data.ok === false) { renderError('We hit a snag', true); return; }
+    render(data);
+  } catch (e) {
+    console.warn('consent state load failed', e);
+    renderError('Connection problem', true);
+  }
+}
+
+async function init() {
+  await TFAuth.ready();
+  if (!TFAuth.isAuthed()) {
+    document.getElementById('content').innerHTML =
+      '<div class="empty-state"><h3>Sign in to continue</h3>' +
+      '<p>Access this page through your dashboard to manage your privacy choices.</p></div>';
+    return;
+  }
+  EMAIL = TFAuth.email();   // clerk mode: server-derived; legacy: from ?email=
+  load();
+}
+
+init();
+</script>
+</body>
+</html>
