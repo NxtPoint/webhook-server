@@ -296,6 +296,22 @@ def analyze():
     # Store in cache
     cache_put(task_id, email, cache_key, response_text, match_data, tokens)
 
+    # Durable chat history (fresh Q&A only) + product event. Both fire-and-forget.
+    try:
+        from tennis_coach.db import log_conversation
+        log_conversation(task_id, email, prompt_key,
+                         (freeform if prompt_key == "freeform" else prompt_key),
+                         response_text, tokens)
+    except Exception:
+        log.exception("[coach_api] log_conversation failed task_id=%s", task_id)
+    try:
+        from marketing_crm.tracking import track
+        from marketing_crm.tracking.events import AI_COACH_QUERY
+        track(AI_COACH_QUERY, email=email, ref_type="match", ref_id=task_id,
+              properties={"prompt_key": prompt_key})
+    except Exception:
+        log.exception("[coach_api] ai_coach_query track failed task_id=%s", task_id)
+
     return jsonify({
         "ok":            True,
         "response":      response_text,

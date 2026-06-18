@@ -105,6 +105,14 @@ def accept_by_token():
         )
         session.commit()
 
+    try:
+        from marketing_crm.tracking import track
+        from marketing_crm.tracking.events import COACH_ACCEPTED
+        track(COACH_ACCEPTED, email=perm["coach_email"],
+              properties={"owner_name": perm.get("owner_name")})
+    except Exception:
+        pass
+
     return jsonify({
         "ok": True,
         "status": "ACCEPTED",

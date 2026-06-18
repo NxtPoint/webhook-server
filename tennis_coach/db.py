@@ -39,20 +39,69 @@ CREATE UNIQUE INDEX IF NOT EXISTS coach_cache_uq
     ON tennis_coach.coach_cache (task_id, email, prompt_key)
 """
 
+# Durable AI-coach chat history (coach_cache only keeps the LATEST response per question —
+# it overwrites on re-ask and stores a hashed prompt_key, not the question text). conversations
+# is append-only: one row per fresh Q&A, with the actual question text, for Customer-360 +
+# usage analytics. Cache hits are not logged (no new interaction).
+_CONV_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tennis_coach.conversations (
+    id          bigserial PRIMARY KEY,
+    task_id     uuid,
+    email       text NOT NULL,
+    prompt_key  text,
+    question    text,
+    response    text,
+    tokens_used integer,
+    created_at  timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+_CONV_INDEX_SQL = [
+    "CREATE INDEX IF NOT EXISTS ix_coach_conv_email ON tennis_coach.conversations (email, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_coach_conv_task ON tennis_coach.conversations (task_id, created_at)",
+]
+
 
 def init_coach_cache():
     """
-    Idempotent creation of tennis_coach schema + coach_cache table + unique index.
-    Safe to call on every boot.
+    Idempotent creation of tennis_coach schema + coach_cache table + unique index,
+    plus the durable conversations history table. Safe to call on every boot.
     """
     try:
         with engine.begin() as conn:
             conn.execute(text(_SCHEMA_SQL))
             conn.execute(text(_TABLE_SQL))
             conn.execute(text(_INDEX_SQL))
-        log.info("[coach_db] tennis_coach.coach_cache ready")
+            conn.execute(text(_CONV_TABLE_SQL))
+            for stmt in _CONV_INDEX_SQL:
+                conn.execute(text(stmt))
+        log.info("[coach_db] tennis_coach.coach_cache + conversations ready")
     except Exception:
         log.exception("[coach_db] failed to init coach_cache — coach feature may be unavailable")
+
+
+def log_conversation(
+    task_id: str,
+    email: str,
+    prompt_key: Optional[str],
+    question: Optional[str],
+    response: Optional[str],
+    tokens_used: Optional[int],
+) -> None:
+    """Append one fresh Q&A turn to tennis_coach.conversations. Fire-and-forget — never raises."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO tennis_coach.conversations
+                        (task_id, email, prompt_key, question, response, tokens_used)
+                    VALUES (:tid, :email, :pk, :q, :resp, :tokens)
+                """),
+                {"tid": task_id, "email": email, "pk": prompt_key,
+                 "q": question, "resp": response, "tokens": tokens_used},
+            )
+    except Exception:
+        log.exception("[coach_db] log_conversation failed task_id=%s pk=%s", task_id, prompt_key)
 
 
 def freeform_key(question: str) -> str:

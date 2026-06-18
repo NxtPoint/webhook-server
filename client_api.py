@@ -2423,6 +2423,14 @@ def coach_invite():
     coach_name = (payload.get("coach_name") or "").strip()
     email_result = send_invite_email(coach_email, coach_name, owner_name, accept_url)
 
+    try:
+        from marketing_crm.tracking import track
+        from marketing_crm.tracking.events import COACH_INVITED
+        track(COACH_INVITED, email=coach_email,
+              properties={"owner_email": email, "reused": reused})
+    except Exception:
+        pass
+
     return jsonify({
         "ok": True,
         "permission_id": permission_id,
