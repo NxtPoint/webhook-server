@@ -177,3 +177,169 @@ class EntitlementConsumption(Base):
     source = Column(String, nullable=False, server_default=text("'sportai'"))
 
     account = relationship("Account", back_populates="entitlement_consumptions")
+
+
+# ---------------------------------------------------------------------------
+# Schema bootstrap — billing_init()
+# ---------------------------------------------------------------------------
+# The ORM models above (account, member, entitlement_grant, entitlement_consumption)
+# are created via Base.metadata.create_all. The remaining billing.* objects
+# (subscription_state, subscription_event_log, monthly_refill_log, coaches_permission,
+# entitlements, security_access, vw_customer_usage) were historically created
+# out-of-band in prod and had NO create-DDL in code — a fresh DB could not reproduce
+# them. The raw DDL below mirrors the live schema EXACTLY (introspected 2026-06-18) so
+# billing is reproducible. All idempotent (IF NOT EXISTS / existence-guarded view), so
+# on the live DB billing_init() is a pure no-op. Column *additions* still live in their
+# existing _ensure_* owners (billing_service._ensure_technique_columns,
+# subscriptions_api._ensure_subscription_state_columns, entitlements_api._ensure_entitlements_schema);
+# billing_init only guarantees the base objects exist.
+
+_BILLING_RAW_DDL = [
+    # subscription_state — one row per account (current subscription); written by subscriptions_api
+    """
+    CREATE TABLE IF NOT EXISTS billing.subscription_state (
+        account_id               bigint PRIMARY KEY REFERENCES billing.account(id),
+        plan_id                  text,
+        plan_code                text,
+        plan_type                text CHECK (plan_type = ANY (ARRAY['recurring'::text, 'payg'::text])),
+        status                   text NOT NULL DEFAULT 'NONE'
+                                 CHECK (status = ANY (ARRAY['NONE'::text,'ACTIVE'::text,'PAST_DUE'::text,'CANCELLED'::text,'EXPIRED'::text])),
+        current_period_start     timestamptz,
+        current_period_end       timestamptz,
+        cancelled_at             timestamptz,
+        payment_cancelled_at     timestamptz,
+        updated_at               timestamptz NOT NULL DEFAULT now(),
+        matches_granted          integer,
+        billing_provider         text NOT NULL DEFAULT 'wix',
+        provider_subscription_id text
+    )
+    """,
+    # subscription_event_log — idempotent webhook audit (event_id = sha256)
+    """
+    CREATE TABLE IF NOT EXISTS billing.subscription_event_log (
+        event_id   text PRIMARY KEY,
+        account_id bigint NOT NULL REFERENCES billing.account(id),
+        event_type text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        payload    jsonb NOT NULL
+    )
+    """,
+    # monthly_refill_log — Wix-only monthly refill claim
+    """
+    CREATE TABLE IF NOT EXISTS billing.monthly_refill_log (
+        account_id bigint NOT NULL REFERENCES billing.account(id),
+        year_month text NOT NULL,
+        grant_id   bigint,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, year_month)
+    )
+    """,
+    # coaches_permission — coach<->owner links (table; coach_invite/db.py owns the token index)
+    """
+    CREATE TABLE IF NOT EXISTS billing.coaches_permission (
+        id               bigserial PRIMARY KEY,
+        owner_account_id bigint NOT NULL REFERENCES billing.account(id) ON DELETE CASCADE,
+        coach_account_id bigint REFERENCES billing.account(id) ON DELETE CASCADE,
+        coach_email      text NOT NULL,
+        status           text NOT NULL DEFAULT 'INVITED',
+        active           boolean NOT NULL DEFAULT true,
+        created_at       timestamptz NOT NULL DEFAULT now(),
+        updated_at       timestamptz NOT NULL DEFAULT now(),
+        coach_full_name  text,
+        invite_token     text
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_coaches_permission_owner_email "
+    "ON billing.coaches_permission (owner_account_id, coach_email)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_coaches_permission_token "
+    "ON billing.coaches_permission (invite_token) WHERE invite_token IS NOT NULL",
+    # entitlements — cached upload-gate state (entitlements_api UPSERTs into it)
+    """
+    CREATE TABLE IF NOT EXISTS billing.entitlements (
+        account_id                 bigint PRIMARY KEY,
+        email                      text NOT NULL,
+        role                       text NOT NULL,
+        account_active             boolean NOT NULL,
+        subscription_status        text,
+        current_period_end         timestamptz,
+        paid_active                boolean NOT NULL DEFAULT false,
+        matches_granted            integer NOT NULL DEFAULT 0,
+        matches_consumed           integer NOT NULL DEFAULT 0,
+        matches_remaining          integer NOT NULL DEFAULT 0,
+        can_upload                 boolean NOT NULL DEFAULT false,
+        block_reason               text,
+        updated_at                 timestamptz NOT NULL DEFAULT now(),
+        can_view_dashboards        boolean,
+        dashboard_block_reason     text,
+        techniques_granted         integer NOT NULL DEFAULT 0,
+        techniques_consumed        integer NOT NULL DEFAULT 0,
+        techniques_remaining       integer NOT NULL DEFAULT 0,
+        coach_linked_players       integer NOT NULL DEFAULT 0,
+        can_link_additional_player boolean NOT NULL DEFAULT true
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_entitlements_email ON billing.entitlements (email)",
+    # security_access — viewer->customer access map (legacy; viewer_email/customer_email)
+    """
+    CREATE TABLE IF NOT EXISTS billing.security_access (
+        viewer_email   text,
+        customer_email text
+    )
+    """,
+]
+
+# vw_customer_usage — matches_remaining = grants - consumption. Created only if missing
+# (never CREATE OR REPLACE over the live view, to avoid clobbering it with a hand-copy).
+_BILLING_VW_CUSTOMER_USAGE = """
+CREATE VIEW billing.vw_customer_usage AS
+WITH grants AS (
+    SELECT eg.account_id,
+           COALESCE(sum(eg.matches_granted), 0::bigint) AS matches_granted
+    FROM billing.entitlement_grant eg
+    WHERE eg.is_active = true AND (eg.valid_to IS NULL OR eg.valid_to >= now())
+    GROUP BY eg.account_id
+), cons AS (
+    SELECT ec.account_id,
+           COALESCE(sum(ec.consumed_matches), 0::bigint) AS matches_consumed_total,
+           COALESCE(sum(ec.consumed_matches) FILTER (WHERE ec.source = 'sportai'::text), 0::bigint) AS matches_consumed_usage,
+           COALESCE(sum(ec.consumed_matches) FILTER (WHERE ec.source = 'monthly_expire'::text), 0::bigint) AS matches_consumed_expired,
+           max(ec.consumed_at) AS last_consumed_at
+    FROM billing.entitlement_consumption ec
+    GROUP BY ec.account_id
+)
+SELECT a.id AS account_id,
+       a.email AS customer_email,
+       a.primary_full_name AS customer_name,
+       a.currency_code,
+       COALESCE(g.matches_granted, 0::bigint) AS matches_granted,
+       COALESCE(c.matches_consumed_usage, 0::bigint) AS matches_consumed,
+       COALESCE(g.matches_granted, 0::bigint) - COALESCE(c.matches_consumed_total, 0::bigint) AS matches_remaining,
+       c.last_consumed_at AS last_processed_at,
+       COALESCE(c.matches_consumed_total, 0::bigint) AS matches_consumed_total,
+       COALESCE(c.matches_consumed_expired, 0::bigint) AS matches_consumed_expired
+FROM billing.account a
+LEFT JOIN grants g ON g.account_id = a.id
+LEFT JOIN cons c ON c.account_id = a.id
+"""
+
+
+def billing_init(engine=None):
+    """Idempotently create the entire billing.* schema (reproducible from code).
+
+    No-op on the live DB (every statement is IF NOT EXISTS / existence-guarded). Column
+    additions remain owned by the existing _ensure_* functions. Safe to call on boot."""
+    if engine is None:
+        from db_init import engine as _eng
+        engine = _eng
+    with engine.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS billing"))
+        Base.metadata.create_all(conn, checkfirst=True)
+        for stmt in _BILLING_RAW_DDL:
+            conn.execute(text(stmt))
+        exists = conn.execute(text(
+            "SELECT 1 FROM information_schema.views WHERE table_schema='billing' "
+            "AND table_name='vw_customer_usage'"
+        )).first()
+        if not exists:
+            conn.execute(text(_BILLING_VW_CUSTOMER_USAGE))
+    return engine

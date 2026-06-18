@@ -150,6 +150,17 @@ try:
 except Exception:
     app.logger.exception("ml_analysis_init() failed on boot — T5 / corpus tables may be missing")
 
+# ---------- Billing schema (idempotent on boot) ----------
+# Makes the entire billing.* schema reproducible from code (subscription_state,
+# subscription_event_log, monthly_refill_log, coaches_permission, entitlements,
+# security_access, vw_customer_usage previously had no create-DDL). No-op on the
+# live DB. Column additions stay owned by the existing _ensure_* functions.
+try:
+    from models_billing import billing_init  # noqa: E402
+    billing_init(engine)
+except Exception:
+    app.logger.exception("billing_init() failed on boot — billing tables may be missing on a fresh DB")
+
 # ---------- Gold presentation views (idempotent on boot) ----------
 # Creates gold.vw_player, gold.vw_point, and all match_* presentation views
 # used by the match analysis dashboards and the upcoming LLM coach.
