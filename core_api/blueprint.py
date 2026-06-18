@@ -6,7 +6,7 @@
 # Auth: header X-Core-Key (or Authorization: Bearer) == env CORE_API_KEY
 #       (falls back to CLIENT_API_KEY). Admin endpoints additionally require the key.
 #       This is a scaffold for the token-based auth that replaces the shared-key model
-#       (ARCHITECTURE.md §6.1) — wire real per-user tokens here during the auth migration.
+#       (docs/business/architecture.md §6.1) — wire real per-user tokens here during the auth migration.
 #
 # Registration is GATED: register(app) is a no-op unless CORE_API_ENABLED=1.
 

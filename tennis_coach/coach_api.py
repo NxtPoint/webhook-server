@@ -118,7 +118,7 @@ def _verify_ownership(task_id: str, email: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# AI Coach paywall — see docs/pricing_strategy.md §7
+# AI Coach paywall — see docs/business/pricing-and-packages.md §7
 # ---------------------------------------------------------------------------
 
 def _check_ai_coach_entitled(email: str) -> tuple[bool, Optional[str]]:
@@ -232,7 +232,7 @@ def analyze():
         return jsonify({"ok": False, "error": "not found or access denied"}), 404
 
     # Paywall: AI Coach requires paid plan (or coach/admin). Free-trial users
-    # see the teaser UI but this endpoint is hard-gated. See pricing_strategy.md §7.
+    # see the teaser UI but this endpoint is hard-gated. See docs/business/pricing-and-packages.md §7.
     entitled, block_reason = _check_ai_coach_entitled(email)
     if not entitled:
         if block_reason == "UPGRADE_REQUIRED":

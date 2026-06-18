@@ -210,7 +210,7 @@ def api_accept():
 
     # Phase 2 cap — first linked player free, Coach Pro required for more.
     # Gate before any UPDATE so we don't half-transition state on a blocked
-    # accept. See docs/pricing_strategy.md §6.
+    # accept. See docs/business/pricing-and-packages.md §6.
     from billing_service import (
         coach_accept_gate,
         count_accepted_coach_links,

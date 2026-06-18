@@ -68,7 +68,7 @@ def accept_by_token():
         return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 400
 
     # Phase 2 cap — first linked player free, Coach Pro required for more.
-    # See docs/pricing_strategy.md §6.
+    # See docs/business/pricing-and-packages.md §6.
     allowed, reason = coach_accept_gate(perm["coach_email"])
     if not allowed:
         return jsonify({

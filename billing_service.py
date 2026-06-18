@@ -526,7 +526,7 @@ def consume_technique_for_task(
 
 # ----------------------------
 # Coach gate — Phase 2 cap
-# See docs/pricing_strategy.md §6. First linked player is free;
+# See docs/business/pricing-and-packages.md §6. First linked player is free;
 # 2nd+ requires Coach Pro subscription. Gate fires at ACCEPT time
 # so existing accepted links are grandfathered automatically.
 # ----------------------------

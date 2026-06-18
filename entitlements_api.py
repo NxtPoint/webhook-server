@@ -13,7 +13,7 @@
 #
 # Auth: OPS_KEY via X-Ops-Key header or Authorization: Bearer <key>
 #
-# Business rules (see docs/pricing_strategy.md §5 for the authoritative contract):
+# Business rules (see docs/business/pricing-and-packages.md §5 for the authoritative contract):
 #   - can_upload requires: account active + role != 'coach' + matches_remaining > 0
 #       (no longer requires paid_active — credits alone authorise upload, which is
 #        what lets the free-trial signup bonus work)
@@ -109,7 +109,7 @@ c AS (
   GROUP BY account_id
 ),
 -- Coach cap (Phase 2) — count this email's ACCEPTED+active coach links.
--- Used to decide can_link_additional_player. See docs/pricing_strategy.md §6.
+-- Used to decide can_link_additional_player. See docs/business/pricing-and-packages.md §6.
 cl AS (
   SELECT
     (SELECT email FROM a) AS email,
