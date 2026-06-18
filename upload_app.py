@@ -4322,6 +4322,25 @@ def ops_backfill_pair_labels():
     return jsonify(result), 200
 
 
+@app.post("/ops/build-klaviyo-flows")
+def ops_build_klaviyo_flows():
+    """Build (dry_run=True, default) or CREATE (dry_run=False) the two Klaviyo flows from
+    marketing_crm/klaviyo/flow_build_spec.md via the beta Create Flow API. Flows are created in
+    DRAFT. dry_run returns the exact JSON payloads (no key needed); a live build needs
+    KLAVIYO_API_KEY (Render). Header-only auth (OPS_KEY)."""
+    if not _guard():
+        return Response("Forbidden", 403)
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+    try:
+        from marketing_crm.klaviyo.flow_builder import create_flows
+        out = create_flows(dry_run=dry_run)
+        return jsonify({"ok": True, "dry_run": dry_run, **out})
+    except Exception as e:
+        app.logger.exception("ops_build_klaviyo_flows failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.post("/ops/seed-klaviyo-events")
 def ops_seed_klaviyo_events():
     """One-time (pre-launch): fire a test event of EACH type into Klaviyo for a test profile, so
