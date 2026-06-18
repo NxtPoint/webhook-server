@@ -184,6 +184,116 @@ def customer_360():
     })
 
 
+# ── Admin maintenance actions (write) — all admin-gated, all via the SAFE billing paths ──
+# No plan edits, no row deletes, no manual balance edits. Refunds are NOT here — do those in
+# the PayPal dashboard (the webhook records them). See docs/business/billing-implementation.md.
+
+def _acct_by_email(email):
+    return _one("SELECT id, email, active, comp FROM billing.account WHERE lower(email) = :e",
+                {"e": (email or "").strip().lower()})
+
+
+def _cancel_paypal_sub(account_id):
+    """Best-effort cancel the account's ACTIVE PayPal subscription at PayPal. The webhook then
+    reconciles subscription_state to CANCELLED. Returns a short status string."""
+    sub = _one(
+        "SELECT provider_subscription_id AS sid FROM billing.subscription_state "
+        "WHERE account_id = :a AND billing_provider = 'paypal' "
+        "AND provider_subscription_id IS NOT NULL AND status = 'ACTIVE' "
+        "ORDER BY updated_at DESC NULLS LAST LIMIT 1", {"a": account_id})
+    sid = (sub or {}).get("sid")
+    if not sid:
+        return "no_active_paypal_sub"
+    try:
+        from paypal_billing import client
+        client.cancel_subscription(sid, reason="Admin cancellation")
+        return "cancel_requested"
+    except Exception:
+        return "paypal_cancel_failed"
+
+
+def _admin_action(fn):
+    """Shared boilerplate for the POST admin actions: OPTIONS, admin gate, JSON body, email→account."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    acct = _acct_by_email(body.get("email"))
+    if not acct:
+        return jsonify({"ok": False, "error": "customer not found"}), 404
+    return fn(body, acct)
+
+
+@cockpit_bp.route(f"{_PREFIX}/customer/add-credits", methods=["POST", "OPTIONS"])
+def customer_add_credits():
+    def _do(body, acct):
+        try:
+            matches = int(body.get("matches") or 0)
+            techniques = int(body.get("techniques") or 0)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "matches/techniques must be integers"}), 400
+        if matches <= 0 and techniques <= 0:
+            return jsonify({"ok": False, "error": "grant at least 1 match or technique credit"}), 400
+        import uuid
+        ref = "admin:" + uuid.uuid4().hex  # unique per request → distinct grant, retry-idempotent
+        from billing_service import grant_entitlement
+        gid = grant_entitlement(
+            account_id=acct["id"], source="manual_adjustment", plan_code="service_credit",
+            matches_granted=max(matches, 0), techniques_granted=max(techniques, 0),
+            external_wix_id=ref, valid_to=None,  # life-long (never expires), like PAYG
+        )
+        return jsonify({"ok": True, "grant_id": gid, "matches": matches, "techniques": techniques})
+    return _admin_action(_do)
+
+
+@cockpit_bp.route(f"{_PREFIX}/customer/set-comp", methods=["POST", "OPTIONS"])
+def customer_set_comp():
+    def _do(body, acct):
+        comp = bool(body.get("comp"))
+        from billing_service import set_account_comp
+        set_account_comp(account_id=acct["id"], comp=comp)
+        return jsonify({"ok": True, "comp": comp})
+    return _admin_action(_do)
+
+
+@cockpit_bp.route(f"{_PREFIX}/customer/terminate", methods=["POST", "OPTIONS"])
+def customer_terminate():
+    def _do(body, acct):
+        from billing_service import set_account_active
+        set_account_active(account_id=acct["id"], active=False)
+        paypal = _cancel_paypal_sub(acct["id"])  # stop further billing
+        return jsonify({"ok": True, "terminated": True, "paypal": paypal})
+    return _admin_action(_do)
+
+
+@cockpit_bp.route(f"{_PREFIX}/customer/reactivate", methods=["POST", "OPTIONS"])
+def customer_reactivate():
+    def _do(body, acct):
+        from billing_service import set_account_active
+        set_account_active(account_id=acct["id"], active=True)
+        # NB: does not re-subscribe at PayPal — the customer must re-subscribe for paid access.
+        return jsonify({"ok": True, "active": True})
+    return _admin_action(_do)
+
+
+@cockpit_bp.route(f"{_PREFIX}/customer/cancel-subscription", methods=["POST", "OPTIONS"])
+def customer_cancel_subscription():
+    def _do(body, acct):
+        paypal = _cancel_paypal_sub(acct["id"])  # account stays active; credits already granted stay
+        return jsonify({"ok": True, "paypal": paypal})
+    return _admin_action(_do)
+
+
+@cockpit_bp.route(f"{_PREFIX}/customer/update-profile", methods=["POST", "OPTIONS"])
+def customer_update_profile():
+    def _do(body, acct):
+        from billing_service import update_primary_member_profile
+        result = update_primary_member_profile(account_id=acct["id"], fields=body.get("fields") or {})
+        return jsonify({"ok": True, **result})
+    return _admin_action(_do)
+
+
 @cockpit_bp.route(f"{_PREFIX}/at-risk", methods=["GET", "OPTIONS"])
 def at_risk():
     if request.method == "OPTIONS":

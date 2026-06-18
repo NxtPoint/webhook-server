@@ -588,6 +588,54 @@ def record_payment(
 
 
 # ----------------------------
+# Admin maintenance helpers (called from the cockpit admin-actions endpoints).
+# All operate on billing.* via the SAFE paths only — no plan edits, no row deletes.
+# ----------------------------
+
+def set_account_active(*, account_id: int, active: bool) -> bool:
+    """Terminate (active=False) or reactivate (True) an account. Preserves ALL billing
+    history (grants/consumption stay) — termination is a flag, never a delete."""
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE billing.account SET active = :a WHERE id = :id"),
+                     {"a": bool(active), "id": account_id})
+    return True
+
+
+def set_account_comp(*, account_id: int, comp: bool) -> bool:
+    """Flag/unflag an account as comp (sponsored/free, unlimited). The entitlements + AI-coach
+    gates read this; usage is still recorded so analytics work."""
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE billing.account SET comp = :c WHERE id = :id"),
+                     {"c": bool(comp), "id": account_id})
+    return True
+
+
+# Profile fields an admin may edit on the primary member. Deliberately EXCLUDES email (the
+# identity/join key) and role (affects gating) — changing those risks reconciliation issues.
+_EDITABLE_MEMBER_FIELDS = frozenset({
+    "full_name", "surname", "phone", "utr", "dominant_hand", "country", "area",
+    "skill_level", "club_school", "notes",
+})
+
+
+def update_primary_member_profile(*, account_id: int, fields: dict) -> dict:
+    """Update allowed profile fields on the account's primary member. Ignores unknown/blocked keys."""
+    updates = {k: v for k, v in (fields or {}).items() if k in _EDITABLE_MEMBER_FIELDS}
+    if not updates:
+        return {"updated": []}
+    set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+    params = dict(updates)
+    params["aid"] = account_id
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"UPDATE billing.member SET {set_clause} "
+                 f"WHERE account_id = :aid AND is_primary = true"),
+            params,
+        )
+    return {"updated": sorted(updates.keys())}
+
+
+# ----------------------------
 # Coach gate — Phase 2 cap
 # See docs/business/pricing-and-packages.md §6. First linked player is free;
 # 2nd+ requires Coach Pro subscription. Gate fires at ACCEPT time

@@ -136,6 +136,7 @@ def _check_ai_coach_entitled(email: str) -> tuple[bool, Optional[str]]:
                 text("""
                     SELECT
                       a.active AS account_active,
+                      COALESCE(a.comp, false) AS comp,
                       COALESCE(m.role, 'player_parent') AS role,
                       (s.status = 'ACTIVE') AS paid_active
                     FROM billing.account a
@@ -163,6 +164,8 @@ def _check_ai_coach_entitled(email: str) -> tuple[bool, Optional[str]]:
         return False, "ACCOUNT_INACTIVE"
     if row["role"] == "coach":
         return True, None
+    if row.get("comp"):
+        return True, None  # sponsored/comp accounts get full access incl. AI Coach
     if row["paid_active"]:
         return True, None
     return False, "UPGRADE_REQUIRED"

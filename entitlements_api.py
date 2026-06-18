@@ -69,7 +69,8 @@ def _guard() -> bool:
 
 UPSERT_SQL = text("""
 WITH a AS (
-  SELECT id AS account_id, email, active AS account_active
+  SELECT id AS account_id, email, active AS account_active,
+         COALESCE(comp, false) AS comp
   FROM billing.account
   WHERE email = :email
 ),
@@ -136,11 +137,12 @@ calc AS (
     a.email,
     COALESCE(m.role, 'player_parent') AS role,
     a.account_active,
+    a.comp,
 
     s.subscription_status,
     s.current_period_end,
 
-    (s.subscription_status = 'ACTIVE') AS paid_active,
+    (COALESCE(s.subscription_status, '') = 'ACTIVE') AS paid_active,
 
     COALESCE(g.matches_granted, 0) AS matches_granted,
     COALESCE(c.matches_consumed, 0) AS matches_consumed,
@@ -195,7 +197,8 @@ SELECT
   -- is what makes the trial → upgrade hook work.
   (
     account_active AND (
-      paid_active
+      comp
+      OR paid_active
       OR role = 'coach'
       OR matches_consumed > 0
       OR techniques_consumed > 0
@@ -204,6 +207,7 @@ SELECT
 
   CASE
     WHEN NOT account_active THEN 'ACCOUNT_INACTIVE'
+    WHEN comp THEN NULL
     WHEN paid_active THEN NULL
     WHEN role = 'coach' THEN NULL
     WHEN matches_consumed > 0 OR techniques_consumed > 0 THEN NULL
@@ -212,12 +216,14 @@ SELECT
 
   -- Upload access: credits alone authorise upload. paid_active is NOT
   -- required — the free trial grant of 1 match + 5 techniques is what
-  -- lets a new signup upload before ever paying.
-  (account_active AND role <> 'coach' AND matches_remaining > 0) AS can_upload,
+  -- lets a new signup upload before ever paying. comp (sponsored) accounts
+  -- bypass the credit check entirely (free/unlimited; usage still recorded).
+  (account_active AND role <> 'coach' AND (comp OR matches_remaining > 0)) AS can_upload,
 
   CASE
     WHEN NOT account_active THEN 'ACCOUNT_INACTIVE'
     WHEN role = 'coach' THEN 'COACH_VIEW_ONLY'
+    WHEN comp THEN NULL
     WHEN matches_remaining <= 0 THEN 'NO_MATCH_CREDITS'
     ELSE NULL
   END AS block_reason,

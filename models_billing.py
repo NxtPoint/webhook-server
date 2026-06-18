@@ -45,6 +45,10 @@ class Account(Base):
 
     currency_code = Column(CHAR(3), nullable=False, server_default=text("'USD'"))
     active = Column(Boolean, nullable=False, server_default=text("true"))
+    # comp = sponsored/free account: bypasses the credit gate (free, unlimited uploads + AI
+    # coach). Usage is still recorded so analytics work; revenue naturally shows $0. See the
+    # entitlements gate (entitlements_api) + coach gate (tennis_coach).
+    comp = Column(Boolean, nullable=False, server_default=text("false"))
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -363,6 +367,9 @@ def billing_init(engine=None):
     with engine.begin() as conn:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS billing"))
         Base.metadata.create_all(conn, checkfirst=True)
+        # comp flag (sponsored accounts) — additive on existing prod tables.
+        conn.execute(text(
+            "ALTER TABLE billing.account ADD COLUMN IF NOT EXISTS comp boolean NOT NULL DEFAULT false"))
         for stmt in _BILLING_RAW_DDL:
             conn.execute(text(stmt))
         exists = conn.execute(text(
