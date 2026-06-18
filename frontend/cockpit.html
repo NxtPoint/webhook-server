@@ -7,12 +7,15 @@
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <style>
   :root{
-    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --panel3:#232834; --line:#2a2f3a; --line2:#363c4a;
-    --txt:#e7ebf0; --muted:#9aa4b2; --muted2:#6b7587;
-    --green:#22c55e; --amber:#f59e0b; --red:#ef4444; --blue:#3b82f6; --violet:#a78bfa;
+    /* Light / white SaaS admin theme */
+    --bg:#f7f8fa; --panel:#ffffff; --panel2:#f3f4f6; --panel3:#eef0f3; --line:#e6e8eb; --line2:#d3d7dd;
+    --txt:#1a1d21; --muted:#5b6470; --muted2:#8a94a3;
+    --green:#16a34a; --amber:#d97706; --red:#dc2626; --blue:#2563eb; --violet:#7c3aed;
+    --shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06);
+    --shadow-lg:0 10px 24px rgba(16,24,40,.12);
     --radius:12px; --radius-sm:8px;
     --sp1:6px; --sp2:10px; --sp3:14px; --sp4:18px; --sp5:24px;
-    --focus:#60a5fa;
+    --focus:#2563eb;
     font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
   }
   *{box-sizing:border-box}
@@ -32,16 +35,16 @@
   /* ---- Top bar --------------------------------------------------------- */
   header{padding:14px 24px;border-bottom:1px solid var(--line);
          display:flex;align-items:center;gap:14px;flex-wrap:wrap;
-         background:linear-gradient(180deg,#13161d,var(--bg))}
+         background:#ffffff;box-shadow:var(--shadow)}
   header .brand{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;letter-spacing:.2px;margin:0}
   header .brand .logo{font-size:18px}
   header .grow{flex:1}
   .badge{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:3px 11px;
-         display:inline-flex;align-items:center;gap:5px;background:var(--panel)}
+         display:inline-flex;align-items:center;gap:5px;background:var(--panel2)}
   .badge.dot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
   .reloadBtn{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:99px;
              padding:4px 12px;background:var(--panel);cursor:pointer}
-  .reloadBtn:hover{color:var(--txt);border-color:var(--line2)}
+  .reloadBtn:hover{color:var(--txt);border-color:var(--line2);background:var(--panel2)}
 
   /* ---- Tab nav --------------------------------------------------------- */
   .tabs{display:flex;gap:4px;padding:12px 24px 0;flex-wrap:wrap;border-bottom:1px solid var(--line)}
@@ -49,7 +52,7 @@
        background:transparent;color:var(--muted);cursor:pointer;font-weight:500;font-size:13px;
        position:relative;top:1px;user-select:none}
   .tab:hover{color:var(--txt)}
-  .tab.active{background:var(--panel2);color:var(--txt);border-color:var(--line)}
+  .tab.active{background:var(--panel);color:var(--txt);border-color:var(--line)}
   .tab.active::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--blue)}
 
   main{padding:20px 24px 80px}
@@ -57,7 +60,7 @@
   /* ---- KPI cards ------------------------------------------------------- */
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--sp3);margin-bottom:var(--sp5)}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;
-        display:flex;flex-direction:column;gap:4px;min-height:92px}
+        display:flex;flex-direction:column;gap:4px;min-height:92px;box-shadow:var(--shadow)}
   .card .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600}
   .card .v{font-size:26px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
   .card .s{font-size:12px;color:var(--muted)}
@@ -70,26 +73,26 @@
 
   /* ---- Tables ---------------------------------------------------------- */
   table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);
-        border-radius:var(--radius);overflow:hidden}
+        border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
   th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}
   th{color:var(--muted);font-weight:600;background:var(--panel2);position:sticky;top:0;z-index:1}
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   tr:last-child td{border-bottom:none}
-  tbody tr:hover td{background:rgba(255,255,255,.02)}
+  tbody tr:hover td{background:rgba(37,99,235,.04)}
   th.sortable{cursor:pointer;user-select:none}
   th.sortable:hover{color:var(--txt)}
   th.sortable .arrow{opacity:.4;font-size:10px;margin-left:4px}
   th.sortable.asc .arrow,th.sortable.desc .arrow{opacity:1;color:var(--blue)}
 
   .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;text-transform:capitalize}
-  .pill.paid,.pill.active,.pill.approved,.pill.resolved,.pill.promoter{background:rgba(34,197,94,.15);color:var(--green)}
-  .pill.at_risk,.pill.failed,.pill.rejected,.pill.high,.pill.detractor{background:rgba(239,68,68,.15);color:var(--red)}
-  .pill.trial,.pill.payg,.pill.processing,.pill.queued,.pill.draft,.pill.open,.pill.passive,.pill.medium{background:rgba(245,158,11,.15);color:var(--amber)}
-  .pill.signup,.pill.churned,.pill.low,.pill.closed{background:rgba(154,164,178,.15);color:var(--muted)}
-  .pill.complete,.pill.activated{background:rgba(59,130,246,.15);color:var(--blue)}
+  .pill.paid,.pill.active,.pill.approved,.pill.resolved,.pill.promoter{background:#dcfce7;color:#15803d}
+  .pill.at_risk,.pill.failed,.pill.rejected,.pill.high,.pill.detractor{background:#fee2e2;color:#b91c1c}
+  .pill.trial,.pill.payg,.pill.processing,.pill.queued,.pill.draft,.pill.open,.pill.passive,.pill.medium{background:#fef3c7;color:#b45309}
+  .pill.signup,.pill.churned,.pill.low,.pill.closed{background:#eef0f3;color:#5b6470}
+  .pill.complete,.pill.activated{background:#dbeafe;color:#1d4ed8}
 
   .controls{display:flex;gap:10px;margin-bottom:var(--sp3);flex-wrap:wrap;align-items:center}
-  input,select,textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+  input,select,textarea{background:var(--panel);border:1px solid var(--line2);color:var(--txt);
         padding:8px 12px;border-radius:var(--radius-sm);font-size:13px;font-family:inherit}
   input::placeholder{color:var(--muted2)}
   textarea{width:100%;resize:vertical;line-height:1.5}
@@ -100,17 +103,17 @@
   .muted{color:var(--muted)}
 
   /* ---- States ---------------------------------------------------------- */
-  .err{background:rgba(239,68,68,.12);border:1px solid var(--red);color:#fecaca;padding:12px 16px;
+  .err{background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;padding:12px 16px;
        border-radius:10px;margin-bottom:16px;display:flex;gap:10px;align-items:flex-start}
   .empty{color:var(--muted);padding:28px;text-align:center}
   .empty .big{font-size:14px;color:var(--txt);font-weight:600;margin-bottom:4px}
   .empty .hint{font-size:12px;color:var(--muted2)}
-  .banner{background:rgba(59,130,246,.10);border:1px solid rgba(59,130,246,.4);color:#bfdbfe;
+  .banner{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;
           padding:11px 15px;border-radius:10px;margin-bottom:16px;font-size:12.5px;display:flex;gap:8px;align-items:flex-start}
-  .banner.warn{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.4);color:#fde68a}
-  .toast{position:fixed;right:20px;bottom:20px;background:var(--panel3);border:1px solid var(--line2);
+  .banner.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
+  .toast{position:fixed;right:20px;bottom:20px;background:#ffffff;border:1px solid var(--line2);
          color:var(--txt);padding:12px 16px;border-radius:10px;font-size:13px;z-index:60;
-         box-shadow:0 8px 24px rgba(0,0,0,.4);max-width:340px;opacity:0;transform:translateY(8px);
+         box-shadow:var(--shadow-lg);max-width:340px;opacity:0;transform:translateY(8px);
          transition:opacity .2s,transform .2s}
   .toast.show{opacity:1;transform:translateY(0)}
   .toast.ok{border-left:3px solid var(--green)} .toast.bad{border-left:3px solid var(--red)}
@@ -132,26 +135,30 @@
   .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:var(--sp3)}
   .chip{padding:6px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel);
         cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
-  .chip:hover{color:var(--txt)}
-  .chip.active{background:var(--panel2);color:var(--txt);border-color:var(--blue)}
+  .chip:hover{color:var(--txt);border-color:var(--line2)}
+  .chip.active{background:#eff6ff;color:var(--blue);border-color:var(--blue)}
   .hidden{display:none}
 
   /* buttons */
   .btn{font-size:12px;font-weight:600;border:1px solid var(--line2);border-radius:7px;padding:5px 11px;
-       background:var(--panel3);color:var(--txt);cursor:pointer;white-space:nowrap}
-  .btn:hover{border-color:var(--blue)}
+       background:var(--panel);color:var(--txt);cursor:pointer;white-space:nowrap}
+  .btn:hover{border-color:var(--blue);background:var(--panel2)}
   .btn:disabled{opacity:.5;cursor:default}
   .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
-  .btn.good{background:rgba(34,197,94,.15);border-color:var(--green);color:var(--green)}
-  .btn.bad{background:rgba(239,68,68,.12);border-color:var(--red);color:#fca5a5}
+  .btn.primary:hover{background:#1d4ed8;border-color:#1d4ed8}
+  .btn.good{background:#dcfce7;border-color:#86efac;color:#15803d}
+  .btn.good:hover{background:#bbf7d0;border-color:var(--green)}
+  .btn.bad{background:#fee2e2;border-color:#fca5a5;color:#b91c1c}
+  .btn.bad:hover{background:#fecaca;border-color:var(--red)}
   .btn.ghost{background:transparent}
+  .btn.ghost:hover{background:var(--panel2)}
   .btn-sm{padding:3px 9px;font-size:11px}
 
   tbody tr.clickable{cursor:pointer}
-  tbody tr.clickable:hover td{background:var(--panel2)}
+  tbody tr.clickable:hover td{background:rgba(37,99,235,.06)}
 
   /* ---- Customer 360 ---------------------------------------------------- */
-  .c360{margin-top:20px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+  .c360{margin-top:20px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
   .c360 .c360-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;
         border-bottom:1px solid var(--line);padding-bottom:12px}
   .c360 .c360-head h2{font-size:16px;margin:0;font-weight:600}
@@ -163,9 +170,39 @@
   .meta .m b{display:block;color:var(--muted);font-size:10.5px;font-weight:600;margin-bottom:2px;
         text-transform:uppercase;letter-spacing:.3px}
 
+  /* ---- Admin actions (c360) ------------------------------------------- */
+  .admincard{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);
+        padding:16px 18px;margin-bottom:20px}
+  .admincard > .ahead{display:flex;align-items:center;gap:8px;margin:0 0 14px;font-size:14px;font-weight:600}
+  .admincard > .ahead .lock{font-size:11px;color:var(--muted);font-weight:500}
+  .ablock{padding:12px 0;border-top:1px solid var(--line)}
+  .ablock:first-of-type{border-top:none;padding-top:0}
+  .ablock > h4{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--muted);
+        text-transform:uppercase;letter-spacing:.3px}
+  .arow{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .afield{display:flex;flex-direction:column;gap:3px}
+  .afield label{font-size:10.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+  .afield input,.afield textarea{min-width:120px}
+  .afield.wide{flex:1;min-width:200px}
+  .afield.wide input,.afield.wide textarea{width:100%}
+  .anote{font-size:11.5px;color:var(--muted);margin-top:4px}
+  .astatus{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600}
+  .hint-life{font-size:11px;color:var(--green);font-weight:600}
+  /* toggle switch */
+  .switch{position:relative;display:inline-flex;align-items:center;gap:9px;cursor:pointer;font-size:13px}
+  .switch input{position:absolute;opacity:0;width:0;height:0}
+  .switch .track{width:38px;height:22px;border-radius:99px;background:var(--line2);
+        transition:background .18s;flex:none;position:relative}
+  .switch .track::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;
+        border-radius:50%;background:#fff;box-shadow:var(--shadow);transition:transform .18s}
+  .switch input:checked + .track{background:var(--green)}
+  .switch input:checked + .track::after{transform:translateX(16px)}
+  .switch input:focus-visible + .track{outline:2px solid var(--focus);outline-offset:2px}
+  .switch input:disabled + .track{opacity:.5}
+
   /* ---- Charts ---------------------------------------------------------- */
   .chartgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:22px}
-  .chartcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
+  .chartcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow)}
   .chartcard h3{font-size:13px;margin:0 0 4px;font-weight:600}
   .chartcard .sub{font-size:11px;color:var(--muted);margin-bottom:8px}
   .chart{width:100%;height:240px;position:relative}
@@ -510,7 +547,9 @@ async function loadCustomers(){
 }
 
 /* ---- Customer 360 drill-down ---- */
+let cur360 = { email:null, summary:null };
 async function open360(email){
+  cur360.email = email;
   const box = document.getElementById('c360');
   box.classList.remove('hidden');
   box.innerHTML = `<div class="empty"><span class="spinner"></span> &nbsp;Loading 360 for ${esc(email)}…</div>`;
@@ -520,9 +559,12 @@ async function open360(email){
     render360(d);
   }catch(e){ box.innerHTML = `<div class="err"><span aria-hidden="true">⚠️</span><span>${esc(e.message)}</span></div>`; }
 }
-function close360(){ document.getElementById('c360').classList.add('hidden'); }
+/* re-fetch + re-render the currently-open 360 (used after an admin action). */
+async function refresh360(){ if(cur360.email) await open360(cur360.email); }
+function close360(){ document.getElementById('c360').classList.add('hidden'); cur360.email=null; cur360.summary=null; }
 function render360(d){
   const s = d.summary||{};
+  cur360.summary = s;
   const meta = [
     ['Display name', esc(s.display_name||'—')], ['Role', esc(s.role||'—')], ['Stage', pill(s.stage)],
     ['Enrolled', when(s.created_at)], ['Last activity', when(s.last_activity)],
@@ -545,6 +587,7 @@ function render360(d){
       <span class="badge">acct ${esc(s.account_id??'?')}</span>
       <span class="closeBtn" id="c360close" tabindex="0" role="button">Close ✕</span>
     </div>
+    <div id="c360admin"></div>
     <div class="sec"><h2>Identity</h2><div class="meta">${metaHtml(meta)}</div></div>
     <div class="sec"><h2>Subscription &amp; credits</h2><div class="meta">${metaHtml(sub)}</div></div>
     <div class="sec"><h2>Payments <span class="count">(${(d.payments||[]).length})</span></h2><div class="wrap"><table id="t360pay"></table></div></div>
@@ -555,6 +598,8 @@ function render360(d){
     <div class="sec"><h2>Feedback <span class="count">(${(d.feedback||[]).length})</span></h2><div class="wrap"><table id="t360fb"></table></div></div>
     <div class="sec"><h2>Consent <span class="count">(${(d.consent||[]).length})</span></h2><div class="wrap"><table id="t360cons"></table></div></div>`;
   const cl=document.getElementById('c360close'); cl.onclick=close360; cl.onkeydown=(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();close360();}};
+
+  renderAdminActions(s);
 
   tbl(document.getElementById('t360pay'), ['When','Kind',{label:'Amount',num:true},'Status','Plan','Provider'], d.payments,
       r=>`<tr><td>${when(r.occurred_at)}</td><td>${esc(r.kind||'—')}</td><td class="num">${money(r.amount_cents)}</td>
@@ -581,6 +626,143 @@ function render360(d){
           <td>${when(r.granted_at)}</td><td>${r.withdrawn_at?when(r.withdrawn_at):'—'}</td>
           <td>${esc(r.subject||'—')}</td></tr>`, 'No consent records');
 }
+
+/* ---- Admin actions (Customer 360) ----------------------------------------
+   All calls go to the cockpit base `C` via post(path, body, C). Each passes
+   {email: cur360.email, ...}. After success we refresh the 360 + toast. */
+const PROFILE_FIELDS = [
+  ['full_name','Full name'], ['surname','Surname'], ['phone','Phone'], ['utr','UTR'],
+  ['dominant_hand','Dominant hand'], ['country','Country'], ['area','Area'],
+  ['skill_level','Skill level'], ['club_school','Club / school'], ['notes','Notes'],
+];
+function renderAdminActions(s){
+  const box = document.getElementById('c360admin');
+  if(!box) return;
+  const active = !(s.account_status==='terminated' || s.active===false || s.deactivated_at);
+  const comp = s.comp===true || s.is_comp===true || s.sponsored===true;
+
+  const profileFields = PROFILE_FIELDS.map(([k,label])=>{
+    const v = s[k];
+    const wide = (k==='notes'||k==='club_school');
+    const ctrl = k==='notes'
+      ? `<textarea id="ap_${k}" rows="2">${esc(v||'')}</textarea>`
+      : `<input id="ap_${k}" value="${esc(v||'')}">`;
+    return `<div class="afield${wide?' wide':''}"><label for="ap_${k}">${esc(label)}</label>${ctrl}</div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="admincard">
+      <h3 class="ahead">⚙️ Admin actions <span class="lock">email &amp; role are not editable here</span></h3>
+
+      <div class="ablock">
+        <h4>Account status</h4>
+        <div class="arow">
+          <span class="astatus">${active
+            ? '<span class="pill active">active</span>'
+            : '<span class="pill churned">terminated</span>'}</span>
+          <label class="switch" title="Sponsored: free / unlimited access">
+            <input type="checkbox" id="ac_comp" ${comp?'checked':''}>
+            <span class="track"></span>
+            <span>Sponsored (free / unlimited)</span>
+          </label>
+          <span class="grow" style="flex:1"></span>
+          ${active
+            ? `<button class="btn bad" id="ac_terminate">Terminate account</button>
+               <button class="btn" id="ac_cancelsub">Cancel subscription</button>`
+            : `<button class="btn good" id="ac_reactivate">Reactivate</button>`}
+        </div>
+        ${!active?'<div class="anote">Account is deactivated. Reactivate to restore access.</div>':''}
+      </div>
+
+      <div class="ablock">
+        <h4>Credits <span class="hint-life">life-long — never expire</span></h4>
+        <div class="arow">
+          <div class="afield"><label for="ac_matches">Match credits</label><input type="number" id="ac_matches" min="0" step="1" value="0"></div>
+          <div class="afield"><label for="ac_techniques">Technique credits</label><input type="number" id="ac_techniques" min="0" step="1" value="0"></div>
+          <div class="afield wide"><label for="ac_reason">Reason</label><input id="ac_reason" placeholder="e.g. goodwill / support fix"></div>
+          <button class="btn good" id="ac_grant">Grant (life-long)</button>
+        </div>
+        <div class="anote">Granted credits never expire.</div>
+      </div>
+
+      <div class="ablock">
+        <h4>Edit profile</h4>
+        <div class="arow" style="align-items:stretch">${profileFields}</div>
+        <div class="arow" style="margin-top:10px">
+          <button class="btn primary" id="ac_saveprofile">Save profile</button>
+          <span class="anote">Only changed fields are sent. Email and role are intentionally not editable.</span>
+        </div>
+      </div>
+
+      <div class="ablock">
+        <h4>Refunds</h4>
+        <div class="anote">Refunds: issue them in the PayPal dashboard — they're recorded here automatically.</div>
+      </div>
+    </div>`;
+
+  // ---- wiring ----
+  const compToggle = document.getElementById('ac_comp');
+  if(compToggle) compToggle.onchange = ()=> setComp(compToggle.checked, compToggle);
+
+  bind('ac_grant', addCredits);
+  bind('ac_saveprofile', saveProfile);
+  bind('ac_terminate', terminateAccount);
+  bind('ac_cancelsub', cancelSubscription);
+  bind('ac_reactivate', reactivateAccount);
+}
+function bind(id, fn){ const el=document.getElementById(id); if(el) el.onclick=()=>fn(el); }
+
+/* busy-lock helper: disables the control while the async action runs. */
+async function adminAct(btn, fn, okMsg){
+  if(btn){ btn.disabled=true; }
+  try{
+    await fn();
+    await refresh360();              // re-render the panel from fresh data
+    toast(okMsg, 'ok');
+  }catch(e){
+    toast(e.message || 'Action failed', 'bad');
+    if(btn) btn.disabled=false;      // refresh360 replaces the node on success; only restore on failure
+  }
+}
+
+async function setComp(comp, toggle){
+  await adminAct(toggle, ()=> post(`/customer/set-comp`, {email:cur360.email, comp:!!comp}, C),
+    comp ? 'Marked as sponsored (free / unlimited)' : 'Sponsored status removed');
+}
+async function addCredits(btn){
+  const matches    = parseInt(document.getElementById('ac_matches').value,10) || 0;
+  const techniques = parseInt(document.getElementById('ac_techniques').value,10) || 0;
+  const reason     = document.getElementById('ac_reason').value.trim();
+  if(matches<=0 && techniques<=0){ toast('Enter at least one credit to grant','bad'); return; }
+  await adminAct(btn, ()=> post(`/customer/add-credits`,
+    {email:cur360.email, matches, techniques, reason}, C),
+    `Granted ${matches} match + ${techniques} technique credit(s)`);
+}
+async function saveProfile(btn){
+  const base = cur360.summary || {};
+  const fields = {};
+  PROFILE_FIELDS.forEach(([k])=>{
+    const el = document.getElementById('ap_'+k); if(!el) return;
+    const v = el.value.trim();
+    const orig = (base[k]==null?'':String(base[k])).trim();
+    if(v !== orig) fields[k] = v;        // send only changed fields
+  });
+  if(!Object.keys(fields).length){ toast('No changes to save','bad'); return; }
+  await adminAct(btn, ()=> post(`/customer/update-profile`,
+    {email:cur360.email, fields}, C), 'Profile updated');
+}
+async function terminateAccount(btn){
+  if(!confirm('This deactivates the account and cancels any PayPal subscription. Continue?')) return;
+  await adminAct(btn, ()=> post(`/customer/terminate`, {email:cur360.email}, C), 'Account terminated');
+}
+async function reactivateAccount(btn){
+  await adminAct(btn, ()=> post(`/customer/reactivate`, {email:cur360.email}, C), 'Account reactivated');
+}
+async function cancelSubscription(btn){
+  if(!confirm('Cancels the PayPal subscription; the customer keeps any credits already granted.')) return;
+  await adminAct(btn, ()=> post(`/customer/cancel-subscription`, {email:cur360.email}, C), 'Subscription cancelled');
+}
+
 document.getElementById('custSearch').oninput = debounce(()=>loadCustomers(),300);
 function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};}
 
@@ -653,8 +835,8 @@ async function loadFeedback(){
 
 /* ---------------------------------------------------------------- PERFORMANCE */
 const CHART_THEME = {
-  txt:'#e7ebf0', muted:'#9aa4b2', line:'#2a2f3a', grid:'rgba(255,255,255,.06)',
-  green:'#22c55e', amber:'#f59e0b', red:'#ef4444', blue:'#3b82f6', violet:'#a78bfa',
+  txt:'#1a1d21', muted:'#5b6470', line:'#e6e8eb', line2:'#d3d7dd', grid:'#eeeeee',
+  green:'#16a34a', amber:'#d97706', red:'#dc2626', blue:'#2563eb', violet:'#7c3aed',
 };
 const _chartInst = {};
 function _ec(id){
@@ -672,9 +854,10 @@ function _noData(id){
   el.innerHTML = '<div class="nodata">no data yet</div>';
 }
 const _TT = {
-  trigger:'axis', backgroundColor:'rgba(23,26,33,.96)', borderColor:CHART_THEME.line, borderWidth:1,
+  trigger:'axis', backgroundColor:'#ffffff', borderColor:CHART_THEME.line2, borderWidth:1,
   textStyle:{color:CHART_THEME.txt, fontSize:12}, padding:[8,12],
-  axisPointer:{lineStyle:{color:CHART_THEME.line2||'#363c4a'}},
+  extraCssText:'box-shadow:0 8px 24px rgba(16,24,40,.12);border-radius:8px',
+  axisPointer:{lineStyle:{color:CHART_THEME.line2}},
 };
 function _axisCat(labels, title){
   return { type:'category', data:labels, boundaryGap:true,

@@ -285,8 +285,10 @@ _VIEWS = [
         l.nps_latest,
         l.last_activity,
         cons.consent_marketing,
-        COALESCE(tf.tasks_failed, 0)           AS tasks_failed
+        COALESCE(tf.tasks_failed, 0)           AS tasks_failed,
+        ba.active, COALESCE(ba.comp, false) AS comp
     FROM core.vw_account_lifecycle l
+    LEFT JOIN billing.account ba ON ba.id = l.account_id
     LEFT JOIN LATERAL (
         SELECT count(*) AS payments_count,
                COALESCE(SUM(amount_cents) FILTER (WHERE amount_cents > 0), 0) AS payments_total_cents,
