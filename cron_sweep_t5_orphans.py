@@ -2,8 +2,9 @@
 # ============================================================
 # Render Cron Job — runs every 5 minutes (configured in Render dashboard).
 #
-# ONE Render cron fires BOTH orphan sweeps (kept in this single script on
-# purpose — a second Render cron would cost extra; two HTTP calls cost nothing):
+# ONE Render cron fires the orphan sweeps + a feedback-signal sync (kept in this
+# single script on purpose — a second Render cron would cost extra; extra HTTP
+# calls cost nothing):
 #
 #   1. POST /ops/sweep-t5-orphans  — tennis_singles_t5 tasks whose Batch run
 #      completed but whose Render-side ingest never fired (auto-spawned T5 tasks
@@ -16,8 +17,14 @@
 #      tasks stuck in last_status='processing' → the T5 twin never spawns → no
 #      corpus row lands. This is the SA-side twin of the T5 sweep (rule #10).
 #
-# Both endpoints are idempotent (inner ingest gate checks ingest_started_at +
-# staleness; training_corpus has a UNIQUE constraint downstream).
+#   3. POST /ops/sync-feedback-signals — backfill/safety-net for the feedback-loop
+#      mining table (support_bot.feedback_signal). Signals fire LIVE at write-time
+#      (marketing_crm/feedback hooks); this idempotent set-based sync just catches
+#      historical/missed NPS-detractor + cancellation/widget-survey rows.
+#
+# All endpoints are idempotent (inner ingest gate checks ingest_started_at +
+# staleness; training_corpus has a UNIQUE constraint downstream; feedback sync is
+# ON CONFLICT DO NOTHING).
 #
 # Required env vars:
 #   OPS_KEY — used as X-Ops-Key auth header
@@ -41,6 +48,7 @@ if not key:
 base = (os.environ.get("SWEEP_ORPHANS_BASE_URL") or "https://api.nextpointtennis.com").rstrip("/")
 t5_url = os.environ.get("SWEEP_T5_ORPHANS_URL") or f"{base}/ops/sweep-t5-orphans"
 sa_url = os.environ.get("SWEEP_SA_ORPHANS_URL") or f"{base}/ops/sweep-sa-orphans"
+feedback_url = os.environ.get("SYNC_FEEDBACK_URL") or f"{base}/ops/sync-feedback-signals"
 
 _body = {"dry_run": False}
 _limit = os.environ.get("SWEEP_T5_ORPHANS_LIMIT")
@@ -74,7 +82,10 @@ def _post_sweep(name: str, url: str) -> bool:
 
 ok_t5 = _post_sweep("SWEEP-T5", t5_url)
 ok_sa = _post_sweep("SWEEP-SA", sa_url)
+# 3rd call (zero extra cron cost): backfill/safety-net for the feedback-loop signal table.
+# Feedback signals fire LIVE at write-time; this just catches historical/missed rows (idempotent).
+ok_fb = _post_sweep("SYNC-FEEDBACK", feedback_url)
 
-# Non-zero exit only if BOTH failed (so a transient single-endpoint blip doesn't
-# red the cron when the other swept fine).
-sys.exit(0 if (ok_t5 or ok_sa) else 1)
+# Non-zero exit only if ALL failed (so a transient single-endpoint blip doesn't
+# red the cron when the others ran fine).
+sys.exit(0 if (ok_t5 or ok_sa or ok_fb) else 1)

@@ -4322,6 +4322,24 @@ def ops_backfill_pair_labels():
     return jsonify(result), 200
 
 
+@app.post("/ops/sync-feedback-signals")
+def ops_sync_feedback_signals():
+    """Backfill/safety-net: sync NPS detractors + cancellation/widget surveys from core.* into
+    support_bot.feedback_signal (the feedback-loop mining table). Going-forward these fire LIVE at
+    write-time (marketing_crm/feedback hooks); this idempotent set-based sync catches historical
+    rows + anything missed. Piggybacked on the existing 5-min orphan cron (no extra Render cron).
+    Header-only auth (OPS_KEY). Safe to re-run (ON CONFLICT DO NOTHING)."""
+    if not _guard():
+        return Response("Forbidden", 403)
+    try:
+        from support_bot.db import sync_feedback_signals
+        result = sync_feedback_signals()
+        return jsonify({"ok": True, "synced": result})
+    except Exception as e:
+        app.logger.exception("ops_sync_feedback_signals failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.post("/ops/sweep-t5-orphans")
 def ops_sweep_t5_orphans():
     """Catch up tennis_singles_t5 tasks whose Batch run completed but whose

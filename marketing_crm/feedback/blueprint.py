@@ -91,7 +91,14 @@ def submit_nps():
         resp = fb.record_nps(s, score=score, account_id=acct_id, user_id=user_id,
                              comment=(body.get("comment") or None))
         bucket = resp.bucket
+        nps_id = getattr(resp, "id", None)
     _track("nps_submitted", email, {"score": score, "bucket": bucket})
+    # Live feedback-loop signal (detractors are high-priority mining input). source_id matches the
+    # backfill sync ('nps:<id>') so the two paths are idempotent against each other.
+    if bucket == "detractor" and nps_id is not None:
+        _signal("nps_detractor", source_id=f"nps:{nps_id}", account_id=acct_id, email=email,
+                question=(body.get("comment") or None), context="nps",
+                raw_feedback={"score": score, "bucket": bucket}, priority="high")
     return jsonify({"ok": True, "bucket": bucket})
 
 
@@ -110,9 +117,14 @@ def submit_widget():
                  "message": message, "page": body.get("page")}
     with session_scope() as s:
         acct_id, user_id = _resolve_account_id(s, email)
-        fb.record_survey(s, survey_key="in_app_feedback", responses=responses,
-                         account_id=acct_id, user_id=user_id)
+        resp = fb.record_survey(s, survey_key="in_app_feedback", responses=responses,
+                                account_id=acct_id, user_id=user_id)
+        sid = getattr(resp, "id", None)
     _track("feedback_submitted", email, {"sentiment": body.get("sentiment"), "area": body.get("area")})
+    if sid is not None:
+        _signal("survey_widget", source_id=f"survey:{sid}", account_id=acct_id, email=email,
+                question=message, context=(body.get("area") or "in_app_feedback"),
+                raw_feedback=responses, priority="medium")
     return jsonify({"ok": True})
 
 
@@ -130,9 +142,14 @@ def submit_cancellation():
     responses = {"reason": reason, "comment": (body.get("comment") or None)}
     with session_scope() as s:
         acct_id, user_id = _resolve_account_id(s, email)
-        fb.record_survey(s, survey_key="cancellation", responses=responses,
-                         account_id=acct_id, user_id=user_id)
+        resp = fb.record_survey(s, survey_key="cancellation", responses=responses,
+                                account_id=acct_id, user_id=user_id)
+        sid = getattr(resp, "id", None)
     _track("cancellation_reason_submitted", email, {"reason": reason})
+    if sid is not None:
+        _signal("survey_cancellation", source_id=f"survey:{sid}", account_id=acct_id, email=email,
+                question=(body.get("comment") or None), context=reason,
+                raw_feedback=responses, priority="high")
     return jsonify({"ok": True})
 
 
@@ -140,6 +157,15 @@ def _track(event, email, props):
     try:
         from marketing_crm.tracking import track
         track(event, email=email, properties=props)
+    except Exception:
+        pass
+
+
+def _signal(signal_type, **kw):
+    """Best-effort live feedback-loop signal into support_bot.feedback_signal. Never raises."""
+    try:
+        from support_bot.db import log_feedback_signal
+        log_feedback_signal(signal_type, **kw)
     except Exception:
         pass
 
