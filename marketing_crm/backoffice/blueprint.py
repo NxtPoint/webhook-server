@@ -220,6 +220,30 @@ def processing_ops():
                     "summary": {r["derived_status"]: r["n"] for r in summary}})
 
 
+@cockpit_bp.route(f"{_PREFIX}/performance", methods=["GET", "OPTIONS"])
+def performance():
+    """Business-performance time-series for the cockpit charts. All series come from the
+    Phase-2 rollup views over the live SoR (each reconciles to raw counts). Daily series are
+    bounded to the last 90 days, monthly to 24 months."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    return jsonify({
+        "ok": True,
+        "support_health": _one("SELECT * FROM core.vw_support_health"),
+        "dau":              _rows("SELECT * FROM core.vw_dau WHERE day >= current_date - 90 ORDER BY day"),
+        "mau":              _rows("SELECT * FROM core.vw_mau WHERE month >= date_trunc('month', current_date) - interval '24 months' ORDER BY month"),
+        "usage_daily":      _rows("SELECT * FROM core.vw_usage_daily WHERE day >= current_date - 90 ORDER BY day"),
+        "new_accounts":     _rows("SELECT * FROM core.vw_new_accounts_monthly WHERE month >= date_trunc('month', current_date) - interval '24 months' ORDER BY month"),
+        "revenue_monthly":  _rows("SELECT * FROM core.vw_revenue_monthly WHERE month >= date_trunc('month', current_date) - interval '24 months' ORDER BY month"),
+        "churn_monthly":    _rows("SELECT * FROM core.vw_churn_monthly WHERE month >= date_trunc('month', current_date) - interval '24 months' ORDER BY month"),
+        "processing_daily": _rows("SELECT * FROM core.vw_processing_daily WHERE day >= current_date - 90 ORDER BY day"),
+        "support_daily":    _rows("SELECT * FROM core.vw_support_daily WHERE day >= current_date - 90 ORDER BY day"),
+        "coach_daily":      _rows("SELECT * FROM core.vw_coach_daily WHERE day >= current_date - 90 ORDER BY day"),
+    })
+
+
 @cockpit_bp.route(f"{_PREFIX}/feedback", methods=["GET", "OPTIONS"])
 def feedback():
     if request.method == "OPTIONS":

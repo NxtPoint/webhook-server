@@ -320,6 +320,146 @@ _VIEWS = [
         WHERE lower(sc.email) = lower(l.email)
     ) tf ON true
     """,
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PHASE 2 — Business-Performance rollups (time-series over the live SoR).
+    # All reconcile to raw counts: e.g. SUM(vw_usage_daily.events) == count(usage_event).
+    # ════════════════════════════════════════════════════════════════════════
+
+    # Engagement: events + distinct accounts per day, by event_type.
+    """
+    CREATE OR REPLACE VIEW core.vw_usage_daily AS
+    SELECT date_trunc('day', occurred_at)::date AS day,
+           event_type,
+           count(*)                                       AS events,
+           count(DISTINCT account_id)                     AS distinct_accounts
+    FROM core.usage_event
+    GROUP BY 1, 2
+    ORDER BY 1 DESC, 2
+    """,
+
+    # DAU — distinct active accounts per calendar day (+ raw event + page-view volume).
+    # account_id is NULL for not-yet-linked anonymous traffic, so dau counts logged-in actives.
+    """
+    CREATE OR REPLACE VIEW core.vw_dau AS
+    SELECT date_trunc('day', occurred_at)::date AS day,
+           count(DISTINCT account_id) FILTER (WHERE account_id IS NOT NULL) AS dau,
+           count(*)                                                          AS events,
+           count(*) FILTER (WHERE event_type = 'page_view')                  AS page_views
+    FROM core.usage_event
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
+
+    # MAU — distinct active accounts per calendar month.
+    """
+    CREATE OR REPLACE VIEW core.vw_mau AS
+    SELECT date_trunc('month', occurred_at)::date AS month,
+           count(DISTINCT account_id) FILTER (WHERE account_id IS NOT NULL) AS mau,
+           count(*)                                                          AS events
+    FROM core.usage_event
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
+
+    # New accounts per month (matches vw_business_health.new_accounts_this_month: active only).
+    """
+    CREATE OR REPLACE VIEW core.vw_new_accounts_monthly AS
+    SELECT date_trunc('month', created_at)::date AS month, count(*) AS new_accounts
+    FROM billing.account
+    WHERE active
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
+
+    # Revenue per month — ACTUAL money from billing.payment (gross in, refunds out, net).
+    # This is the reconcilable revenue trend (MRR is a current snapshot in vw_business_health;
+    # historical MRR isn't reconstructable — we never stored subscription snapshots).
+    """
+    CREATE OR REPLACE VIEW core.vw_revenue_monthly AS
+    SELECT date_trunc('month', occurred_at)::date AS month,
+           COALESCE(SUM(amount_cents) FILTER (WHERE amount_cents > 0), 0)  AS gross_cents,
+           COALESCE(-SUM(amount_cents) FILTER (WHERE amount_cents < 0), 0) AS refunds_cents,
+           COALESCE(SUM(amount_cents), 0)                                  AS net_cents,
+           count(*) FILTER (WHERE amount_cents > 0)                        AS payments,
+           count(*) FILTER (WHERE amount_cents < 0)                        AS refunds
+    FROM billing.payment
+    WHERE occurred_at IS NOT NULL
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
+
+    # Churn per month — subscription cancellations (matches vw_business_health.churned_this_month).
+    """
+    CREATE OR REPLACE VIEW core.vw_churn_monthly AS
+    SELECT date_trunc('month', COALESCE(cancelled_at, payment_cancelled_at))::date AS month,
+           count(*) AS churned
+    FROM billing.subscription_state
+    WHERE COALESCE(cancelled_at, payment_cancelled_at) IS NOT NULL
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
+
+    # Processing throughput per day — submissions / completed / failed / trimmed + avg duration.
+    """
+    CREATE OR REPLACE VIEW core.vw_processing_daily AS
+    SELECT date_trunc('day', COALESCE(ingest_started_at, last_status_at))::date AS day,
+           count(*)                                              AS submissions,
+           count(*) FILTER (WHERE ingest_finished_at IS NOT NULL) AS completed,
+           count(*) FILTER (WHERE ingest_error IS NOT NULL)       AS failed,
+           count(*) FILTER (WHERE trim_status = 'completed')      AS trimmed,
+           ROUND(AVG(EXTRACT(epoch FROM (ingest_finished_at - ingest_started_at)))
+                 FILTER (WHERE ingest_finished_at IS NOT NULL
+                           AND ingest_started_at IS NOT NULL))::int AS avg_complete_seconds
+    FROM bronze.submission_context
+    WHERE deleted_at IS NULL
+      AND COALESCE(ingest_started_at, last_status_at) IS NOT NULL
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
+
+    # Support chatbot per day — questions / resolved / escalated / cost.
+    # resolved = answered without escalation and not flagged needs_human.
+    """
+    CREATE OR REPLACE VIEW core.vw_support_daily AS
+    SELECT date_trunc('day', created_at)::date AS day,
+           count(*)                                                            AS questions,
+           count(*) FILTER (WHERE escalated_at IS NULL AND needs_human = false) AS resolved,
+           count(*) FILTER (WHERE escalated_at IS NOT NULL)                     AS escalated,
+           count(*) FILTER (WHERE needs_human)                                  AS needs_human,
+           COALESCE(SUM(cost_cents), 0)                                         AS cost_cents
+    FROM support_bot.conversations
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
+
+    # Support chatbot health — rolling-window scalars (mirrors support_bot.health_metrics in SQL).
+    """
+    CREATE OR REPLACE VIEW core.vw_support_health AS
+    SELECT
+        count(*) FILTER (WHERE created_at >= now() - interval '24 hours')                       AS q_24h,
+        count(*) FILTER (WHERE created_at >= now() - interval '7 days')                          AS q_7d,
+        count(*) FILTER (WHERE created_at >= now() - interval '30 days')                         AS q_30d,
+        count(*) FILTER (WHERE escalated_at IS NOT NULL AND created_at >= now() - interval '30 days') AS escalated_30d,
+        count(*) FILTER (WHERE escalated_at IS NULL AND needs_human = false
+                           AND created_at >= now() - interval '30 days')                         AS resolved_30d,
+        ROUND(100.0 * count(*) FILTER (WHERE escalated_at IS NULL AND needs_human = false
+                                         AND created_at >= now() - interval '30 days')
+              / NULLIF(count(*) FILTER (WHERE created_at >= now() - interval '30 days'), 0), 1)  AS resolution_rate_30d,
+        COALESCE(SUM(cost_cents) FILTER (WHERE created_at >= now() - interval '30 days'), 0)      AS cost_cents_30d
+    FROM support_bot.conversations
+    """,
+
+    # AI-coach usage per day — queries + distinct askers (durable conversations log).
+    """
+    CREATE OR REPLACE VIEW core.vw_coach_daily AS
+    SELECT date_trunc('day', created_at)::date AS day,
+           count(*)                       AS queries,
+           count(DISTINCT email)          AS distinct_users
+    FROM tennis_coach.conversations
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
 ]
 
 
