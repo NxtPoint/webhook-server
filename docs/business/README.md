@@ -20,7 +20,10 @@ Start here, then jump to the child doc for the area you need:
 | [`coach-model.md`](coach-model.md) | Coach invite protocol, the free/Coach-Pro cap, what coaches can/can't do |
 | [`architecture.md`](architecture.md) | System topology, service map, medallion data layers, data inventory + source-of-truth catalogue |
 | [`growth-and-crm.md`](growth-and-crm.md) | Living growth/CRM status — cockpit, tracking, feedback/NPS, consent write-path, CRM sync, auth + payment cutover |
-| [`privacy-and-consent.md`](privacy-and-consent.md) | Privacy inputs, open legal decisions, consent-capture spec, policy draft, consent-screen copy |
+| [`privacy-and-consent.md`](privacy-and-consent.md) | Privacy inputs, research-backed decisions, consent-capture spec, policy draft, consent-screen copy. **Start at the STATUS block §"CC build checklist".** |
+| [`privacy-legal-research.md`](privacy-legal-research.md) | Cited GDPR/UK/US ↔ POPIA research pack behind the privacy decisions (the 6 components, divergences, recommendations). For the lawyer's review. |
+| [`dpia.md`](dpia.md) | Data Protection Impact Assessment (ICO Annex D structure) for scope v2. Draft — IO signs off, lawyer reviews. |
+| [`paia-manual.md`](paia-manual.md) | PAIA s51 manual + POPIA sections. Draft — IO finalises/registers, publish + file annual report (by 30 June). |
 | [`marketing-and-seo.md`](marketing-and-seo.md) | Marketing-site architecture, backlink kit, Klaviyo lifecycle flows, coach outreach |
 | [`operations.md`](operations.md) | `/ops/*` runbook, diagnostics, sweeps, deploy procedures |
 | [`env-vars.md`](env-vars.md) | Full env-var matrix (main API + workers + crons + Lambda) |
