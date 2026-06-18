@@ -110,19 +110,18 @@ def _delay(tid, days, nxt):
     }
 
 
-def _done_metric_condition(metric_id, *, times, op, timeframe="since-starting-flow"):
-    """A `flows-profile-metric` condition: profile has done METRIC_ID `op` `times` within `timeframe`.
-    op ∈ {'equals' (0 → has NOT done), 'greater-than-or-equal' (1 → has done)}.
-    timeframe ∈ {'since-starting-flow', 'all-time'} (Coach-Pro upsell uses all-time ≥2).
-    NOTE: beta schema — the exact literals (measurement/operator/timeframe keys) are UNCONFIRMED
-    (Cowork can't verify blind either). Cowork reads them back from the first created flow's
-    definition via the connector, then we mirror the canonical shape. See flow_build_spec.md."""
+def _metric_condition(metric_id, *, op="equals", value=0, timeframe="flow-start"):
+    """`profile-metric` condition — VERBATIM shape read back from a real Klaviyo flow (2026-06-18,
+    flow_build_spec.md §CONFIRMED LITERAL): profile has done METRIC `op` `value` within `timeframe`.
+    `timeframe='flow-start'` (since starting this flow) is confirmed. NOTE: the all-time variant
+    (for Coach-Pro ≥2) was NOT read back — confirm that literal before relying on it."""
     return {
-        "type": "flows-profile-metric",
+        "type": "profile-metric",
         "metric_id": metric_id,
         "measurement": "count",
-        "measurement_filter": {"type": "numeric", "operator": op, "value": times},
-        "timeframe": {"type": timeframe},
+        "measurement_filter": {"type": "numeric", "operator": op, "value": value},
+        "timeframe_filter": {"type": "date", "operator": timeframe},
+        "metric_filters": None,
     }
 
 
@@ -135,17 +134,21 @@ def _group(*conditions):
     return {"conditions": list(conditions)}
 
 
-def _consent_gate():
-    """Email marketing opt-in gate — VERBATIM from Klaviyo docs (Cowork-confirmed). Only profiles
-    subscribed to email marketing proceed. Used as the v1 profile_filter on every flow."""
-    return _filter(_group({
+def _consent_condition():
+    """Email marketing opt-in condition — VERBATIM from Klaviyo docs (Cowork-confirmed)."""
+    return {
         "type": "profile-marketing-consent",
         "consent": {
             "channel": "email",
             "can_receive_marketing": True,
             "consent_status": {"subscription": "subscribed", "filters": None},
         },
-    }))
+    }
+
+
+def _consent_gate():
+    """Flow-level filter: email opt-in only (Coach flows). Trial flows AND a metric exit condition."""
+    return _filter(_group(_consent_condition()))
 
 
 def _split(tid, profile_filter, *, if_true, if_false):
@@ -177,7 +180,11 @@ def build_flow_welcome():
                 "name": "Trial · Welcome & Activation",
                 "definition": {
                     "triggers": [{"type": "metric", "id": M_ACCOUNT_CREATED}],
-                    "profile_filter": _consent_gate(),
+                    # opt-in AND exit-on-upload: Klaviyo re-checks the flow filter before each step,
+                    # so the profile auto-exits the moment match_uploaded (since flow start) goes > 0.
+                    "profile_filter": _filter(_group(
+                        _consent_condition(),
+                        _metric_condition(M_MATCH_UPLOADED, op="equals", value=0))),
                     "entry_action_id": f"email_{T_WELCOME}",
                     "actions": actions,
                 },
@@ -209,7 +216,12 @@ def build_flow_conversion():
                 "name": "Trial → Paid Conversion",
                 "definition": {
                     "triggers": [{"type": "metric", "id": M_REPORT_VIEWED}],
-                    "profile_filter": _consent_gate(),
+                    # opt-in AND exit-on-convert: auto-exits when subscription_started OR
+                    # credit_purchased (since flow start) goes > 0 (both must stay 0 to remain).
+                    "profile_filter": _filter(_group(
+                        _consent_condition(),
+                        _metric_condition(M_SUBSCRIPTION_STARTED, op="equals", value=0),
+                        _metric_condition(M_CREDIT_PURCHASED, op="equals", value=0))),
                     "entry_action_id": "delay1",
                     "actions": actions,
                 },
@@ -279,14 +291,15 @@ def build_all():
             build_flow_coach_engagement(), build_flow_coach_pro_upsell()]
 
 
-def create_flows(dry_run: bool = True) -> dict:
-    """dry_run=True → return the payloads (no key, nothing sent). dry_run=False → POST each to
-    Klaviyo's beta Create Flow API (draft) and return ids/errors."""
+def create_flows(dry_run: bool = True, delete_ids=None) -> dict:
+    """dry_run=True → return the payloads (no key, nothing sent). dry_run=False → (optionally DELETE
+    delete_ids first, to replace prior drafts cleanly) then POST each to Klaviyo's beta Create Flow
+    API in draft and return ids/errors."""
     payloads = build_all()
     if dry_run:
         return {"payloads": payloads,
-                "note": "DRY RUN — nothing sent. Subjects are PLACEHOLDERS; "
-                        "flows-profile-metric shape is best-effort (confirm with Cowork)."}
+                "note": "DRY RUN — nothing sent. v2: final subjects + confirmed profile-metric exit "
+                        "filters (Flow1 exit-on-upload, Flow2 exit-on-convert). Coach Pro >=2 pending."}
     key = (os.getenv("KLAVIYO_API_KEY") or "").strip()
     if not key:
         raise RuntimeError("KLAVIYO_API_KEY not set in this environment")
@@ -299,6 +312,15 @@ def create_flows(dry_run: bool = True) -> dict:
         "accept": "application/vnd.api+json",
         "content-type": "application/vnd.api+json",
     }
+    deleted = []
+    for fid in (delete_ids or []):
+        try:
+            dr = requests.delete(f"{_BASE}{fid}/", headers=headers, timeout=20)
+            deleted.append({"id": fid, "status": dr.status_code,
+                            "ok": dr.status_code in (200, 204, 404)})
+        except Exception as ex:
+            deleted.append({"id": fid, "ok": False, "errors": str(ex)})
+        time.sleep(2)
     results = []
     for i, p in enumerate(payloads):
         name = p["data"]["attributes"]["name"]
@@ -320,4 +342,4 @@ def create_flows(dry_run: bool = True) -> dict:
             })
         except Exception as ex:
             results.append({"name": name, "ok": False, "errors": str(ex)})
-    return {"results": results}
+    return {"deleted": deleted, "results": results}

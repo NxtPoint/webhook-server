@@ -4332,9 +4332,10 @@ def ops_build_klaviyo_flows():
         return Response("Forbidden", 403)
     body = request.get_json(silent=True) or {}
     dry_run = bool(body.get("dry_run", True))
+    delete_ids = body.get("delete_ids") or None  # replace prior drafts cleanly (no dupes)
     try:
         from marketing_crm.klaviyo.flow_builder import create_flows
-        out = create_flows(dry_run=dry_run)
+        out = create_flows(dry_run=dry_run, delete_ids=delete_ids)
         return jsonify({"ok": True, "dry_run": dry_run, **out})
     except Exception as e:
         app.logger.exception("ops_build_klaviyo_flows failed")
