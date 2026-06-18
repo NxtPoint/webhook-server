@@ -286,6 +286,35 @@ _BILLING_RAW_DDL = [
         customer_email text
     )
     """,
+    # payment — record of every money movement (PayPal sale/capture/refund/reversal).
+    # RECORD-ONLY: money was previously stored nowhere (the webhook re-fetched the
+    # authoritative amount and discarded it). Refunds are recorded with a negative
+    # amount but DO NOT revoke credits (business decision, 2026-06-18). Idempotent on
+    # (provider, provider_payment_id) so webhook retries never double-record.
+    """
+    CREATE TABLE IF NOT EXISTS billing.payment (
+        id                       bigserial PRIMARY KEY,
+        provider                 text NOT NULL DEFAULT 'paypal',
+        kind                     text NOT NULL,   -- subscription_payment|payg_capture|refund|reversal
+        provider_payment_id      text,            -- sale/capture/refund id (unique money movement)
+        provider_subscription_id text,
+        order_id                 text,
+        account_id               bigint REFERENCES billing.account(id),
+        buyer_email              text,
+        plan_code                text,
+        amount_cents             integer,         -- positive=in, negative=refund/reversal
+        currency                 text,
+        status                   text,
+        event_type               text,            -- the PayPal webhook event_type
+        occurred_at              timestamptz,
+        raw                      jsonb,
+        created_at               timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_provider_id "
+    "ON billing.payment (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS ix_payment_account ON billing.payment (account_id, occurred_at)",
+    "CREATE INDEX IF NOT EXISTS ix_payment_email ON billing.payment (buyer_email, occurred_at)",
 ]
 
 # vw_customer_usage — matches_remaining = grants - consumption. Created only if missing

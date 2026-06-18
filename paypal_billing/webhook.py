@@ -225,11 +225,23 @@ def webhook():
         return jsonify({"ok": False, "error": "invalid_signature"}), 400
 
     etype = (event.get("event_type") or "").upper()
+    resource = event.get("resource") or {}
     try:
-        norm = _normalize_event(etype, event.get("resource") or {})
+        norm = _normalize_event(etype, resource)
     except Exception:
         current_app.logger.exception("paypal webhook normalize error (%s)", etype)
         return jsonify({"ok": False, "error": "normalize_error"}), 500
+
+    # Record the money movement (record-only, idempotent, never raises). Independent of
+    # the grant path: sale/capture are recorded as positive, refund/reversal as negative,
+    # and refunds DO NOT revoke credits (business decision 2026-06-18).
+    try:
+        _pay = _extract_payment(etype, resource, norm)
+        if _pay and _pay.get("provider_payment_id"):
+            from billing_service import record_payment
+            record_payment(**_pay)
+    except Exception:
+        current_app.logger.exception("paypal payment record failed (%s)", etype)
 
     if not norm:
         return jsonify({"ok": True, "ignored": True, "event_type": etype})
@@ -259,6 +271,60 @@ def _normalize_event(etype: str, resource: dict):
         return _normalize_sale(resource)
     if etype == "PAYMENT.CAPTURE.COMPLETED":
         return _normalize_capture(resource)
+    return None
+
+
+# ── payment recording (record-only; independent of the grant path) ───────────
+
+def _money_cents(amount: dict):
+    """Parse a PayPal amount object — v1 ({total,currency}) or v2 ({value,currency_code})
+    — into (integer cents, currency). Returns (None, currency) if unparseable."""
+    if not isinstance(amount, dict):
+        return None, None
+    val = amount.get("total") if amount.get("total") is not None else amount.get("value")
+    cur = amount.get("currency") or amount.get("currency_code")
+    try:
+        return int(round(float(val) * 100)), cur
+    except (TypeError, ValueError):
+        return None, cur
+
+
+def _extract_payment(etype: str, resource: dict, norm):
+    """Build a billing_service.record_payment kwargs dict for a money event, or None.
+    sale/capture -> positive amount (email/plan from the grant `norm`); refund/reversal ->
+    negative amount (recorded for revenue/360 accuracy; credits unaffected)."""
+    etype = (etype or "").upper()
+    amt, cur = _money_cents(resource.get("amount") or {})
+    occurred = resource.get("create_time") or resource.get("update_time")
+    pid = resource.get("id")
+    if etype == "PAYMENT.SALE.COMPLETED":
+        if not (norm and norm.get("plan_type") == "recurring"):
+            return None
+        return dict(kind="subscription_payment", provider_payment_id=pid,
+                    provider_subscription_id=norm.get("provider_subscription_id"),
+                    order_id=norm.get("order_id"), buyer_email=norm.get("buyer_email"),
+                    plan_code=norm.get("plan_code"), amount_cents=amt, currency=cur,
+                    status=resource.get("state"), event_type=etype, occurred_at=occurred,
+                    raw=resource)
+    if etype == "PAYMENT.CAPTURE.COMPLETED":
+        if not norm:
+            return None
+        return dict(kind="payg_capture", provider_payment_id=pid,
+                    order_id=norm.get("order_id"), buyer_email=norm.get("buyer_email"),
+                    plan_code=norm.get("plan_code"), amount_cents=amt, currency=cur,
+                    status=resource.get("status"), event_type=etype, occurred_at=occurred,
+                    raw=resource)
+    if etype in ("PAYMENT.SALE.REFUNDED", "PAYMENT.CAPTURE.REFUNDED"):
+        return dict(kind="refund", provider_payment_id=pid,
+                    order_id=resource.get("sale_id"),
+                    amount_cents=(-abs(amt) if amt is not None else None), currency=cur,
+                    status=resource.get("state") or resource.get("status"),
+                    event_type=etype, occurred_at=occurred, raw=resource)
+    if etype == "PAYMENT.CAPTURE.REVERSED":
+        return dict(kind="reversal", provider_payment_id=pid,
+                    amount_cents=(-abs(amt) if amt is not None else None), currency=cur,
+                    status=resource.get("status"), event_type=etype, occurred_at=occurred,
+                    raw=resource)
     return None
 
 

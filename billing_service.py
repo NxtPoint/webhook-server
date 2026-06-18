@@ -524,6 +524,69 @@ def consume_technique_for_task(
         return inserted
 
 
+def record_payment(
+    *,
+    kind: str,
+    provider: str = "paypal",
+    provider_payment_id: Optional[str] = None,
+    provider_subscription_id: Optional[str] = None,
+    order_id: Optional[str] = None,
+    buyer_email: Optional[str] = None,
+    plan_code: Optional[str] = None,
+    amount_cents: Optional[int] = None,
+    currency: Optional[str] = None,
+    status: Optional[str] = None,
+    event_type: Optional[str] = None,
+    occurred_at=None,
+    raw: Optional[dict] = None,
+) -> bool:
+    """RECORD-ONLY: append one money-movement row to billing.payment.
+
+    Idempotent by (provider, provider_payment_id) — webhook retries never double-record.
+    Resolves account_id from buyer_email best-effort. NEVER raises into the caller (the
+    webhook/grant path must not break because a payment couldn't be recorded). Does NOT
+    touch credits/entitlements — refunds are recorded (negative amount) but do not revoke
+    credits (business decision, 2026-06-18). Returns True if a new row was inserted."""
+    try:
+        import json as _json
+        email = _norm_email(buyer_email) if buyer_email else None
+        with engine.begin() as conn:
+            account_id = None
+            if email:
+                account_id = conn.execute(
+                    text("SELECT id FROM billing.account WHERE lower(email) = :e LIMIT 1"),
+                    {"e": email},
+                ).scalar()
+            res = conn.execute(
+                text("""
+                    INSERT INTO billing.payment
+                        (provider, kind, provider_payment_id, provider_subscription_id, order_id,
+                         account_id, buyer_email, plan_code, amount_cents, currency, status,
+                         event_type, occurred_at, raw)
+                    VALUES
+                        (:provider, :kind, :ppid, :psid, :order_id,
+                         :account_id, :email, :plan_code, :amount_cents, :currency, :status,
+                         :event_type, :occurred_at, CAST(:raw AS jsonb))
+                    ON CONFLICT (provider, provider_payment_id)
+                        WHERE provider_payment_id IS NOT NULL DO NOTHING
+                """),
+                {
+                    "provider": provider, "kind": kind, "ppid": provider_payment_id,
+                    "psid": provider_subscription_id, "order_id": order_id,
+                    "account_id": account_id, "email": email, "plan_code": plan_code,
+                    "amount_cents": amount_cents, "currency": currency, "status": status,
+                    "event_type": event_type, "occurred_at": occurred_at,
+                    "raw": _json.dumps(raw) if raw is not None else None,
+                },
+            )
+            return (res.rowcount or 0) == 1
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "record_payment failed (kind=%s id=%s)", kind, provider_payment_id)
+        return False
+
+
 # ----------------------------
 # Coach gate — Phase 2 cap
 # See docs/business/pricing-and-packages.md §6. First linked player is free;
