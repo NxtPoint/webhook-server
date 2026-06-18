@@ -57,6 +57,38 @@ def _check_client_key() -> bool:
     return bool(CLIENT_API_KEY) and hmac.compare_digest(hk, CLIENT_API_KEY)
 
 
+def _admin_ok() -> bool:
+    """Admin gate for the Phase-3 feedback-loop endpoints. Mirrors
+    marketing_crm/backoffice/blueprint.py::_admin_ok — dual-mode: a verified Clerk
+    JWT (is_admin server-side) OR the legacy shared key + ?email in ADMIN_EMAILS."""
+    try:
+        from auth_v2 import resolve_principal
+        p = resolve_principal(request)
+        if p is not None:
+            return bool(getattr(p, "is_admin", False))
+    except Exception:
+        pass
+    # Fallback only if auth_v2 is unavailable: shared-key + ?email check.
+    if not CLIENT_API_KEY:
+        return False
+    supplied = (request.headers.get("X-Client-Key") or "").strip()
+    if not supplied:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            supplied = auth[7:].strip()
+    if not supplied or not hmac.compare_digest(supplied, CLIENT_API_KEY):
+        return False
+    email = (request.args.get("email")
+             or (request.get_json(silent=True) or {}).get("email")
+             or request.headers.get("X-User-Email") or "").strip().lower()
+    try:
+        from client_api import ADMIN_EMAILS as _ADMINS
+        admins = {e.lower() for e in _ADMINS}
+    except Exception:
+        admins = {e.lower() for e in ADMIN_EMAILS}
+    return email in admins
+
+
 def _err(message: str, status: int = 400):
     return jsonify({"ok": False, "error": message}), status
 
@@ -436,3 +468,169 @@ def health():
         "faq_chars":    len(FAQ_TEXT),
         "metrics":      metrics,
     }), 200
+
+
+# ===========================================================================
+# Phase-3 feedback loop — admin-gated mining + FAQ-candidate workflow.
+# Auth: _admin_ok() (Clerk is_admin OR legacy X-Client-Key + ?email in ADMIN_EMAILS).
+# NO auto-publish of FAQ — approval flags a candidate; a human edits faq.md + commits.
+# ===========================================================================
+
+def _admin_guard():
+    if not _check_client_key():
+        return _err("unauthorized", 401)
+    if not _admin_ok():
+        return _err("admin_only", 403)
+    return None
+
+
+@support_bp.get("/api/support/admin/signals")
+def admin_signals():
+    guard = _admin_guard()
+    if guard is not None:
+        return guard
+    return jsonify({"ok": True, **sb_db.mining_signals()}), 200
+
+
+@support_bp.post("/api/support/admin/faq-candidate/propose")
+def admin_faq_propose():
+    guard = _admin_guard()
+    if guard is not None:
+        return guard
+    body = request.get_json(silent=True) or {}
+    question = (body.get("question") or "").strip()
+    if not question:
+        return _err("question_required")
+    signal_ids = body.get("signal_ids")
+    if signal_ids is not None:
+        try:
+            signal_ids = [int(s) for s in signal_ids]
+        except (TypeError, ValueError):
+            return _err("signal_ids_must_be_integers")
+    candidate = sb_db.propose_faq_entry(question, signal_ids)
+    if candidate is None:
+        return _err("propose_failed", 500)
+    return jsonify({"ok": True, "candidate": candidate}), 200
+
+
+@support_bp.get("/api/support/admin/faq-candidates")
+def admin_faq_candidates():
+    guard = _admin_guard()
+    if guard is not None:
+        return guard
+    status = (request.args.get("status") or "").strip() or None
+    return jsonify({"ok": True, "candidates": sb_db.list_faq_candidates(status)}), 200
+
+
+@support_bp.post("/api/support/admin/faq-candidate/<int:candidate_id>/approve")
+def admin_faq_approve(candidate_id: int):
+    guard = _admin_guard()
+    if guard is not None:
+        return guard
+    # Best-effort identity for the approved_by audit field.
+    approver = ""
+    try:
+        from auth_v2 import resolve_principal
+        p = resolve_principal(request)
+        if p is not None:
+            approver = (getattr(p, "email", "") or "").strip().lower()
+    except Exception:
+        pass
+    if not approver:
+        body = request.get_json(silent=True) or {}
+        approver = (request.args.get("email") or body.get("email")
+                    or request.headers.get("X-User-Email") or "").strip().lower()
+    candidate = sb_db.approve_faq_candidate(candidate_id, approver or "admin")
+    if candidate is None:
+        return _err("candidate_not_found", 404)
+    return jsonify({"ok": True, "candidate": candidate}), 200
+
+
+@support_bp.post("/api/support/admin/faq-candidate/<int:candidate_id>/reject")
+def admin_faq_reject(candidate_id: int):
+    guard = _admin_guard()
+    if guard is not None:
+        return guard
+    body = request.get_json(silent=True) or {}
+    reason = (body.get("reason") or "").strip() or None
+    candidate = sb_db.reject_faq_candidate(candidate_id, reason)
+    if candidate is None:
+        return _err("candidate_not_found", 404)
+    return jsonify({"ok": True, "candidate": candidate}), 200
+
+
+@support_bp.post("/api/support/admin/signal/<int:signal_id>/to-ticket")
+def admin_signal_to_ticket(signal_id: int):
+    guard = _admin_guard()
+    if guard is not None:
+        return guard
+
+    signal = sb_db.get_feedback_signal(signal_id)
+    if signal is None:
+        return _err("signal_not_found", 404)
+
+    try:
+        from core_db.db import session_scope, as_dict
+        from core_db.repositories.feedback import open_ticket
+    except Exception:
+        log.exception("[support_bot] open_ticket unavailable")
+        return _err("ticketing_unavailable", 503)
+
+    q = (signal.get("question") or "").strip()
+    subject = f"[{signal.get('signal_type')}] {q[:120]}" if q else \
+        f"[{signal.get('signal_type')}] feedback signal #{signal_id}"
+    body_lines = [
+        f"Feedback signal #{signal_id} ({signal.get('signal_type')})",
+        f"Priority: {signal.get('priority')}",
+        f"Context: {signal.get('context') or '(none)'}",
+        f"Customer: {signal.get('email') or '(unknown)'}",
+        "",
+        q or "(no question text)",
+    ]
+    body_text = "\n".join(body_lines)
+
+    try:
+        with session_scope() as s:
+            ticket = open_ticket(
+                s,
+                subject=subject,
+                body=body_text,
+                account_id=signal.get("account_id"),
+                channel="support_bot",
+                priority=signal.get("priority"),
+            )
+            ticket_dict = as_dict(ticket)
+    except Exception:
+        log.exception("[support_bot] open_ticket failed for signal=%s", signal_id)
+        return _err("ticket_create_failed", 500)
+
+    sb_db.mark_signal_processed(signal_id, routed_to="feature_ticket")
+    return jsonify({"ok": True, "ticket": ticket_dict}), 200
+
+
+@support_bp.get("/api/support/admin/tickets")
+def admin_tickets():
+    guard = _admin_guard()
+    if guard is not None:
+        return guard
+    try:
+        with engine.begin() as conn:
+            has_ticket = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'core' AND table_name = 'ticket'
+                )
+            """)).scalar()
+            if not has_ticket:
+                return jsonify({"ok": True, "tickets": [], "note": "core.ticket absent"}), 200
+            rows = conn.execute(text("""
+                SELECT id, account_id, subject, status, channel, priority,
+                       created_at, updated_at, resolved_at
+                FROM core.ticket
+                ORDER BY created_at DESC
+                LIMIT 100
+            """)).mappings().fetchall()
+        return jsonify({"ok": True, "tickets": [dict(r) for r in rows]}), 200
+    except Exception:
+        log.exception("[support_bot] admin_tickets failed")
+        return _err("tickets_query_failed", 500)
