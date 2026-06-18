@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Privacy Policy | Ten-Fifty5</title>
+<meta name="description" content="How Ten-Fifty5 collects, uses, shares and protects your data — including match video, biometric pose data, and children's data. Your rights and how to contact us.">
+<link rel="canonical" href="https://www.ten-fifty5.com/privacy-policy">
+<meta name="robots" content="index, follow">
+
+<!-- Open Graph / social cards -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Ten-Fifty5">
+<meta property="og:title" content="Privacy Policy | Ten-Fifty5">
+<meta property="og:description" content="How Ten-Fifty5 collects, uses, shares and protects your data — including match video, biometric pose data, and children's data.">
+<meta property="og:url" content="https://www.ten-fifty5.com/privacy-policy">
+<meta property="og:image" content="https://www.ten-fifty5.com/og/og_homepage.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Privacy Policy | Ten-Fifty5">
+<meta name="twitter:description" content="How Ten-Fifty5 collects, uses, shares and protects your data.">
+<meta name="twitter:image" content="https://www.ten-fifty5.com/og/og_homepage.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-dark: #134221;
+  --green-bg: rgba(26,92,46,0.08);
+  --green-bg-strong: rgba(26,92,46,0.14);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --radius: 4px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-fast: 0.2s;
+  --t-med: 0.4s;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--white); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+a { color: var(--green); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img, svg { display: block; max-width: 100%; }
+button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 28px; }
+
+h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; color: var(--text); }
+h1 { font-size: clamp(2rem, 4.4vw, 3rem); font-weight: 800; line-height: 1.05; }
+h2 { font-size: clamp(1.35rem, 2.6vw, 1.7rem); }
+h3 { font-size: clamp(1.05rem, 1.7vw, 1.2rem); font-weight: 600; }
+
+/* SHARED TOP NAV — centered links, identical across every native marketing page */
+.topnav{position:sticky;top:0;z-index:1000;background:rgba(255,255,255,0.96);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border,#e5e5e5);}
+.topnav-inner{max-width:1200px;margin:0 auto;padding:0 28px;height:62px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:18px;}
+.topnav-logo{justify-self:start;font-weight:800;font-size:1.1rem;letter-spacing:-.01em;color:var(--text,#1a1a1a);text-decoration:none;white-space:nowrap;}
+.topnav-links{display:flex;justify-content:center;align-items:center;gap:22px;}
+.topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec,#6b7280);text-decoration:none;transition:color .2s;white-space:nowrap;}
+.topnav-links a:hover{color:var(--green,#1a5c2e);}
+.topnav-links a.active{color:var(--green,#1a5c2e);font-weight:600;}
+.topnav-right{justify-self:end;display:flex;align-items:center;gap:10px;}
+.topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap;text-decoration:none!important;}
+.topnav-cta:hover{background:var(--green-light,#22783c);}
+.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text,#1a1a1a);cursor:pointer;padding:9px;min-width:44px;min-height:44px;}
+@media(max-width:980px){
+.topnav-inner{display:flex;justify-content:space-between;}
+.topnav-toggle{display:block;}
+.topnav-links{display:none;position:absolute;top:62px;left:0;right:0;background:#fff;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:0;padding:6px 0;border-bottom:1px solid var(--border,#e5e5e5);box-shadow:0 8px 20px rgba(0,0,0,.06);}
+.topnav-links.open{display:flex;}
+.topnav-links a{padding:13px 28px;}
+}
+
+.skip-link{position:absolute;left:-9999px;top:0;z-index:2000;background:var(--green,#1a5c2e);color:#fff;padding:10px 16px;border-radius:4px;font-weight:600;text-decoration:none}
+.skip-link:focus{left:8px;top:8px}
+
+/* ================================================================
+   LEGAL PAGE LAYOUT
+   ================================================================ */
+.legal-hero { background: var(--bg); border-bottom: 1px solid var(--border); padding: 56px 0 44px; }
+.legal-hero .eyebrow { display:inline-flex; align-items:center; gap:10px; font-size:0.72rem; font-weight:600; color:var(--green); text-transform:uppercase; letter-spacing:0.14em; margin-bottom:16px; }
+.legal-hero .eyebrow::before { content:""; width:20px; height:1px; background:var(--green); opacity:0.6; }
+.legal-hero h1 { margin-bottom: 14px; }
+.legal-updated { font-size: 0.9rem; color: var(--text-sec); }
+.legal-intro { font-size: 1rem; color: var(--text-sec); line-height: 1.65; max-width: 70ch; margin-top: 16px; }
+
+.legal-body { padding: 48px 0 80px; }
+.legal-grid { display: grid; grid-template-columns: 240px 1fr; gap: 56px; align-items: start; }
+@media (max-width: 900px) { .legal-grid { grid-template-columns: 1fr; gap: 32px; } }
+
+/* Table of contents */
+.toc { position: sticky; top: 82px; align-self: start; font-size: 0.86rem; }
+@media (max-width: 900px) { .toc { position: static; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; } }
+.toc h2 { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-sec); margin-bottom: 14px; }
+.toc ol { list-style: none; counter-reset: toc; }
+.toc li { counter-increment: toc; margin-bottom: 9px; line-height: 1.4; }
+.toc a { color: var(--text-sec); display: inline-block; }
+.toc a::before { content: counter(toc) ". "; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.toc a:hover { color: var(--green); text-decoration: none; }
+
+/* Article content */
+.legal-content { max-width: 760px; }
+.legal-content section { scroll-margin-top: 82px; margin-bottom: 40px; }
+.legal-content h2 { margin-bottom: 14px; padding-top: 6px; }
+.legal-content h3 { margin: 22px 0 8px; }
+.legal-content p { color: var(--text); font-size: 0.96rem; line-height: 1.7; margin-bottom: 14px; }
+.legal-content ul { list-style: none; margin: 4px 0 16px; }
+.legal-content ul li { position: relative; padding-left: 22px; margin-bottom: 9px; font-size: 0.95rem; line-height: 1.6; color: var(--text); }
+.legal-content ul li::before { content: ""; position: absolute; left: 4px; top: 0.62em; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.legal-content strong { font-weight: 600; }
+.legal-content .note { background: var(--green-bg); border-left: 3px solid var(--green); border-radius: 0 var(--radius) var(--radius) 0; padding: 14px 18px; font-size: 0.9rem; color: var(--text-sec); line-height: 1.6; margin: 0 0 16px; }
+
+/* Tables */
+.legal-table-wrap { overflow-x: auto; margin: 4px 0 18px; -webkit-overflow-scrolling: touch; }
+table.legal-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 480px; }
+table.legal-table th, table.legal-table td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; line-height: 1.5; }
+table.legal-table thead th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-sec); font-weight: 700; background: var(--bg); }
+table.legal-table tbody td { color: var(--text); }
+table.legal-table tbody td:first-child { font-weight: 600; }
+
+/* Footer (shared marketing footer) */
+.footer { background: #0a1814; color: rgba(255,255,255,0.7); padding: 60px 28px 28px; }
+.footer-inner { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 44px; }
+@media (max-width: 760px) { .footer-inner { grid-template-columns: 1fr 1fr; gap: 32px 24px; } .footer-brand { grid-column: 1 / -1; } }
+.footer a { color: rgba(255,255,255,0.65); }
+.footer-brand { max-width: 300px; }
+.footer-brand-name { font-weight: 800; letter-spacing: 0.1em; color: var(--white); font-size: 1.02rem; margin-bottom: 14px; }
+.footer-brand p { font-size: 0.84rem; line-height: 1.6; color: rgba(255,255,255,0.55); }
+.footer-col h5 { font-size: 0.68rem; font-weight: 700; color: var(--white); text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 14px; }
+.footer-col ul { list-style: none; }
+.footer-col li { margin-bottom: 8px; }
+.footer-col a { font-size: 0.85rem; color: rgba(255,255,255,0.65); transition: color var(--t-fast) var(--ease); text-decoration: none; }
+.footer-col a:hover { color: var(--white); }
+.footer-bottom { max-width: 1200px; margin: 44px auto 0; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: rgba(255,255,255,0.4); flex-wrap: wrap; gap: 10px; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+@media (max-width: 520px) { .wrap { padding: 0 20px; } }
+</style>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+
+<nav class="topnav">
+  <div class="topnav-inner">
+    <a href="https://www.ten-fifty5.com/" class="topnav-logo">TEN-FIFTY5</a>
+    <div class="topnav-links">
+      <a href="https://www.ten-fifty5.com/">Home</a>
+      <a href="https://www.ten-fifty5.com/overview">How It Works</a>
+      <a href="https://www.ten-fifty5.com/pricing">Pricing</a>
+      <a href="https://www.ten-fifty5.com/coaching">For Coaches</a>
+      <a href="https://www.ten-fifty5.com/academies">Academies</a>
+      <a href="https://www.ten-fifty5.com/blog">Blog</a>
+      <a href="https://www.ten-fifty5.com/contact-us">Contact</a>
+    </div>
+    <div class="topnav-right">
+      <a href="/login" class="topnav-cta">Start Free</a>
+      <button class="topnav-toggle" aria-label="Toggle menu" aria-expanded="false" onclick="const o=document.querySelector('.topnav-links').classList.toggle('open');this.setAttribute('aria-expanded',o)">&#9776;</button>
+    </div>
+  </div>
+</nav>
+<span id="main-content" tabindex="-1"></span>
+
+<header class="legal-hero">
+  <div class="wrap">
+    <div class="eyebrow">Legal</div>
+    <h1>Privacy Policy</h1>
+    <p class="legal-updated">Last updated: 2026-06-18 &middot; Version 1.0</p>
+    <p class="legal-intro">
+      Ten-Fifty5 provides AI-powered tennis match analysis. This policy explains what we collect,
+      why, the legal bases we rely on, who we share data with, how long we keep it, and the rights
+      you have. It applies to players, parents and guardians managing a junior's account, and coaches.
+    </p>
+  </div>
+</header>
+
+<div class="legal-body">
+  <div class="wrap">
+    <div class="legal-grid">
+
+      <!-- Table of contents -->
+      <nav class="toc" aria-label="Table of contents">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#who-we-are">Who we are</a></li>
+          <li><a href="#who-applies">Who this applies to</a></li>
+          <li><a href="#data-we-collect">The data we collect</a></li>
+          <li><a href="#where-from">Where your data comes from</a></li>
+          <li><a href="#how-we-use">How we use your data</a></li>
+          <li><a href="#legal-bases">Legal bases for processing</a></li>
+          <li><a href="#marketing">Marketing communications</a></li>
+          <li><a href="#children">Children's data &amp; parental consent</a></li>
+          <li><a href="#third-parties">Footage of other people</a></li>
+          <li><a href="#your-rights">Your rights</a></li>
+          <li><a href="#retention">How long we keep your data</a></li>
+          <li><a href="#sub-processors">Who we share data with</a></li>
+          <li><a href="#transfers">International transfers</a></li>
+          <li><a href="#security">Security</a></li>
+          <li><a href="#cookies">Cookies &amp; analytics</a></li>
+          <li><a href="#changes">Changes to this policy</a></li>
+          <li><a href="#contact">Contact</a></li>
+        </ol>
+      </nav>
+
+      <!-- Article content -->
+      <article class="legal-content">
+
+        <section id="who-we-are">
+          <h2>1. Who we are</h2>
+          <p>
+            Ten-Fifty5 ("Ten-Fifty5", "we", "us") provides AI-powered tennis match analysis. You upload
+            match video and we return performance statistics, biomechanical (pose-based) technique
+            analysis, and an AI coaching assistant grounded in your own data.
+          </p>
+          <ul>
+            <!-- CONFIRM: Source doc lists the data controller legal entity name + registered address as "[TBC]". Insert the registered company name and address once confirmed. -->
+            <li><strong>Data controller:</strong> Ten-Fifty5 <!-- CONFIRM: legal entity name + registered address still [TBC] in source doc --></li>
+            <li><strong>Contact:</strong> <a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a></li>
+            <!-- CONFIRM: Source doc lists the data protection contact / representative as "[TBC — see Decision 6 on jurisdiction]". -->
+            <li><strong>Data protection contact:</strong> <a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a> <!-- CONFIRM: dedicated DPO / EU representative still [TBC] in source doc --></li>
+          </ul>
+          <p>
+            This policy explains what we collect, why, the legal bases we rely on, who we share it with,
+            how long we keep it, and the rights you have.
+          </p>
+        </section>
+
+        <section id="who-applies">
+          <h2>2. Who this applies to</h2>
+          <p>
+            Players, parents/guardians managing a junior's account, and coaches who use Ten-Fifty5.
+            Because we analyse video of people playing tennis, a match you upload may contain personal
+            data about <strong>other people</strong> (e.g. your opponent). See
+            <a href="#third-parties">Section 9</a> on footage of third parties.
+          </p>
+        </section>
+
+        <section id="data-we-collect">
+          <h2>3. The data we collect</h2>
+
+          <h3>Account &amp; profile (personal data)</h3>
+          <p>
+            Name, email, phone (optional), country, role (player / parent / coach), and login
+            credentials (authentication is handled by our provider, Clerk).
+          </p>
+
+          <h3>Junior / minor profile data</h3>
+          <p>
+            Where a parent or guardian sets up a junior, we may hold the child's date of birth, skill
+            level, club or school, and coaching notes. Accounts for minors are managed by a consenting
+            adult — see <a href="#children">Section 8</a>.
+          </p>
+
+          <h3>Match video</h3>
+          <p>
+            The video you upload. The original upload is <strong>deleted after processing</strong>; a
+            trimmed review clip is retained as part of your match history.
+          </p>
+
+          <h3>Biometric data (special category)</h3>
+          <p>
+            To produce technique analysis we extract <strong>skeletal pose / keypoint data</strong> (the
+            position of body joints across frames). We treat this as biometric data and, where
+            applicable, as a <strong>special category of personal data</strong> under Article 9 GDPR. We
+            only process it on the basis described in <a href="#legal-bases">Section 6</a>.
+          </p>
+
+          <h3>Match analytics (derived data)</h3>
+          <p>
+            Statistics derived from your video — serve placement, rally metrics, KPIs, technique scores.
+          </p>
+
+          <h3>Usage data</h3>
+          <p>
+            Events such as logins, uploads, report views, and AI-coach queries, used to operate and
+            improve the service.
+          </p>
+
+          <h3>Payment data</h3>
+          <p>
+            Payments are processed by <strong>PayPal</strong>. We do <strong>not</strong> store your card
+            details.
+          </p>
+        </section>
+
+        <section id="where-from">
+          <h2>4. Where your data comes from</h2>
+          <p>
+            Almost all of it comes directly from you (your account details and the video you upload) and
+            from your use of the service (usage events, derived analytics). For juniors, the managing
+            adult provides the child's details.
+          </p>
+        </section>
+
+        <section id="how-we-use">
+          <h2>5. How we use your data</h2>
+          <ul>
+            <li>Provide the core service: process your video into statistics, technique analysis, and AI coaching.</li>
+            <li>Maintain your match history and progression over time.</li>
+            <li>Operate, secure, troubleshoot and improve the platform.</li>
+            <li>Communicate with you about your account and analyses (service messages).</li>
+            <li>Send marketing communications <strong>only where you have opted in</strong> (<a href="#marketing">Section 7</a>).</li>
+            <li>Comply with legal, tax and accounting obligations.</li>
+          </ul>
+        </section>
+
+        <section id="legal-bases">
+          <h2>6. Legal bases for processing (GDPR / UK GDPR)</h2>
+          <ul>
+            <li><strong>Contract</strong> — to deliver the analysis you sign up for (account, video processing, analytics, AI coach).</li>
+            <!-- CONFIRM: Source doc marks the biometric lawful basis as "[Decision 1: explicit consent as the assumed basis]". Rendered here as explicit consent per the recommended default; confirm with legal sign-off. -->
+            <li><strong>Consent</strong> — for <strong>biometric/pose processing</strong> (explicit, opt-in consent collected before your first technique analysis), for <strong>marketing email</strong> (<a href="#marketing">Section 7</a>), and for processing a <strong>minor's</strong> data via parental consent (<a href="#children">Section 8</a>). You can withdraw consent at any time (<a href="#your-rights">Section 10</a>).</li>
+            <li><strong>Legitimate interests</strong> — to secure, maintain and improve the service, where not overridden by your rights.</li>
+            <li><strong>Legal obligation</strong> — to retain certain financial records (<a href="#retention">Section 11</a>).</li>
+          </ul>
+        </section>
+
+        <section id="marketing">
+          <h2>7. Marketing communications</h2>
+          <!-- CONFIRM: Source doc marks marketing consent as "[Decision 5: explicit opt-in; double opt-in for EU/UK under review]". Rendered here as explicit opt-in with EU/UK double opt-in per recommended default; confirm with legal sign-off. -->
+          <p>
+            We send marketing email (tips, product updates, offers) <strong>only to people who have
+            explicitly opted in</strong>. For EU/UK signups we use double opt-in (a confirmation click)
+            before adding you to any marketing list. Every marketing email has an unsubscribe link, and
+            you can opt out at any time without affecting the service. Service/transactional messages
+            (e.g. "your analysis is ready") are not marketing and are sent as part of delivering the
+            product. Our marketing email is delivered via Klaviyo (<a href="#sub-processors">Section 12</a>).
+          </p>
+        </section>
+
+        <section id="children">
+          <h2>8. Children's data and parental consent</h2>
+          <p>
+            Ten-Fifty5 is designed to be used <strong>by adults</strong>, including parents/guardians and
+            coaches who manage junior players. Accounts involving a minor must be created and managed by a
+            consenting adult.
+          </p>
+          <ul>
+            <!-- CONFIRM: Source doc marks the age threshold + verification method as "[Decision 2: age threshold + verification method]". The consent-screen copy uses "under 16" as the recommended default; confirm the final threshold (and per-country handling) with legal sign-off. -->
+            <li>We process a minor's data (including biometric/pose data from their match video) only with <strong>verifiable parental/guardian consent</strong>. We treat players under 16 as minors requiring parental consent. <!-- CONFIRM: age threshold (16) is a recommended default still pending legal sign-off (Decision 2) --></li>
+            <li>The consenting adult can review, export or delete the minor's data at any time.</li>
+            <li>We do not knowingly let minors create their own accounts or direct marketing at minors.</li>
+            <li>If you believe a minor's data has been provided without proper consent, contact <a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a> and we will act promptly.</li>
+          </ul>
+        </section>
+
+        <section id="third-parties">
+          <h2>9. Footage of other people</h2>
+          <p>
+            A match video may show other individuals (e.g. your opponent or doubles partners). By
+            uploading, you confirm you have a proper basis to share that footage with us for analysis. We
+            process incidental third-party data only to deliver your analysis, apply the same retention
+            and security to it, and will respond to any rights request from an identifiable individual in
+            the footage.
+          </p>
+        </section>
+
+        <section id="your-rights">
+          <h2>10. Your rights</h2>
+          <p>
+            Subject to your jurisdiction, you may have the right to: access your data; correct it; erase
+            it ("right to be forgotten"); restrict or object to processing; data portability; and to
+            <strong>withdraw consent</strong> at any time (including for biometric processing and
+            marketing). Where we rely on consent for biometric data, withdrawing it means we stop
+            technique/pose processing going forward.
+          </p>
+          <p>
+            To exercise any right, contact <strong><a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a></strong>.
+            We handle requests as data-subject requests and respond within the timeframe required by law
+            (generally one month under GDPR/UK GDPR). You also have the right to complain to your data
+            protection authority.
+          </p>
+        </section>
+
+        <section id="retention">
+          <h2>11. How long we keep your data (retention)</h2>
+          <p>
+            We keep personal data only as long as needed for the purposes above. Our retention periods
+            are set out below.
+          </p>
+          <!-- CONFIRM: Source doc marks every retention period (except "original video deleted after processing") as "[TBC — Decision 3/4]". The day-counts below are the recommended defaults from privacy_decisions_and_consent_spec.md Part A §3, NOT yet legally signed off or loaded into core.retention_rule. Confirm before relying on them. -->
+          <div class="legal-table-wrap">
+            <table class="legal-table">
+              <thead>
+                <tr><th>Data</th><th>Retention</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Original uploaded video</td><td>Deleted immediately after processing</td></tr>
+                <tr><td>Trimmed review clip</td><td>Kept while your account is active; deleted 90 days after account closure</td></tr>
+                <tr><td>Biometric / pose keypoints</td><td>Deleted 30 days after account closure, or immediately on withdrawal of biometric consent</td></tr>
+                <tr><td>Derived match analytics</td><td>Kept while your account is active; deleted 90 days after closure</td></tr>
+                <tr><td>Account &amp; profile PII</td><td>Deleted 90 days after account closure</td></tr>
+                <tr><td>Anonymised financial records</td><td>Retained ~7 years for tax/accounting law, with PII stripped</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            On account closure or consent withdrawal we delete or anonymise data per these rules, except
+            where we must retain limited (anonymised) financial records to meet legal obligations.
+          </p>
+        </section>
+
+        <section id="sub-processors">
+          <h2>12. Who we share data with (sub-processors)</h2>
+          <p>We do not sell your data. We share it with vetted providers strictly to run the service:</p>
+          <div class="legal-table-wrap">
+            <table class="legal-table">
+              <thead>
+                <tr><th>Provider</th><th>Purpose</th><th>Notes</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>SportAI</td><td>Match video analysis</td><td>Processes uploaded footage</td></tr>
+                <tr><td>Amazon Web Services (AWS)</td><td>Storage (S3), GPU processing, transactional email (SES)</td><td>Regions: US (us-east-1) and EU (eu-north-1) — see <a href="#transfers">Section 13</a></td></tr>
+                <tr><td>Anthropic</td><td>AI coach &amp; support assistant</td><td>Processes your stats/queries to generate responses</td></tr>
+                <tr><td>Clerk</td><td>Authentication</td><td>Login / account / session</td></tr>
+                <tr><td>PayPal</td><td>Payments</td><td>We store no card data</td></tr>
+                <tr><td>HubSpot</td><td>CRM</td><td>PII only — never minors' data or biometrics</td></tr>
+                <tr><td>Klaviyo</td><td>Marketing email</td><td>Opt-in contacts only — never minors' data or biometrics</td></tr>
+                <tr><td>Amplitude</td><td>Product analytics</td><td>Behavioural usage data</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            We contractually require these providers to protect your data and process it only on our
+            instructions.
+          </p>
+        </section>
+
+        <section id="transfers">
+          <h2>13. International transfers</h2>
+          <!-- CONFIRM: Source doc marks data residency as "[Decision 6: whether EU subjects' data is kept EU-only]". Rendered here as cross-region processing under SCCs per recommended interim default; confirm with legal sign-off. -->
+          <p>
+            We operate in both the <strong>United States (us-east-1)</strong> and the <strong>European
+            Union (eu-north-1)</strong>. Your data — including video and biometric data — may be processed
+            in either region. Where data is transferred internationally, we rely on appropriate
+            safeguards (e.g. Standard Contractual Clauses) as required by law.
+          </p>
+        </section>
+
+        <section id="security">
+          <h2>14. Security</h2>
+          <p>
+            We use appropriate technical and organisational measures to protect your data, including
+            access controls and encryption in transit. No system is perfectly secure, but biometric data
+            and minors' data receive heightened care, and we never route them into marketing or CRM tools.
+          </p>
+        </section>
+
+        <section id="cookies">
+          <h2>15. Cookies &amp; analytics</h2>
+          <!-- CONFIRM: Source doc notes "[Cookie banner / consent for non-essential cookies — to confirm with Section 7 and Decision 5.]" — confirm whether a non-essential-cookie consent banner is required before relying on this section. -->
+          <p>
+            We use necessary cookies to run the site and analytics (e.g. Amplitude) to understand and
+            improve usage.
+          </p>
+        </section>
+
+        <section id="changes">
+          <h2>16. Changes to this policy</h2>
+          <p>
+            We may update this policy. Material changes will be notified and the version/effective date
+            above will change. Continued use after an update means the updated policy applies.
+          </p>
+        </section>
+
+        <section id="contact">
+          <h2>17. Contact</h2>
+          <p>
+            Questions or requests: <strong><a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a></strong>.
+          </p>
+        </section>
+
+      </article>
+    </div>
+  </div>
+</div>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-brand-name">TEN-FIFTY5</div>
+      <p>ATP-level match analysis, biomechanical technique breakdown and AI coaching — for serious competitive players and their coaches.</p>
+    </div>
+    <div class="footer-col">
+      <h5>Product</h5>
+      <ul>
+        <li><a href="https://www.ten-fifty5.com/" target="_top">Home</a></li>
+        <li><a href="https://www.ten-fifty5.com/overview" target="_top">How It Works</a></li>
+        <li><a href="https://www.ten-fifty5.com/pricing" target="_top">Pricing</a></li>
+        <li><a href="https://www.ten-fifty5.com/coaching" target="_top">For Coaches</a></li>
+        <li><a href="https://www.ten-fifty5.com/academies" target="_top">For Academies</a></li>
+        <li><a href="https://www.ten-fifty5.com/blog" target="_top">Blog</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h5>Get in touch</h5>
+      <ul>
+        <li><a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a></li>
+        <li><a href="https://www.ten-fifty5.com/contact-us" target="_top">Contact</a></li>
+        <li><a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>&copy; 2026 Ten-Fifty5. All rights reserved.</span>
+    <span>Built for the serious player.</span>
+  </div>
+</footer>
+
+</body>
+</html>

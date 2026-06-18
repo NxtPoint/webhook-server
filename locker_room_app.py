@@ -25,6 +25,7 @@
 #     GET /coaching    → for_coaches.html
 #     GET /academies   → for_academies.html
 #     GET /contact-us  → contact.html
+#     GET /privacy-policy → privacy_policy.html
 #     GET /blog        → blog/index.html
 #     GET /post/<slug> → blog/<slug>.html     (migrated posts, original URLs)
 #     GET /robots.txt, /sitemap.xml → generated
@@ -62,6 +63,7 @@ MARKETING_HOSTS = _DEFAULT_MARKETING_HOSTS | _env_hosts
 _NO_AUTH_CLIENT = {
     "home.html", "how_it_works.html", "pricing_public.html", "for_coaches.html",
     "for_academies.html", "contact.html", "404.html", "login.html",
+    "privacy_policy.html",
 }
 
 
@@ -286,6 +288,11 @@ def contact():
     return _html("contact.html")
 
 
+@app.get("/privacy-policy")
+def privacy_policy():
+    return _html("privacy_policy.html")
+
+
 @app.get("/blog")
 def blog_index():
     return _html(os.path.join("blog", "index.html"))
@@ -374,6 +381,7 @@ _MARKETING_URLS = [
     ("/academies", "monthly", "0.8"),
     ("/blog", "weekly", "0.7"),
     ("/contact-us", "yearly", "0.4"),
+    ("/privacy-policy", "yearly", "0.3"),
 ]
 
 
