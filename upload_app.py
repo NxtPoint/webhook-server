@@ -1260,11 +1260,13 @@ def _technique_run_pipeline(task_id: str, s3_key: str, technique_meta: dict):
     from technique.silver_technique import build_silver_technique
     build_silver_technique(task_id=task_id, engine=engine, replace=True)
 
-    # ── STEP 5: Video — copy to trim folder (fire-and-forget) ──
+    # ── STEP 5: Privacy (scope v2) — technique video is NOT retained: delete it ──
+    # The biometric source is processed-then-deleted: stats are derived (steps 3-4), so the video +
+    # any prior trimmed copy are removed from S3. See docs/business/privacy-and-consent.md scope v2.
     try:
-        _technique_store_footage(task_id)
+        _technique_delete_footage(task_id)
     except Exception as e:
-        app.logger.warning("TECHNIQUE task_id=%s trim failed (non-fatal): %s", task_id, e)
+        app.logger.warning("TECHNIQUE task_id=%s video delete failed (non-fatal): %s", task_id, e)
 
     # ── STEP 6: Mark complete ─────────────────────────────────
     with engine.begin() as conn:
@@ -1327,35 +1329,35 @@ def _technique_cancel(task_id: str) -> dict:
     return {"status": "cancelled"}
 
 
-def _technique_store_footage(task_id: str):
-    """Copy the original technique video to the trim folder for online storage."""
+def _technique_delete_footage(task_id: str):
+    """PRIVACY (scope v2): the technique source video is NOT retained. Once the analysis is done
+    (stats derived), delete the original upload from S3 + any trimmed copy a prior run may have
+    stored. Idempotent — missing keys are ignored. The dashboard/AI-coach use only derived stats
+    (no video), so nothing breaks. See docs/business/privacy-and-consent.md scope v2."""
     with engine.connect() as conn:
         row = conn.execute(sql_text("""
             SELECT s3_bucket, s3_key FROM bronze.submission_context WHERE task_id = :t
         """), {"t": task_id}).mappings().first()
 
-    if not row or not row.get("s3_key"):
-        return
-
-    src_key = row["s3_key"]
-    bucket = row.get("s3_bucket") or S3_BUCKET
-    dest_key = f"trimmed/{task_id}/technique.mp4"
+    bucket = (row.get("s3_bucket") if row else None) or S3_BUCKET
+    keys = []
+    if row and row.get("s3_key"):
+        keys.append(row["s3_key"])                       # the original upload
+    keys.append(f"trimmed/{task_id}/technique.mp4")      # any copy a pre-v2 run stored
 
     s3 = _s3_client()
-    s3.copy_object(
-        Bucket=bucket,
-        Key=dest_key,
-        CopySource={"Bucket": bucket, "Key": src_key},
-    )
+    for k in keys:
+        try:
+            s3.delete_object(Bucket=bucket, Key=k)
+        except Exception as e:
+            app.logger.warning("TECHNIQUE video delete failed task_id=%s key=%s: %s", task_id, k, e)
     with engine.begin() as conn:
         conn.execute(sql_text("""
             UPDATE bronze.submission_context
-            SET trim_status = 'completed',
-                trim_output_s3_key = :dest,
-                trim_finished_at = now()
+            SET trim_status = 'deleted', trim_output_s3_key = NULL, trim_finished_at = now()
             WHERE task_id = :t
-        """), {"t": task_id, "dest": dest_key})
-    app.logger.info("TECHNIQUE FOOTAGE STORED task_id=%s dest=%s", task_id, dest_key)
+        """), {"t": task_id})
+    app.logger.info("TECHNIQUE FOOTAGE DELETED (privacy, scope v2) task_id=%s", task_id)
 
 
 def _normalize_sportai_status(v: str | None) -> str | None:

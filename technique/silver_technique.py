@@ -388,8 +388,10 @@ def build_silver_technique(task_id: str, engine, replace: bool = True) -> Dict[s
         counts["technique_kinetic_chain_analysis"] = kc_count
 
         # ── 4. technique_pose_timeline ─────────────────────────
-        # Build per-frame consolidated timeline from 2D + 3D pose data
-        pose_count = _build_pose_timeline(conn, task_id)
+        # PRIVACY (scope v2): raw per-frame keypoints are biometric and NOT persisted (bronze no
+        # longer stores pose), so we skip building silver.technique_pose_timeline. Nothing downstream
+        # reads it. The derived stats above (summary/features/kinetic-chain) are unaffected.
+        pose_count = 0
         counts["technique_pose_timeline"] = pose_count
 
         # ── 5. technique_trends (cross-session) ───────────────

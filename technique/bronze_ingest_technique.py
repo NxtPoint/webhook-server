@@ -197,43 +197,14 @@ def ingest_technique_bronze(
     else:
         counts["technique_wrist_speed"] = 0
 
-    # ── 6. Pose 2D ─────────────────────────────────────────────
-    pose_2d = payload.get("video_entry_2D_json")
-    if pose_2d:
-        frame_count = len(pose_2d) if isinstance(pose_2d, (list, dict)) else None
-        conn.execute(sql_text("""
-            INSERT INTO bronze.technique_pose_2d (task_id, frame_count, raw_data)
-            VALUES (:task_id, :frame_count, :raw_data)
-            ON CONFLICT (task_id) DO UPDATE SET
-                frame_count = EXCLUDED.frame_count,
-                raw_data = EXCLUDED.raw_data
-        """), {
-            "task_id": task_id,
-            "frame_count": frame_count,
-            "raw_data": json.dumps(pose_2d),
-        })
-        counts["technique_pose_2d"] = 1
-    else:
-        counts["technique_pose_2d"] = 0
-
-    # ── 7. Pose 3D ─────────────────────────────────────────────
-    pose_3d = payload.get("video_entry_3D_json")
-    if pose_3d:
-        frame_count = len(pose_3d) if isinstance(pose_3d, (list, dict)) else None
-        conn.execute(sql_text("""
-            INSERT INTO bronze.technique_pose_3d (task_id, frame_count, raw_data)
-            VALUES (:task_id, :frame_count, :raw_data)
-            ON CONFLICT (task_id) DO UPDATE SET
-                frame_count = EXCLUDED.frame_count,
-                raw_data = EXCLUDED.raw_data
-        """), {
-            "task_id": task_id,
-            "frame_count": frame_count,
-            "raw_data": json.dumps(pose_3d),
-        })
-        counts["technique_pose_3d"] = 1
-    else:
-        counts["technique_pose_3d"] = 0
+    # ── 6/7. Pose 2D + 3D ──────────────────────────────────────
+    # PRIVACY (scope v2, 2026-06-18): raw pose/keypoint data is BIOMETRIC and is NOT persisted.
+    # The technique stats are derived from the feature/category/kinetic-chain tables above (which do
+    # not depend on pose); nothing downstream reads raw pose. So we deliberately DO NOT write
+    # bronze.technique_pose_2d / technique_pose_3d — the raw keypoints never hit storage.
+    # (consent: biometric_processing; see docs/business/privacy-and-consent.md scope v2.)
+    counts["technique_pose_2d"] = 0
+    counts["technique_pose_3d"] = 0
 
     log.info(
         "TECHNIQUE BRONZE INGEST task_id=%s counts=%s",
