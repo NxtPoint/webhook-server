@@ -460,6 +460,21 @@ _VIEWS = [
     GROUP BY 1
     ORDER BY 1 DESC
     """,
+
+    # Unique visitors per day — distinct first-party anon_id from page_view events (the beacon
+    # stores anon_id in usage_event.metadata). page_views reconciles to usage_daily; unique
+    # visitors fills once the client beacon starts sending anon_id.
+    """
+    CREATE OR REPLACE VIEW core.vw_visitors_daily AS
+    SELECT date_trunc('day', occurred_at)::date AS day,
+           count(*)                                                          AS page_views,
+           count(DISTINCT metadata->>'anon_id')
+                 FILTER (WHERE metadata->>'anon_id' IS NOT NULL)             AS unique_visitors
+    FROM core.usage_event
+    WHERE event_type = 'page_view'
+    GROUP BY 1
+    ORDER BY 1 DESC
+    """,
 ]
 
 

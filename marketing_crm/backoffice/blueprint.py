@@ -241,6 +241,7 @@ def performance():
         "processing_daily": _rows("SELECT * FROM core.vw_processing_daily WHERE day >= current_date - 90 ORDER BY day"),
         "support_daily":    _rows("SELECT * FROM core.vw_support_daily WHERE day >= current_date - 90 ORDER BY day"),
         "coach_daily":      _rows("SELECT * FROM core.vw_coach_daily WHERE day >= current_date - 90 ORDER BY day"),
+        "visitors_daily":   _rows("SELECT * FROM core.vw_visitors_daily WHERE day >= current_date - 90 ORDER BY day"),
     })
 
 

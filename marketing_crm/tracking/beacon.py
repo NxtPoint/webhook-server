@@ -33,15 +33,21 @@ def page():
         return jsonify({"ok": False, "error": "path required"}), 400
     email = (body.get("email") or "").strip().lower() or None
     referrer = (body.get("referrer") or "")[:300]
+    # First-party anonymous visitor id (client-generated, persisted in localStorage) — lets us
+    # count UNIQUE VISITORS for logged-out marketing traffic (account_id is NULL there). UTM
+    # params (client-parsed from the URL) power acquisition-source analytics.
+    anon_id = (str(body.get("anon_id") or "")[:64]) or None
+    utm = body.get("utm") if isinstance(body.get("utm"), dict) else {}
     props = body.get("props") if isinstance(body.get("props"), dict) else {}
     try:
-        threading.Thread(target=_record, args=(path, email, referrer, props), daemon=True).start()
+        threading.Thread(target=_record, args=(path, email, referrer, props, anon_id, utm),
+                         daemon=True).start()
     except Exception:
         log.exception("page beacon: thread spawn failed")
     return jsonify({"ok": True})
 
 
-def _record(path, email, referrer, props):
+def _record(path, email, referrer, props, anon_id=None, utm=None):
     try:
         from core_db.db import session_scope
         from core_db.repositories import accounts, matches
@@ -52,6 +58,12 @@ def _record(path, email, referrer, props):
                 if a:
                     account_id = a.id
             meta = {"path": path, "referrer": referrer}
+            if anon_id:
+                meta["anon_id"] = anon_id
+            for k in ("source", "medium", "campaign", "term", "content"):
+                v = (utm or {}).get(k)
+                if v:
+                    meta["utm_" + k] = str(v)[:120]
             for k in list(props)[:10]:
                 meta[str(k)[:40]] = str(props[k])[:200]
             if account_id is None and email:
