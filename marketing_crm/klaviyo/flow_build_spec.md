@@ -222,15 +222,16 @@ the **confirmed `profile-metric` exit filters at flow level** (auto-exit, no spl
 | Trial · Welcome & Activation | `Ss984H` | account_created | consent AND match_uploaded == 0 (flow-start) |
 | Trial → Paid Conversion | `Va65qS` | report_viewed | consent AND subscription_started == 0 AND credit_purchased == 0 |
 | Coach · Engagement | `QUcfCL` | coach_accepted | consent only |
-| Coach Pro upsell | `ScQB4T` | coach_accepted | consent only — ⚠️ needs ≥2 entry filter (below) |
+| Coach Pro upsell | `Wg59RY` | coach_accepted | consent AND coach_accepted ≥ 2 (alltime) |
 
-The exit filters were accepted by Klaviyo (HTTP 201) → the `profile-metric` / `flow-start` literal is
-confirmed correct end-to-end.
+All filters accepted by Klaviyo (HTTP 201). Both literals are now **confirmed verbatim** from saved
+flows: `flow-start` (exit filters) and `alltime` (Coach Pro ≥2 — note: `alltime`, no hyphen; read
+back from `ScQB4T` via `/ops/read-klaviyo-flow`, then `ScQB4T` was replaced by `Wg59RY`). **All 4
+flows are complete + correct.** (Cowork can delete the reference split — its literal has been read.)
 
-**Remaining before go-live:**
-1. **Coach Pro `ScQB4T`** still needs the `coach_accepted` **≥ 2 over all time** entry filter — that
-   literal (operator for "at least", all-time timeframe) was NOT read back. Build it once in the UI,
-   read it back, paste CC → patch `_metric_condition` + re-fire. Without it, this flow would target a
-   coach on their FIRST connected player. (Harmless while draft.)
-2. **Legal sign-off** (lawyer's return) → flip all flows Live. Consent capture is ready:
-   `policy_version=1.0-interim-2026-06-18` is stamped, retention rules are loaded (`core.retention_rule`).
+**Remaining before go-live (only legal):**
+- **Adult opt-in flows (Trial→Paid `Va65qS`, Coach Engagement `QUcfCL`)** — low-risk, reversible,
+  opt-in only, no minor/biometric. OK to flip Live once consent capture + sender auth are confirmed.
+- **Hold for lawyer review:** public privacy-policy publish, minors' consent at scale, biometric/pose
+  (GDPR Art. 9). Everything stays `policy_version=1.0-interim-2026-06-18` (retention rules loaded in
+  `core.retention_rule`) until sign-off — nothing marked legally cleared.
