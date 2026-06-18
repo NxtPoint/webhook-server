@@ -29,7 +29,7 @@ people** (e.g. your opponent). See Section 9 on footage of third parties.
 
 **Account & profile (personal data)**
 Name, email, phone (optional), country, role (player / parent / coach), and login credentials
-(authentication is currently handled by our provider, Wix).
+(authentication is handled by our provider, Clerk).
 
 **Junior / minor profile data**
 Where a parent or guardian sets up a junior, we may hold the child's date of birth, skill level,
@@ -54,7 +54,7 @@ Events such as logins, uploads, report views, and AI-coach queries, used to oper
 service.
 
 **Payment data**
-Payments are processed by **PayPal / Wix**. We do **not** store your card details.
+Payments are processed by **PayPal**. We do **not** store your card details.
 
 ## 4. Where your data comes from
 Almost all of it comes directly from you (your account details and the video you upload) and from
@@ -131,8 +131,8 @@ We do not sell your data. We share it with vetted providers strictly to run the 
 | SportAI | Match video analysis | Processes uploaded footage |
 | Amazon Web Services (AWS) | Storage (S3), GPU processing, transactional email (SES) | Regions: US (us-east-1) and EU (eu-north-1) — see Section 13 |
 | Anthropic | AI coach & support assistant | Processes your stats/queries to generate responses |
-| Wix | Authentication & website | Login/account |
-| PayPal / Wix | Payments | We store no card data |
+| Clerk | Authentication | Login / account / session |
+| PayPal | Payments | We store no card data |
 | HubSpot | CRM | **PII only — never minors' data or biometrics** |
 | Klaviyo | Marketing email | **Opt-in contacts only — never minors' data or biometrics** |
 | Amplitude | Product analytics | Behavioural usage data |

@@ -205,7 +205,7 @@ Why coaches are free at launch:
 - **Helper**: `billing_service.coach_accept_gate(email) -> (allowed, reason)`. Returns `(True, None)` if coach has <1 accepted link OR has a paid non-free subscription. Returns `(False, 'COACH_UPGRADE_REQUIRED')` otherwise. Fails open on DB error.
 - **Public accept (token path)**: `coach_invite/accept_page.py::accept_by_token` calls the gate before any UPDATE and returns HTTP 402 with `{error, message, upgrade_url, current_links, free_limit}`.
 - **Ops accept path**: `coaches_api.py::api_accept` same gate, same 402 response.
-- **Coach accept UI**: `coach_accept.html` intercepts 402 and renders a `stateUpgrade` card with the upgrade CTA (points at Coach Pro Wix plan). Invite stays pending — coach can pay then retry the same link.
+- **Coach accept UI**: `coach_accept.html` intercepts 402 and renders a `stateUpgrade` card with the upgrade CTA (points at `COACH_PRO_UPGRADE_URL` = our `/plans` page → coach view → **PayPal** Coach Pro subscribe button). Invite stays pending — coach can pay then retry the same link.
 - **Entitlements surface**: `billing.entitlements` now carries `coach_linked_players` (int) and `can_link_additional_player` (bool). Non-coaches always see `can_link_additional_player = true`. Coaches compute as `coach_linked_players < 1 OR is_coach_pro`.
 
 ### What Coach Pro gives (when we build it)
