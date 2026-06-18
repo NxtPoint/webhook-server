@@ -24,7 +24,10 @@
 #   - Pool uses pre_ping=True and recycle=1800 for Render's connection lifecycle
 
 import os
+import logging
 from sqlalchemy import create_engine, text as sql_text
+
+_log = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Engine
@@ -47,6 +50,55 @@ engine = create_engine(
     pool_recycle=1800,      # keep connections fresh on Render
     future=True,
 )
+
+# -----------------------------------------------------------------------------
+# Append-only per-step task event log
+# -----------------------------------------------------------------------------
+def log_task_event(task_id, step, status, detail=None, error=None):
+    """
+    Append one row to bronze.task_event (the append-only per-step pipeline log).
+
+    NEVER raises into the caller — any failure is logged and swallowed. Uses a
+    short-lived connection per call (long-lived connections to Render PG die
+    silently at NAT idle timeout — feedback_nat_idle_drop_long_db_connections).
+
+    Args:
+        task_id: pipeline task id (required)
+        step:    submit|batch|sportai|bronze|silver|trim|ses
+        status:  started|ok|failed|skipped
+        detail:  optional short free-text context
+        error:   optional short error string
+    """
+    try:
+        if not task_id or not step or not status:
+            return
+        # Truncate free-text fields defensively so a giant traceback can't bloat the log.
+        if detail is not None:
+            detail = str(detail)[:2000]
+        if error is not None:
+            error = str(error)[:2000]
+        with engine.begin() as conn:
+            conn.execute(
+                sql_text(
+                    "INSERT INTO bronze.task_event "
+                    "(task_id, step, status, detail, error) "
+                    "VALUES (:task_id, :step, :status, :detail, :error)"
+                ),
+                {
+                    "task_id": str(task_id),
+                    "step": str(step),
+                    "status": str(status),
+                    "detail": detail,
+                    "error": error,
+                },
+            )
+    except Exception as exc:  # never raise into the pipeline
+        try:
+            _log.warning("log_task_event failed (task_id=%s step=%s status=%s): %s",
+                         task_id, step, status, exc)
+        except Exception:
+            pass
+
 
 # -----------------------------------------------------------------------------
 # Bronze Init (idempotent)
@@ -111,6 +163,25 @@ def _create_core(conn):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """))
+
+    # Append-only per-step pipeline transaction log. Unlike the single mutable
+    # bronze.submission_context row (where failures get overwritten), this records
+    # pass/fail on every step per task so we can show full lifecycle history.
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.task_event (
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            step TEXT NOT NULL,        -- submit|batch|sportai|bronze|silver|trim|ses
+            status TEXT NOT NULL,      -- started|ok|failed|skipped
+            detail TEXT,
+            error TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+    conn.execute(sql_text(
+        "CREATE INDEX IF NOT EXISTS ix_task_event_task "
+        "ON bronze.task_event (task_id, created_at);"
+    ))
 
 def _add_typed_columns(conn):
     # ---------------- player (real columns) ----------------

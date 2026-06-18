@@ -28,7 +28,7 @@ import pandas as pd
 import requests
 from sqlalchemy import text
 
-from db_init import engine
+from db_init import engine, log_task_event
 from video_pipeline.build_video_timeline import (
     build_video_timeline_from_silver,
     timeline_to_edl,
@@ -190,6 +190,10 @@ def _mark_trim_trigger_failed(conn, task_id: str, err: str) -> None:
         """),
         {"task_id": task_id, "err": err},
     )
+    # Append-only pipeline log (never raises). This is the one trim-failure case the
+    # main-API /internal/video_trim_complete callback never sees (the worker was never
+    # reached), so log it here to keep the per-step log truthful.
+    log_task_event(task_id, "trim", "failed", error=str(err)[:1000])
 
 
 def _mark_trim_accepted(conn, task_id: str) -> None:

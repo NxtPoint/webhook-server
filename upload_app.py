@@ -132,7 +132,7 @@ SPORTAI_STATUS_PATHS = [
 ]
 
 # ---------- DB engine / bronze ingest ----------
-from db_init import engine  # noqa: E402
+from db_init import engine, log_task_event  # noqa: E402
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init  # noqa: E402
 from build_silver_v2 import build_silver_v2 as build_silver_point_detail, DEFAULT_SPORT_TYPE  # noqa: E402
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
@@ -390,7 +390,7 @@ def _sql_exec_to_json(q: str):
 # ==========================
 
 def _upload_entitlement_gate(email: str, sport_type: str | None = None) -> tuple[bool, str]:
-    """Server-side upload gate. See docs/pricing_strategy.md §5.
+    """Server-side upload gate. See docs/business/pricing-and-packages.md §5.
 
     - Match uploads (default) are gated by matches_remaining.
     - Technique uploads (sport_type in TECHNIQUE_SPORT_TYPES) are gated by
@@ -2445,16 +2445,20 @@ def _do_ingest_t5(task_id: str) -> bool:
             """), {"t": task_id})
 
         if _t5_abort_if_deleted(task_id, "pre_bronze"):
+            log_task_event(task_id, "bronze", "skipped", detail="aborted: match deleted by user")
             return False
 
         # Bronze ingest: download gzipped JSON from S3 and bulk-load into ml_analysis.*
         # Mirrors SportAI's pattern — same region as DB, fast COPY bulk insert.
+        log_task_event(task_id, "bronze", "started")
         try:
             from ml_pipeline.bronze_ingest_t5 import ingest_bronze_t5
             bronze_result = ingest_bronze_t5(job_id=task_id, engine=engine, replace=True)
             app.logger.info("T5 INGEST task_id=%s bronze loaded: %s", task_id, bronze_result)
+            log_task_event(task_id, "bronze", "ok", detail=str(bronze_result)[:500])
         except Exception as e:
             app.logger.warning("T5 INGEST task_id=%s bronze load failed (non-fatal): %s", task_id, e)
+            log_task_event(task_id, "bronze", "failed", error=f"{e.__class__.__name__}: {e}")
 
         # Determine sport type for routing
         with engine.connect() as conn:
@@ -2466,7 +2470,10 @@ def _do_ingest_t5(task_id: str) -> bool:
         is_singles_t5 = _st == "tennis_singles_t5"
 
         if _t5_abort_if_deleted(task_id, "pre_silver"):
+            log_task_event(task_id, "silver", "skipped", detail="aborted: match deleted by user")
             return False
+
+        log_task_event(task_id, "silver", "started")
 
         # Fix (C) from docs/_investigation/court_calibration_silent_degeneracy.md
         # — fail-loud if the Batch court calibration locked a degenerate
@@ -2543,6 +2550,7 @@ def _do_ingest_t5(task_id: str) -> bool:
                             ingest_finished_at = now()
                         WHERE task_id = :t
                     """), {"err": err_msg, "t": task_id})
+                log_task_event(task_id, "silver", "failed", error=err_msg)
                 return False
             # Weak-but-usable: some coverage on at least one side. Silver still
             # builds; log a warning so the trend stays greppable in CloudWatch
@@ -2650,6 +2658,7 @@ def _do_ingest_t5(task_id: str) -> bool:
                 app.logger.warning("T5 INGEST task_id=%s silver match build failed (non-fatal): %s", task_id, e)
 
         if _t5_abort_if_deleted(task_id, "pre_trim"):
+            log_task_event(task_id, "trim", "skipped", detail="aborted: match deleted by user")
             return False
 
         # Video trim: reuse match trim pipeline
@@ -2666,6 +2675,7 @@ def _do_ingest_t5(task_id: str) -> bool:
         # Otherwise leave session_id NULL so the next task-status poll re-fires
         # the ingest. This makes T5 ingest self-healing on transient failures.
         if silver_built:
+            log_task_event(task_id, "silver", "ok")
             with engine.begin() as conn:
                 _ensure_submission_context_schema(conn)
                 conn.execute(sql_text("""
@@ -2680,8 +2690,28 @@ def _do_ingest_t5(task_id: str) -> bool:
             # tells the user their match is "ready" when it actually isn't)
             try:
                 _notify_ses_completion(task_id)
+                log_task_event(task_id, "ses", "ok")
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s email notify failed (non-fatal): %s", task_id, e)
+                log_task_event(task_id, "ses", "failed", error=f"{e.__class__.__name__}: {e}")
+
+            # Product lifecycle event (fire-and-forget; no-op unless TRACKING_ENABLED=1).
+            # MATCH_PROCESSED fires on successful ingest for the T5 path.
+            try:
+                _t5_email = None
+                try:
+                    with engine.connect() as _ec:
+                        _t5_email = _ec.execute(sql_text(
+                            "SELECT email FROM bronze.submission_context WHERE task_id = :t"
+                        ), {"t": task_id}).scalar()
+                except Exception:
+                    pass
+                from marketing_crm.tracking import track as _track_mp
+                from marketing_crm.tracking.events import MATCH_PROCESSED
+                _track_mp(MATCH_PROCESSED, email=_t5_email, ref_type="match", ref_id=task_id,
+                          properties={"pipeline": "t5", "sport_type": _st})
+            except Exception:
+                pass
 
             # Phase 5c.2 — fire-and-forget pair-completion hook. No-op unless
             # AUTO_LABEL_DUAL_SUBMIT_PAIRS=1 and this is a tennis_singles_t5
@@ -2702,6 +2732,7 @@ def _do_ingest_t5(task_id: str) -> bool:
             # Silver build failed — leave ingest_finished_at NULL so the next
             # task-status poll re-fires the ingest. Stale check kicks in after
             # INGEST_STALE_AFTER_S seconds (default 1800).
+            log_task_event(task_id, "silver", "failed", error="silver_build_failed")
             with engine.begin() as conn:
                 _ensure_submission_context_schema(conn)
                 conn.execute(sql_text("""
@@ -2711,17 +2742,51 @@ def _do_ingest_t5(task_id: str) -> bool:
                     WHERE task_id = :t
                 """), {"t": task_id})
             app.logger.warning("T5 INGEST INCOMPLETE task_id=%s — silver build failed, will retry", task_id)
+            # MATCH_FAILED lifecycle event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
+            try:
+                _t5_email = None
+                try:
+                    with engine.connect() as _ec:
+                        _t5_email = _ec.execute(sql_text(
+                            "SELECT email FROM bronze.submission_context WHERE task_id = :t"
+                        ), {"t": task_id}).scalar()
+                except Exception:
+                    pass
+                from marketing_crm.tracking import track as _track_mf
+                from marketing_crm.tracking.events import MATCH_FAILED
+                _track_mf(MATCH_FAILED, email=_t5_email, ref_type="match", ref_id=task_id,
+                          properties={"pipeline": "t5", "error": "silver_build_failed"})
+            except Exception:
+                pass
             return False
 
     except Exception as e:
         app.logger.exception("T5 INGEST FAILED task_id=%s", task_id)
+        err_txt = f"{e.__class__.__name__}: {e}"
+        log_task_event(task_id, "bronze", "failed", error=err_txt)
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
                 SET ingest_error = :err, ingest_finished_at = now()
                 WHERE task_id = :t
-            """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
+            """), {"t": task_id, "err": err_txt})
+        # MATCH_FAILED lifecycle event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
+        try:
+            _t5_email = None
+            try:
+                with engine.connect() as _ec:
+                    _t5_email = _ec.execute(sql_text(
+                        "SELECT email FROM bronze.submission_context WHERE task_id = :t"
+                    ), {"t": task_id}).scalar()
+            except Exception:
+                pass
+            from marketing_crm.tracking import track as _track_mf2
+            from marketing_crm.tracking.events import MATCH_FAILED
+            _track_mf2(MATCH_FAILED, email=_t5_email, ref_type="match", ref_id=task_id,
+                       properties={"pipeline": "t5", "error": err_txt[:300]})
+        except Exception:
+            pass
         return False
 
 
@@ -2904,11 +2969,20 @@ def video_trim_complete():
             "VIDEO TRIM CALLBACK task_id=%s status=%s", task_id, status,
         )
 
+        # Append-only pipeline log (never raises)
+        if status == "completed":
+            log_task_event(task_id, "trim", "ok",
+                           detail=f"output_s3_key={body.get('output_s3_key')}")
+        else:
+            log_task_event(task_id, "trim", "failed",
+                           error=str(body.get("error") or "")[:1000])
+
     except Exception as e:
         app.logger.exception(
             "VIDEO TRIM CALLBACK DB ERROR task_id=%s status=%s error=%s",
             task_id, status, e,
         )
+        log_task_event(task_id, "trim", "failed", error=f"callback_db_error: {e}")
         return jsonify({"error": "db_update_failed"}), 500
 
     return jsonify({"ok": True})
@@ -3530,7 +3604,7 @@ def api_submit_s3_task():
     email = (body.get("customer_email") or body.get("email") or "").strip().lower()
 
     # Resolve sport_type up-front so the entitlement gate can check the right
-    # credit pool (techniques vs matches). See docs/pricing_strategy.md §5.
+    # credit pool (techniques vs matches). See docs/business/pricing-and-packages.md §5.
     _game_type = (body.get("gameType") or "singles").strip().lower()
     _SPORT_TYPE_MAP = {
         "singles": "tennis_singles",
@@ -3664,6 +3738,9 @@ def api_submit_s3_task():
 
         pipeline = "technique" if is_technique else ("t5" if is_t5 else "sportai")
 
+        # Append-only pipeline log (never raises)
+        log_task_event(task_id, "submit", "ok", detail=f"sport_type={sport_type} pipeline={pipeline}")
+
         # Product event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
         try:
             from marketing_crm.tracking import track
@@ -3672,6 +3749,17 @@ def api_submit_s3_task():
                   properties={"sport_type": sport_type, "pipeline": pipeline})
         except Exception:
             pass
+
+        # Technique uploads get their own lifecycle event at submit time
+        # (they do NOT emit MATCH_PROCESSED on ingest — they have no auto-ingest path).
+        if is_technique:
+            try:
+                from marketing_crm.tracking import track as _track_tech
+                from marketing_crm.tracking.events import TECHNIQUE_UPLOADED
+                _track_tech(TECHNIQUE_UPLOADED, email=email, ref_type="match", ref_id=task_id,
+                            properties={"sport_type": sport_type, "pipeline": pipeline})
+            except Exception:
+                pass
 
         return jsonify({
             "ok": True,

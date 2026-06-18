@@ -66,7 +66,7 @@ VIDEO_WORKER_OPS_KEY = (os.getenv("VIDEO_WORKER_OPS_KEY") or "").strip()
 # IMPORTS — heavy modules loaded here (worker has 3600s timeout)
 # ============================================================
 
-from db_init import engine  # noqa: E402
+from db_init import engine, log_task_event  # noqa: E402
 from ingest_bronze import ingest_bronze_strict, _run_bronze_init  # noqa: E402
 from build_silver_v2 import build_silver_v2 as build_silver_point_detail  # noqa: E402
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
@@ -177,6 +177,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         app.logger.info("INGEST START task_id=%s result_url=%s", task_id, result_url)
 
         if _abort_if_deleted(task_id, "pre_start"):
+            log_task_event(task_id, "bronze", "skipped", detail="aborted: match deleted by user")
             return False
 
         # Mark started
@@ -189,6 +190,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                        ingest_error = NULL
                  WHERE task_id = :t
             """), {"t": task_id})
+        log_task_event(task_id, "bronze", "started")
 
         # -------------------------
         # STEP 1: DOWNLOAD RESULT JSON
@@ -215,6 +217,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # STEP 2: BRONZE INGEST
         # -------------------------
         if _abort_if_deleted(task_id, "pre_bronze"):
+            log_task_event(task_id, "bronze", "skipped", detail="aborted: match deleted by user")
             return False
 
         app.logger.info("INGEST STEP task_id=%s step=bronze_ingest_start", task_id)
@@ -241,6 +244,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             """), {"sid": sid, "t": task_id, "url": result_url})
 
         app.logger.info("INGEST STEP task_id=%s step=bronze_ingest_done session_id=%s", task_id, sid)
+        log_task_event(task_id, "bronze", "ok", detail=f"session_id={sid}")
 
         try:
             del payload
@@ -251,16 +255,20 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # STEP 3: SILVER BUILD
         # -------------------------
         if _abort_if_deleted(task_id, "pre_silver"):
+            log_task_event(task_id, "silver", "skipped", detail="aborted: match deleted by user")
             return False
 
         app.logger.info("INGEST STEP task_id=%s step=silver_build_start", task_id)
+        log_task_event(task_id, "silver", "started")
         build_silver_point_detail(task_id=task_id, replace=True)
         app.logger.info("INGEST STEP task_id=%s step=silver_build_done", task_id)
+        log_task_event(task_id, "silver", "ok")
 
         # -------------------------
         # STEP 4: VIDEO TRIM TRIGGER (fire-and-forget)
         # -------------------------
         if _abort_if_deleted(task_id, "pre_trim"):
+            log_task_event(task_id, "trim", "skipped", detail="aborted: match deleted by user")
             return False
 
         app.logger.info("INGEST STEP task_id=%s step=video_trim_trigger_start", task_id)
@@ -291,6 +299,30 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                  WHERE task_id = :t
             """), {"t": task_id})
 
+        # Product lifecycle event (fire-and-forget; no-op unless TRACKING_ENABLED=1).
+        # MATCH_PROCESSED fires on successful SportAI ingest. Technique uploads never
+        # reach this worker (they get TECHNIQUE_UPLOADED at submit instead) but we
+        # guard on sport_type defensively so we never double-tag a technique row.
+        try:
+            _email = None
+            _sport = ""
+            try:
+                with engine.connect() as conn:
+                    _row = conn.execute(sql_text(
+                        "SELECT email, sport_type FROM bronze.submission_context WHERE task_id = :t"
+                    ), {"t": task_id}).mappings().first() or {}
+                    _email = _row.get("email")
+                    _sport = (_row.get("sport_type") or "")
+            except Exception:
+                pass
+            if _sport != "technique_analysis":
+                from marketing_crm.tracking import track
+                from marketing_crm.tracking.events import MATCH_PROCESSED
+                track(MATCH_PROCESSED, email=_email, ref_type="match", ref_id=task_id,
+                      properties={"pipeline": "sportai", "sport_type": _sport})
+        except Exception:
+            pass
+
         app.logger.info("INGEST COMPLETE task_id=%s", task_id)
         return True
 
@@ -298,6 +330,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         app.logger.exception("INGEST FAILED task_id=%s result_url=%s", task_id, result_url)
 
         err_txt = f"{e.__class__.__name__}: {e}"
+        log_task_event(task_id, "bronze", "failed", error=err_txt)
         try:
             with engine.begin() as conn:
                 _ensure_schema(conn)
@@ -309,6 +342,23 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                 """), {"t": task_id, "err": err_txt})
         except Exception:
             app.logger.exception("INGEST FAILED — could not persist error for task_id=%s", task_id)
+
+        # MATCH_FAILED lifecycle event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
+        try:
+            _email = None
+            try:
+                with engine.connect() as conn:
+                    _email = conn.execute(sql_text(
+                        "SELECT email FROM bronze.submission_context WHERE task_id = :t"
+                    ), {"t": task_id}).scalar()
+            except Exception:
+                pass
+            from marketing_crm.tracking import track
+            from marketing_crm.tracking.events import MATCH_FAILED
+            track(MATCH_FAILED, email=_email, ref_type="match", ref_id=task_id,
+                  properties={"pipeline": "sportai", "error": err_txt[:300]})
+        except Exception:
+            pass
 
         return False
 
