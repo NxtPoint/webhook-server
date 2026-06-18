@@ -7,6 +7,13 @@
 > AND update this file.** If you change what's built, switches, or ownership — edit here in the same
 > change. Point-in-time details elsewhere drift; this wins. Last structural update: 2026-06-17 (growth stack de-gated; Clerk prod live; Wix auth removed).
 
+> **CRM strategy (decision 2026-06-18): we ARE our own CRM.** `core.*`/`billing.*` + the cockpit +
+> `/api/crm/*` are the customer system (single source of truth, no sync drift, no per-seat cost).
+> **Klaviyo is the only active marketing destination.** HubSpot (`crm_sync/hubspot.py`) is
+> **deprecated-but-retained** — dormant, self-gating (no-op without a token), kept only as a free
+> escape hatch if a sales-led motion ever needs it. Don't set a HubSpot key; don't invest there.
+> A full external CRM can be revisited later if a real need appears.
+
 ## Lanes & file ownership (avoid collisions)
 Both agents can now see + edit this repo. Stay in your lane.
 **Enforced by a git hook:** `.githooks/pre-commit` BLOCKS any commit that stages code/product files

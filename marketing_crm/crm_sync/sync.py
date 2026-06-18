@@ -52,14 +52,17 @@ def build_traits(session, email):
 def _push(traits):
     if not traits:
         return
-    try:
-        hubspot.upsert_contact(traits)
-    except Exception:
-        log.exception("hubspot push failed")
+    # Klaviyo is the ONLY active destination (decision 2026-06-18 — we use our own CRM, not a
+    # separate tool). HubSpot is deprecated-but-retained: upsert_contact() no-ops without a token,
+    # so this line is dormant unless a HUBSPOT token is ever deliberately set. See hubspot.py header.
     try:
         klaviyo.upsert_profile(traits)
     except Exception:
         log.exception("klaviyo push failed")
+    try:
+        hubspot.upsert_contact(traits)  # dormant (no-op without HUBSPOT token)
+    except Exception:
+        log.exception("hubspot push failed")
 
 
 def sync_profile(email):

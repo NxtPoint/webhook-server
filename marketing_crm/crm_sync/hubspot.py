@@ -1,5 +1,11 @@
 # marketing_crm/crm_sync/hubspot.py — HubSpot contact upsert (one-way mirror of core.*).
 #
+# ⚠️ DEPRECATED / RETAINED (decision 2026-06-18): we do NOT use a separate CRM tool. Our own
+# core.*/billing.* + the cockpit + /api/crm/* ARE the CRM (single source of truth, no sync drift,
+# no per-seat cost). Klaviyo is the only active marketing destination. This module is kept dormant
+# as a zero-cost escape hatch IF a sales-led motion ever needs HubSpot — it self-gates (no-op
+# without a token), so leaving it costs nothing. Don't invest further here; don't set a HubSpot key.
+#
 # Auth: HUBSPOT_PRIVATE_APP_TOKEN (preferred) or HUBSPOT_API_KEY. No-op if unset.
 # Maps traits → HubSpot contact properties per contracts/hubspot_field_map.md. Upsert by email.
 
