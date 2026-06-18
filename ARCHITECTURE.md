@@ -1,8 +1,8 @@
 # ARCHITECTURE.md
 
-> **Purpose.** A factual, file-grounded map of how Ten-Fifty5 fits together *today* — before we build the Render-native backend and reduce Wix dependency. Audience: Tomo + future Claude sessions. Companion docs: [`DATA-INVENTORY.md`](DATA-INVENTORY.md) (where data lives + source of truth), [`WIX-DEPENDENCY.md`](WIX-DEPENDENCY.md) (what Wix owns + migration plan).
+> **Purpose.** A factual, file-grounded map of how Ten-Fifty5 fits together. Audience: Tomo + future Claude sessions. Companion docs: [`DATA-INVENTORY.md`](DATA-INVENTORY.md) (where data lives + source of truth), [`WIX-DEPENDENCY.md`](WIX-DEPENDENCY.md) (the now-completed off-Wix migration record).
 >
-> **Freshness.** Captured 2026-06-16 from code. Line numbers drift — treat file references as the anchor, line numbers as a hint. `render.yaml` + the live code win on any conflict. This is descriptive (what *is*), not prescriptive (what *should be*).
+> **Freshness.** Updated 2026-06-17: **Wix is retired** — auth → Clerk, payment → direct PayPal, marketing → native Render (Wix retained only as a rollback path). Originally captured 2026-06-16 from code. Line numbers drift — treat file references as the anchor, line numbers as a hint. `render.yaml` + the live code win on any conflict. Descriptive (what *is*), not prescriptive.
 
 ---
 
