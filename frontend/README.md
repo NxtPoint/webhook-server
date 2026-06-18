@@ -46,7 +46,7 @@ The pattern is one helper `_html(name)` in both apps that resolves an absolute p
 
 ### Public marketing pages (native, LIVE on `www`)
 
-The marketing site is **native HTML served from Render and host-switched** in `locker_room_app.py` (`_is_marketing_host()`): on `www.ten-fifty5.com` / apex, `/` → `home.html` and `/pricing` → `pricing_public.html`; on every other host those two are the **app** pages. All other marketing paths are pure additions. Full architecture + cutover history: [`../docs/seo_marketing_migration.md`](../docs/seo_marketing_migration.md). (The old "SEO is invisible because Wix iframes it" note is obsolete — that memory, `project_seo_iframe_constraint.md`, is superseded.)
+The marketing site is **native HTML served from Render and host-switched** in `locker_room_app.py` (`_is_marketing_host()`): on `www.ten-fifty5.com` / apex, `/` → `home.html` and `/pricing` → `pricing_public.html`; on every other host those two are the **app** pages. All other marketing paths are pure additions. Full architecture + cutover history: [`../docs/business/marketing-and-seo.md`](../docs/business/marketing-and-seo.md). (The old "SEO is invisible because Wix iframes it" note is obsolete — that memory, `project_seo_iframe_constraint.md`, is superseded.)
 
 | Clean route | File | Purpose |
 |---|---|---|
@@ -106,7 +106,7 @@ Each file inlines the same shape:
 - **Charts**: ECharts via CDN. Per-page helpers `eBar`, `eStackedBar`, `ePie`, `eGauge` — same API in every file. If you change one signature, change them all.
 - **Layout**: `.app-shell` with sidebar variants. Mobile breakpoint at 768px.
 
-**Drift risk**: this is duplicated, not shared. If the green changes, every file changes. There's no `frontend/design-system.css` today and adding one is non-trivial because each SPA is independently deployed and cached. Track this in [`../docs/business.md`](../docs/business.md) §12 if it becomes a real cost.
+**Drift risk**: this is duplicated, not shared. If the green changes, every file changes. There's no `frontend/design-system.css` today and adding one is non-trivial because each SPA is independently deployed and cached. Track this in [`../docs/business/README.md`](../docs/business/README.md) decision log if it becomes a real cost.
 
 ## iOS / iframe gotchas
 
@@ -160,9 +160,9 @@ If you add a new SPA:
 ## See also
 
 - [`../CLAUDE.md`](../CLAUDE.md) §Locker Room SPAs — short overview that points here
-- [`../docs/dashboards.md`](../docs/dashboards.md) — gold view + endpoint catalogue (data the SPAs render)
-- [`../docs/business.md`](../docs/business.md) §4 — entitlement gates the SPAs respect (free-trial AI Coach lock, coach view-only, etc.)
+- [`../docs/business/features.md`](../docs/business/features.md) (Dashboards section) — gold view + endpoint catalogue (data the SPAs render)
+- [`../docs/business/README.md`](../docs/business/README.md) §5 — entitlement gates the SPAs respect (free-trial AI Coach lock, coach view-only, etc.)
 - `locker_room_app.py` — primary host for these files (incl. the host-switched marketing routes, favicon/og/blog-image routes, branded 404)
 - `upload_app.py` — same-origin route mirror (app pages)
-- [`../docs/seo_marketing_migration.md`](../docs/seo_marketing_migration.md) — marketing-site architecture, routes, blog workflow, off-page plan
+- [`../docs/business/marketing-and-seo.md`](../docs/business/marketing-and-seo.md) — marketing-site architecture, routes, blog workflow, off-page plan
 - `build_blog.py` — static blog generator (`image:` frontmatter → hero + thumbnail)

@@ -47,9 +47,9 @@ Render shell already has `psql` and `$DATABASE_URL` in env. No additional auth s
 - Every `UPDATE` guarded with `WHERE <new_col> IS NULL` so re-running is a no-op.
 - Every `DROP` uses `IF EXISTS`.
 - Every `ALTER` uses `IF NOT EXISTS` or its equivalent.
-- **Never `DELETE FROM billing.*`** — see `docs/business.md` §7.
+- **Never `DELETE FROM billing.*`** — see `docs/business/README.md` §7.
 
 ## See also
 
-- [`../docs/business.md`](../docs/business.md) §7 — soft-delete contract (why migrations never touch `billing.*`)
+- [`../docs/business/README.md`](../docs/business/README.md) §7 — soft-delete contract (why migrations never touch `billing.*`)
 - [`../CLAUDE.md`](../CLAUDE.md) §Testing & Code Quality — full list of the idempotent `init_*` schema entry points

@@ -1,8 +1,10 @@
-# Billing — module reference
+# Billing — implementation reference
 
+> **Part of the Ten-Fifty5 business documentation set** ([master index](README.md)).
+>
 > Module-level reference for the billing subsystem. Files are scattered at repo root (not in a subdirectory), so this doc plays the role of a `billing/README.md`.
 
-For the **business rules** (what's a credit, what gates upload, how the soft-delete contract works), read [`business.md`](business.md). For **pricing tiers and plan IDs**, read [`pricing_strategy.md`](pricing_strategy.md). This doc is the **file map + entry points + flow**.
+For the **business rules** (what's a credit, what gates upload, how the soft-delete contract works), read [`README.md`](README.md). For **pricing tiers and plan IDs**, read [`pricing-and-packages.md`](pricing-and-packages.md). This doc is the **file map + entry points + flow**.
 
 ## What this owns
 
@@ -96,7 +98,7 @@ billing.entitlement_consumption          (deduction ledger — append-only)
   ├─ task_id (UNIQUE) — UUID-coerced via uuid5(NAMESPACE_URL, str)
   ├─ consumed_matches (default 1), consumed_techniques (default 0)
   ├─ source, consumed_at
-  └─ NEVER deleted — soft-delete contract, see business.md §7
+  └─ NEVER deleted — soft-delete contract, see README.md §7
 
 billing.subscription_state               (current state per account)
   ├─ account_id, plan_id (PayPal Billing-Plan id, or legacy Wix UUID), plan_code, status, period_end
@@ -209,12 +211,12 @@ POST /api/billing/cron/monthly_refill   (OPS_KEY)
 
 ## Gotchas
 
-- **`grant_entitlement` has three idempotency strategies.** See [`business.md`](business.md) §3 for the table. Mixing them up will create duplicate grants or block legitimate ones.
-- **Consumption is never deleted.** Soft-delete contract in [`business.md`](business.md) §7. The sweep at `cleanup/orphan_sweep.py` explicitly skips `billing.*`.
+- **`grant_entitlement` has three idempotency strategies.** See [`README.md`](README.md) §3 for the table. Mixing them up will create duplicate grants or block legitimate ones.
+- **Consumption is never deleted.** Soft-delete contract in [`README.md`](README.md) §7. The sweep at `cleanup/orphan_sweep.py` explicitly skips `billing.*`.
 - **`task_id` is UUID-coerced.** Non-UUID strings become deterministic UUIDs via `uuid5(NAMESPACE_URL, str)`. Same string always produces the same UUID — that's the idempotency hook.
 - **Subscription "ACTIVE" wins by recency.** When multiple `subscription_state` rows exist, `entitlements_api` UPSERT picks the most recent by `updated_at`. Stale CANCELLED rows can't block a renewed account.
 - **`can_upload` does NOT require `paid_active`.** Free-trial credits are real credits — uploading on the signup bonus works. The gate is purely `account_active AND role <> 'coach' AND matches_remaining > 0`.
-- **`can_view_dashboards` retains forever once any credit is consumed.** This is the conversion hook. Don't "fix" this — it's load-bearing. See `entitlements_api.py:196-203` and [`business.md`](business.md) §4.
+- **`can_view_dashboards` retains forever once any credit is consumed.** This is the conversion hook. Don't "fix" this — it's load-bearing. See `entitlements_api.py:196-203` and [`README.md`](README.md) §4.
 - **Coach cap fires at accept time, not invite time.** Existing accepted coach links are grandfathered. The gate is in `coach_invite/accept_page.py`, not in the invite-creation flow.
 - **Free Coach Access Wix plan does NOT count as paid.** Hard-coded plan ID `cd2b6772-1880-42ec-9049-4d9e4decc42b` is excluded from `is_coach_pro`. Free coach subscribers still hit the 1-player cap.
 - **`OPS_KEY` env var: `BILLING_OPS_KEY` checked first, then `OPS_KEY`.** Both files (`subscriptions_api`, `usage_api`) follow this order. Set `BILLING_OPS_KEY` if you want a separate billing key; otherwise `OPS_KEY` works.
@@ -231,10 +233,10 @@ POST /api/billing/cron/monthly_refill   (OPS_KEY)
 
 ## See also
 
-- [`business.md`](business.md) §2–§8 — full business rules, entitlement contract, hidden invariants
-- [`pricing_strategy.md`](pricing_strategy.md) — tier numerics, plan IDs (PayPal live in `paypal_billing/`; legacy Wix), AI Coach access matrix
-- [`../paypal_billing/README.md`](../paypal_billing/README.md) — direct PayPal payments (LIVE): checkout, webhook, grant model, rollback
-- [`../coach_invite/README.md`](../coach_invite/README.md) — coach invite flow (consumes `coach_accept_gate`)
-- [`../tennis_coach/README.md`](../tennis_coach/README.md) — AI Coach paywall (separate gate that reads `subscription_state` directly)
-- [`../cleanup/README.md`](../cleanup/README.md) — orphan sweep (the bright line: never touches `billing.*`)
-- [`../CLAUDE.md`](../CLAUDE.md) §Billing System — short overview that points here
+- [`README.md`](README.md) §2–§8 — full business rules, entitlement contract, hidden invariants
+- [`pricing-and-packages.md`](pricing-and-packages.md) — tier numerics, plan IDs (PayPal live in `paypal_billing/`; legacy Wix), AI Coach access matrix
+- [`../paypal_billing/README.md`](../../paypal_billing/README.md) — direct PayPal payments (LIVE): checkout, webhook, grant model, rollback
+- [`../coach_invite/README.md`](../../coach_invite/README.md) — coach invite flow (consumes `coach_accept_gate`)
+- [`../tennis_coach/README.md`](../../tennis_coach/README.md) — AI Coach paywall (separate gate that reads `subscription_state` directly)
+- [`../cleanup/README.md`](../../cleanup/README.md) — orphan sweep (the bright line: never touches `billing.*`)
+- [`../CLAUDE.md`](../../CLAUDE.md) §Billing System — short overview that points here

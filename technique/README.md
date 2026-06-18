@@ -2,7 +2,7 @@
 
 > Biomechanics stroke analysis via the external SportAI Technique API. Bronze → silver → gold pipeline for swing-by-swing technique scores.
 
-**Canonical reference:** [`../docs/technique.md`](../docs/technique.md). This README is the file-level orientation and entry-point map; the docs/ doc covers full flow, tables, and frontend.
+**Canonical reference:** [`../docs/business/features.md`](../docs/business/features.md) (Technique Analysis section). This README is the file-level orientation and entry-point map; the business doc covers full flow, tables, and frontend.
 
 ## What this owns
 
@@ -42,7 +42,7 @@
 | `gold_technique.init_technique_gold_views()` | `upload_app` on boot |
 | `coach_data_fetcher.fetch_technique_data(task_id)` | `tennis_coach.coach_api._fetch_data_for_task` (when sport_type='technique_analysis') |
 
-## Flow (excerpted from `docs/technique.md`)
+## Flow (excerpted from `docs/business/features.md`)
 
 ```
 Media Room → POST /api/submit_s3_task {gameType: 'technique'}
@@ -80,8 +80,8 @@ No async polling, no AWS Batch, no sentinel URL — synchronous streaming.
 
 ## See also
 
-- [`../docs/technique.md`](../docs/technique.md) — **canonical reference** (full flow, table schemas, frontend form)
-- [`../docs/business.md`](../docs/business.md) §3 + §5 — technique credit pool rules
+- [`../docs/business/features.md`](../docs/business/features.md) (Technique Analysis section) — **canonical reference** (full flow, table schemas, frontend form)
+- [`../docs/business/README.md`](../docs/business/README.md) §3 + §5 — technique credit pool rules
 - `upload_app.py::_technique_run_pipeline` — orchestration thread
 - `tennis_coach/` — uses `coach_data_fetcher.fetch_technique_data` for technique-analysis AI Coach calls
 - [`../CLAUDE.md`](../CLAUDE.md) §Technique Analysis

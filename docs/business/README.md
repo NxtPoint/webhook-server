@@ -1,14 +1,125 @@
-# Ten-Fifty5 — Business Rules & Product Behaviour
+# Ten-Fifty5 — Business Documentation (master)
 
-**Status:** canonical. **Owner:** Tomo. **Last updated:** 2026-04-30. **Excludes:** T5 ML pipeline (lives in `.claude/handover_t5.md` — pipeline, not business logic).
+**Status:** canonical. **Owner:** Tomo. **Last updated:** 2026-06-17. **Excludes:** the T5 ML pipeline (see `docs/north_star.md` — that's pipeline internals, not business logic).
 
-This is the single source of truth for **how the product behaves**: account model, credits, entitlement gates, consumption, coach model, soft-delete, and the rules enforced only in code. Pricing tier numbers (plan IDs, monthly match counts) live in [`pricing_strategy.md`](pricing_strategy.md) — that's the spec for *what's sold*; this doc is the spec for *what happens*.
+This folder is the single entry point for the whole non-T5 business: every package/PAYG/price, how billing and entitlements behave, the coach model, architecture + data, growth/CRM, privacy/consent, marketing/SEO, operations, env vars, and the live feature reference. This `README.md` is the master — it states the product behaviour rules in full and links every child doc.
 
-When code and this doc disagree, **this doc wins** for behaviour rules; `pricing_strategy.md` wins for tier numerics.
+When code and this doc disagree, **this doc wins** for behaviour rules; [`pricing-and-packages.md`](pricing-and-packages.md) wins for tier numerics.
 
 ---
 
-## 1. The mental model
+## 0. How to use this folder
+
+Start here, then jump to the child doc for the area you need:
+
+| Doc | Covers |
+|---|---|
+| **`README.md`** (this file) | Master: mental model, packages, billing behaviour, entitlement gates, soft-delete, decision log |
+| [`pricing-and-packages.md`](pricing-and-packages.md) | Tier numerics, plan IDs/codes, free trial, marketing copy, AI Coach access matrix |
+| [`billing-implementation.md`](billing-implementation.md) | Billing file map, entry points, grant/consumption flows, PayPal + Wix-rollback wiring |
+| [`coach-model.md`](coach-model.md) | Coach invite protocol, the free/Coach-Pro cap, what coaches can/can't do |
+| [`architecture.md`](architecture.md) | System topology, service map, medallion data layers, data inventory + source-of-truth catalogue |
+| [`growth-and-crm.md`](growth-and-crm.md) | Living growth/CRM status — cockpit, tracking, feedback/NPS, consent write-path, CRM sync, auth + payment cutover |
+| [`privacy-and-consent.md`](privacy-and-consent.md) | Privacy inputs, open legal decisions, consent-capture spec, policy draft, consent-screen copy |
+| [`marketing-and-seo.md`](marketing-and-seo.md) | Marketing-site architecture, backlink kit, Klaviyo lifecycle flows, coach outreach |
+| [`operations.md`](operations.md) | `/ops/*` runbook, diagnostics, sweeps, deploy procedures |
+| [`env-vars.md`](env-vars.md) | Full env-var matrix (main API + workers + crons + Lambda) |
+| [`features.md`](features.md) | Live feature reference: Support Bot, Dashboards/gold views, Technique analysis |
+| `_archive/` | Historical: Wix migration record, DB-schema proposal, support-bot + LLM-coach design docs |
+
+---
+
+## 1. What Ten-Fifty5 is
+
+**"ATP-level stats, AI coaching and technique analysis for serious competitive players and their coaches."**
+
+Not a recreational app — it exists for people chasing measurable performance gains (junior tournament players, academy players, coached adults, and their coaches). The free trial is a *proof*, not a product. Three pillars, no competitor bundles all three (the pricing moat):
+
+1. **Match Analytics** — point-by-point, heatmaps, cross-match performance trends.
+2. **Technique Analysis** — biomechanical stroke breakdown (no mainstream tennis app has this).
+3. **AI Coach** — Claude-powered conversational coaching over the user's own data (the differentiator + the paywall lever).
+
+Positioning + marketing copy detail: [`pricing-and-packages.md`](pricing-and-packages.md).
+
+---
+
+## 2. Mental model — Account / Member / Match
+
+(see §2.1 below for full identity rules)
+
+## 3. Packages & pricing
+
+Canonical numerics + plan codes: [`pricing-and-packages.md`](pricing-and-packages.md); the live source of truth for prices is `paypal_billing/plans.py` (`PRICES`) + `catalog.json`, read by `/pricing` via `GET /api/billing/paypal/config`. Currency is **USD** (account-create hardcodes USD; PayPal presents USD). Every package:
+
+| Package | Price | Grants |
+|---|---|---|
+| **Free Trial** | $0, one-time on signup | 1 match credit + 5 technique credits (lifetime, no rollover, no top-up) |
+| **PAYG — 1 match** (`once off`) | $25 | 1 match credit (never expires) |
+| **PAYG — 3 matches** (`payg 3 matches`) | $50 | 3 match credits |
+| **PAYG — 5 matches** (`payg 5 matches`) | $100 | 5 match credits |
+| **Starter** (`player starter`, monthly) | $25/mo | 3 match credits / month |
+| **Standard** (`player standard`, monthly) | $40/mo | 5 match credits / month |
+| **Advanced** (`player advances`, monthly) | $70/mo | 10 match credits / month |
+| **Coach** | Free | view + AI Coach on 1 linked player; cannot upload, no match credits |
+| **Coach Pro** (`coach pro`, monthly) | $50/mo | unlimited linked players (2+); cannot upload, no match credits |
+
+All paid player plans bundle **unlimited Technique + unlimited AI Coach** — no separate counters, no feature tiers. Monthly match credits do **not** roll over.
+
+## 4. How billing behaves
+
+Credit-based, two pools (match + technique), grants and consumption are idempotent, no rollover on monthly plans, **no refunds**, soft-delete never touches billing. Full implementation: [`billing-implementation.md`](billing-implementation.md). Behaviour rules: §3 (credits) and §5 (consumption) below.
+
+## 5. Entitlement gates
+
+`can_upload` / `can_view_dashboards` / `can_use_ai_coach` / `can_link_additional_player` + block reasons — see §4 below for the exact contract.
+
+## 6. Coach model
+
+See [`coach-model.md`](coach-model.md) and §6 below.
+
+## 7. Soft-delete contract
+
+Match delete is soft-delete only; **`billing.*` is never touched** — see §7 below.
+
+## 8. Architecture & data
+
+Full topology + data inventory: [`architecture.md`](architecture.md). The canonical layer / mental model:
+
+| Layer | Schema | Owns |
+|---|---|---|
+| Master/money | `billing.*` | payer identity, entitlements, subscription state, coach perms, payments (new `billing.payment`) |
+| Process/raw | `bronze.*` | raw ingest + pipeline state + per-step `task_event` (new) |
+| Engagement/graph | `core.*` | account/user/person, `usage_event`, nps/survey, consent, ticket (NOT billing SoR — Option C) |
+| Support | `support_bot.*` | chat turns, FAQ KB, cache |
+| AI coach | `tennis_coach.*` | coach answers + durable conversations (new) |
+| Read-layer | `core.vw_*` in `marketing_crm/backoffice/views.py` | 360 + performance + feedback views; cockpit = presentation |
+| CRM out | `marketing_crm/crm_sync` + `contracts/` | push traits+events to Klaviyo/HubSpot + pull API for Cowork |
+
+> **Cockpit reads the `billing.*` system-of-record directly (Option C, 2026-06-17)** — the deferred `core.*` billing mirror is decided-against. See `docs/_investigation/core_db_billing_strategy.md`.
+
+## 9. Growth / CRM / consent
+
+Living status: [`growth-and-crm.md`](growth-and-crm.md). Privacy + consent: [`privacy-and-consent.md`](privacy-and-consent.md).
+
+## 10. Marketing & SEO
+
+[`marketing-and-seo.md`](marketing-and-seo.md) — marketing site, backlinks, Klaviyo flows, coach outreach.
+
+## 11. Operations & env
+
+[`operations.md`](operations.md) (`/ops/*` runbook) + [`env-vars.md`](env-vars.md).
+
+## 12. Live feature reference
+
+[`features.md`](features.md) — Support Bot, Dashboards/gold views, Technique.
+
+---
+
+# Product behaviour — the rules (canonical)
+
+The rest of this document is the full behaviour spec: account model, credits, entitlement gates, consumption, coach model, soft-delete, hidden invariants, and the decision log. These are the rules enforced only in code.
+
+## 2.1 The mental model
 
 Three nouns. Get these right and the rest follows.
 
@@ -276,7 +387,7 @@ These are load-bearing and not documented elsewhere. If you change any of these 
 ### Referrals
 
 - No referral table, no referral code field, no signup attribution
-- `pricing_strategy.md §7` describes a referral-credits design as Phase 2; nothing is built
+- [`pricing-and-packages.md`](pricing-and-packages.md) §7 describes a referral-credits design as Phase 2; nothing is built
 - New account creation has no `referrer_account_id` parameter
 
 ---
@@ -403,12 +514,12 @@ Append-only. New rules, reversed rules, reasons.
 
 ## 13. Cross-references
 
-- **Pricing tier numerics** — [`pricing_strategy.md`](pricing_strategy.md) (tier prices, plan IDs — PayPal live in `paypal_billing/` + legacy Wix, AI Coach access matrix, marketing copy)
-- **Architecture & data layers** — [`../CLAUDE.md`](../CLAUDE.md) §Architecture Overview
-- **Dashboards & gold views** — [`dashboards.md`](dashboards.md)
-- **Coach invite implementation** — `coach_invite/` module; CLAUDE.md §Coach Invite Flow
-- **Support bot escalation rules** — [`support_bot.md`](support_bot.md)
-- **Soft-delete worker behaviour** — CLAUDE.md §Diagnostics & Ops; `cleanup/orphan_sweep.py`
-- **Env vars** — [`env_vars.md`](env_vars.md)
+- **Pricing tier numerics** — [`pricing-and-packages.md`](pricing-and-packages.md) (tier prices, plan IDs — PayPal live in `paypal_billing/` + legacy Wix, AI Coach access matrix, marketing copy)
+- **Architecture & data layers** — [`architecture.md`](architecture.md)
+- **Dashboards & gold views** — [`features.md`](features.md) (Dashboards section)
+- **Coach model** — [`coach-model.md`](coach-model.md); implementation in `coach_invite/` module
+- **Support bot escalation rules** — [`features.md`](features.md) (Support Bot section)
+- **Soft-delete worker behaviour** — §7 above; `cleanup/orphan_sweep.py`
+- **Env vars** — [`env-vars.md`](env-vars.md)
 
 T5 ML pipeline business behaviour (pricing impact: same as any non-technique sport_type — 1 match credit per task) is otherwise out of scope for this doc.

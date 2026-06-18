@@ -1,10 +1,12 @@
-# Ten-Fifty5 Pricing Strategy
+# Ten-Fifty5 — Pricing & Packages
 
-**Status:** Phase 1 (launch). Phase 2 items flagged inline.
+> **Part of the Ten-Fifty5 business documentation set** ([master index](README.md)).
+
+**Status:** Phase 1 (launch); Coach Pro live. Phase 2 items flagged inline.
 **Owner:** Tomo
-**Last updated:** 2026-04-17
+**Last updated:** 2026-06-17
 
-This is the single source of truth for pricing, entitlement logic, and how the system decides what a given user can do. When the business model and the code disagree, this doc is correct and the code is wrong.
+This is the single source of truth for pricing, entitlement logic, and how the system decides what a given user can do. The **live price source of truth is `paypal_billing/plans.py` (`PRICES`) + `catalog.json`**, read by `/pricing` via `GET /api/billing/paypal/config`; this doc and the code must agree, and currency is **USD** throughout (account-create hardcodes USD; PayPal presents USD).
 
 ---
 
@@ -27,7 +29,7 @@ No competitor bundles all three. That is the pricing moat.
 
 | Tier | Who | Price | Match upload | Technique | AI Coach | Dashboard view |
 |---|---|---|---|---|---|---|
-| **Free Trial** | New signups (player/parent) | £0, one-time | **1 lifetime** | **5 lifetime** | 🔒 Teaser only — aggressive upsell to paid | ✅ forever on trial content |
+| **Free Trial** | New signups (player/parent) | $0, one-time | **1 lifetime** | **5 lifetime** | 🔒 Teaser only — aggressive upsell to paid | ✅ forever on trial content |
 | **PAYG** | Casual / dip-in users | Per plan | 1 / 3 / 5 credits | ✅ unlimited | ✅ unlimited | ✅ |
 | **Starter** (monthly) | Light regular users | Per plan | 3 /mo | ✅ unlimited | ✅ unlimited | ✅ |
 | **Standard** (monthly) | Core competitive player | Per plan | 5 /mo | ✅ unlimited | ✅ unlimited | ✅ |
@@ -184,7 +186,7 @@ can_use_ai_coach
 
 Why coaches are free at launch:
 - ~0 coach users today. Friction kills channel adoption.
-- Coaches are an acquisition channel: 1 coach invites 5-20 players → players pay. £25/mo from a coach caps upside at <10% of indirect revenue.
+- Coaches are an acquisition channel: 1 coach invites 5-20 players → players pay. $25/mo from a coach caps upside at <10% of indirect revenue.
 - Research supports free-the-channel, monetise-the-end-user (SmartMusic, CoachNow, Hudl patterns).
 
 ### Coach value proposition (marketing anchor — use verbatim on For-Coaches page)

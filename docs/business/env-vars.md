@@ -1,5 +1,7 @@
 # Required Environment Variables
 
+> **Part of the Ten-Fifty5 business documentation set** ([master index](README.md)).
+
 ## Main API ("Sport AI - API call" on Render; `name: webhook-server` in `render.yaml`)
 
 **Required** (service boots but degraded without these):

@@ -9,7 +9,7 @@
 
 ## What this is NOT
 
-- **Not a billing operation.** `billing.*` is never queried, never modified. The match was a real billing event regardless of whether its bronze rows survive. See [`../docs/business.md`](../docs/business.md) §7.
+- **Not a billing operation.** `billing.*` is never queried, never modified. The match was a real billing event regardless of whether its bronze rows survive. See [`../docs/business/README.md`](../docs/business/README.md) §7.
 - **Not a delete endpoint.** `client_api.delete_match` is what the user-facing soft-delete calls — it sets `bronze.submission_context.deleted_at = now()`. This sweep is the asynchronous cleanup that finishes the job.
 - **Not a worker.** It's a Flask blueprint registered on `upload_app`. Triggered manually (or by a cron/external scheduler) hitting the endpoint.
 
@@ -74,6 +74,6 @@ curl -X POST https://api.nextpointtennis.com/ops/orphan-sweep \
 
 ## See also
 
-- [`../docs/business.md`](../docs/business.md) §7 — soft-delete contract (the bright line on `billing.*`)
+- [`../docs/business/README.md`](../docs/business/README.md) §7 — soft-delete contract (the bright line on `billing.*`)
 - [`../CLAUDE.md`](../CLAUDE.md) §Diagnostics & Ops — full ops endpoint catalogue
 - `client_api.py::delete_match` — the user-facing soft-delete that this sweep follows up

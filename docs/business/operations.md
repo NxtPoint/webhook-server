@@ -1,5 +1,7 @@
-# Ops Runbook
+# Operations — Ops Runbook
 
+> **Part of the Ten-Fifty5 business documentation set** ([master index](README.md)). Env vars in [`env-vars.md`](env-vars.md).
+>
 > Every non-product endpoint you'd hit from the Render shell or curl: health probes, diagnostics, maintenance, billing operations. Auth, body shape, expected output, when to run.
 
 **Auth conventions, in one place:**
@@ -124,7 +126,7 @@ curl -s https://api.nextpointtennis.com/ops/orphan-sweep \
   -d '{"dry_run": true}' | jq
 ```
 
-Full reference: [`../cleanup/README.md`](../cleanup/README.md).
+Full reference: [`../cleanup/README.md`](../../cleanup/README.md).
 
 ### `POST /ops/compact-storage`
 **What**: Runs `VACUUM (FULL, ANALYZE)` on the bronze / silver / ml_analysis tables that grow with match volume. Returns per-table `before_bytes` / `after_bytes` / `freed_bytes` JSON.
@@ -394,7 +396,7 @@ curl -s https://api.nextpointtennis.com/ops/routes -H "X-Ops-Key: $OPS_KEY" | jq
 ## Things to never do
 
 - **Don't run `/ops/sqlx` or `/ops/sqlq` for reads** when `/ops/diag/sql` will do — denylist matters.
-- **Don't `DELETE FROM billing.*`.** The match was a real billing event. See [`business.md`](business.md) §7.
+- **Don't `DELETE FROM billing.*`.** The match was a real billing event. See [`README.md`](README.md) §7.
 - **Don't run `/ops/compact-storage` during peak hours.** `VACUUM FULL` takes `ACCESS EXCLUSIVE`. Match analysis pages will hang for the duration.
 - **Don't pass `OPS_KEY` in the URL.** All `/ops/*` endpoints reject `?key=...` deliberately. Header-only.
 - **Don't skip `dry_run: true` on `orphan-sweep`** for the first run after any schema change — table list might have shifted.
@@ -403,15 +405,15 @@ curl -s https://api.nextpointtennis.com/ops/routes -H "X-Ops-Key: $OPS_KEY" | jq
 
 ## Cron failover playbook (T5-only)
 
-For AWS Batch Spot capacity issues during T5 runs, see [`../.claude/playbook_aws_batch_ondemand_fallback.md`](../.claude/playbook_aws_batch_ondemand_fallback.md). Out of scope for general ops.
+For AWS Batch Spot capacity issues during T5 runs, see [`../.claude/playbook_aws_batch_ondemand_fallback.md`](../../.claude/playbook_aws_batch_ondemand_fallback.md). Out of scope for general ops.
 
 ---
 
 ## See also
 
-- [`../CLAUDE.md`](../CLAUDE.md) §Diagnostics & Ops — short version with auth rules
-- [`../cleanup/README.md`](../cleanup/README.md) — orphan sweep deep-dive
-- [`business.md`](business.md) §7 — soft-delete contract
-- [`billing.md`](billing.md) — full billing endpoint catalogue with code citations
-- [`env_vars.md`](env_vars.md) — every env var these endpoints read
+- [`../CLAUDE.md`](../../CLAUDE.md) §Diagnostics & Ops — short version with auth rules
+- [`../cleanup/README.md`](../../cleanup/README.md) — orphan sweep deep-dive
+- [`README.md`](README.md) §7 — soft-delete contract
+- [`billing-implementation.md`](billing-implementation.md) — full billing endpoint catalogue with code citations
+- [`env-vars.md`](env-vars.md) — every env var these endpoints read
 - `diag_sql/sql_endpoint.py` — `/ops/diag/sql` source + hardening rationale

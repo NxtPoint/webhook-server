@@ -24,14 +24,21 @@ it in one namespace keeps it discoverable and keeps the layering honest.
 | `contracts/lifecycle_stages.md` | cockpit, Klaviyo audiences, HubSpot lifecycle |
 | `contracts/hubspot_field_map.md` | CRM sync code + HubSpot config |
 | `contracts/data_dictionary.md` | Cowork analysis + scheduled reports |
-| `contracts/privacy_inputs.md` | privacy-policy draft → lawyer → policy versions/retention back into `core.*` |
+| `contracts/cowork_briefing.md` | Cowork lane briefing |
+
+> Privacy inputs / consent spec / policy draft moved to [`../docs/business/privacy-and-consent.md`](../docs/business/privacy-and-consent.md); Klaviyo flows + outreach moved to [`../docs/business/marketing-and-seo.md`](../docs/business/marketing-and-seo.md). The `klaviyo/`, `privacy/`, `outreach/` subdirs are now empty (Cowork drafts land in the merged business docs).
 
 Build the pipes once; both sides reference the spec.
 
-## Status
-- `contracts/` — **drafted** (this commit). Living docs; update when the model changes.
-- `tracking/` `crm_sync/` `backoffice/` `feedback/` `referral/` — not built yet (next prompts).
+## Status (2026-06-17)
+All sub-packages are **BUILT and LIVE** (registered unconditionally as of the 2026-06-17 de-gate — the `*_ENABLED` flags are inert):
+- `contracts/` — living docs; update when the model changes.
+- `tracking/` `crm_sync/` `backoffice/` `feedback/` `consent/` — **built**. `crm_sync` self-gates on HubSpot/Klaviyo key presence; `referral/` is the one piece still not built.
+
+Living status + the full capability table: [`../docs/business/growth-and-crm.md`](../docs/business/growth-and-crm.md).
 
 ## Foundations it reads
-`core_db/` (canonical `core.*` schema) — see `../DB-SCHEMA-PROPOSAL.md`, `../core_db/README.md`.
-System map: `../ARCHITECTURE.md`, `../DATA-INVENTORY.md`, `../WIX-DEPENDENCY.md`.
+`core_db/` (canonical `core.*` schema) — see [`./README` for core_db](../core_db/README.md) and
+[`../docs/business/_archive/db-schema-proposal.md`](../docs/business/_archive/db-schema-proposal.md).
+System map: [`../docs/business/architecture.md`](../docs/business/architecture.md). Wix migration
+history: [`../docs/business/_archive/wix-migration-record.md`](../docs/business/_archive/wix-migration-record.md).

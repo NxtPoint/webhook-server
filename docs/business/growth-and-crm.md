@@ -1,8 +1,11 @@
-# marketing_crm — STATUS (the hymn sheet)
+# Growth / CRM / Admin — STATUS (the hymn sheet)
 
+> **Part of the Ten-Fifty5 business documentation set** ([master index](README.md)). This is the living
+> growth-status section (formerly `marketing_crm/STATUS.md`).
+>
 > **Single living source of truth for the growth/CRM/admin stack. Both Claude Code and Cowork read
 > AND update this file.** If you change what's built, switches, or ownership — edit here in the same
-> change. Point-in-time details elsewhere drift; this wins. Last structural update: 2026-06-16.
+> change. Point-in-time details elsewhere drift; this wins. Last structural update: 2026-06-17 (growth stack de-gated; Clerk prod live; Wix auth removed).
 
 ## Lanes & file ownership (avoid collisions)
 Both agents can now see + edit this repo. Stay in your lane.
@@ -21,19 +24,21 @@ vault — for a hard lock add GitHub branch protection + CODEOWNERS.)
 | `frontend/*.html`, `*_app.py`, `upload_app.py` | **Claude Code** | running product code — Cowork: flag, don't edit |
 | this `STATUS.md` | **Shared** | keep it current |
 
-## What's built (Claude Code) — all DARK by default, flip the env to enable
+## What's built (Claude Code)
 
-| Capability | Where | Enable | Status |
+> **DE-GATED 2026-06-17.** The growth stack now **registers UNCONDITIONALLY** — cockpit, consent, feedback, tracking, and core_api are live on boot; the `*_ENABLED` flags are **inert** (no longer read). `crm_sync` **self-gates only on HubSpot/Klaviyo key presence**. `AUTH_V2_ENABLED` and `PAYPAL_ENABLED` keep their flags purely as **rollback switches**. The "dark by default / flip the env" framing in older drafts is obsolete.
+
+| Capability | Where | Gating (2026-06-17) | Status |
 |---|---|---|---|
-| Canonical DB (`core.*`) | `core_db/` | live on prod (empty) | ✅ schema created |
-| Cockpit (admin) | `marketing_crm/backoffice/` + `frontend/cockpit.html` (`/cockpit`) | `COCKPIT_ENABLED=1` | ✅ |
-| Event tracking | `marketing_crm/tracking/` | `TRACKING_ENABLED=1` (+ `AMPLITUDE_API_KEY`) | ✅ partial events |
-| Feedback + NPS | `marketing_crm/feedback/` + `frontend/feedback_widget.js` | `FEEDBACK_ENABLED=1` | ✅ |
-| CRM sync (HubSpot+Klaviyo) | `marketing_crm/crm_sync/` | `CRM_SYNC_ENABLED=1` (+ `HUBSPOT_PRIVATE_APP_TOKEN` / `KLAVIYO_API_KEY`) | ✅ code (untested vs live APIs) |
-| Consent capture | `marketing_crm/consent/` + `frontend/consent.js` + `/privacy-settings` | `CONSENT_ENABLED=1` | ✅ (DRAFT copy, pre-legal) |
-| core_api | `core_api/` | `CORE_API_ENABLED=1` | ✅ |
-| De-Wix auth (Clerk) — Phase 0+1 | `auth_v2/` + `client_api._guard()` + `frontend/login.html` (`/login`) | `AUTH_V2_ENABLED=1` (+ `CLERK_PUBLISHABLE_KEY` / `AUTH_JWKS_URL` / `AUTH_ISSUER`) | ✅ code, dark — awaiting Clerk app keys |
-| Direct PayPal payments | `paypal_billing/` + `frontend/pricing.html` | `PAYPAL_ENABLED=1` + `PAYPAL_ENV=live` (+ `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` / `PAYPAL_WEBHOOK_ID`) | ✅ **LIVE 2026-06-16** (env=live). Replaces Wix Pricing Plans checkout. PAYG + subscribe + cancel proven end-to-end on sandbox AND a real live purchase. Reuses `apply_subscription_event`; `billing.*` only (core mirror deferred). Dual-mode auth (Clerk JWT or legacy key, via `client_api._guard`). Rollback: `PAYPAL_ENABLED=0` → instant Wix fallback. Runbook: `paypal_billing/README.md` |
+| Canonical DB (`core.*`) | `core_db/` | live on prod | ✅ schema created |
+| Cockpit (admin) | `marketing_crm/backoffice/` + `frontend/cockpit.html` (`/cockpit`) | unconditional (flag inert) | ✅ live; reads `billing.*` SoR directly (Option C) |
+| Event tracking | `marketing_crm/tracking/` | unconditional (flag inert); Amplitude needs `AMPLITUDE_API_KEY` | ✅ partial events |
+| Feedback + NPS | `marketing_crm/feedback/` + `frontend/feedback_widget.js` | unconditional (flag inert) | ✅ |
+| CRM sync (HubSpot+Klaviyo) | `marketing_crm/crm_sync/` | **self-gates on key presence** (`HUBSPOT_PRIVATE_APP_TOKEN` / `KLAVIYO_API_KEY`) | ✅ code (untested vs live APIs) |
+| Consent capture | `marketing_crm/consent/` + `frontend/consent.js` + `/privacy-settings` | unconditional (flag inert) | ✅ (DRAFT copy, pre-legal) |
+| core_api | `core_api/` | unconditional (flag inert) | ✅ |
+| De-Wix auth (Clerk) | `auth_v2/` + `client_api._guard()` + `frontend/login.html` (`/login`) | `AUTH_V2_ENABLED=1` (rollback flag) + `CLERK_PUBLISHABLE_KEY` / `AUTH_JWKS_URL` / `AUTH_ISSUER` | ✅ **LIVE 2026-06-17** — Clerk **production** (`clerk.ten-fifty5.com`, `pk_live`, own Google OAuth). Clerk is the only login door; **Wix auth removed from code**. |
+| Direct PayPal payments | `paypal_billing/` + `frontend/pricing.html` | `PAYPAL_ENABLED=1` + `PAYPAL_ENV=live` (rollback flag) + `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` / `PAYPAL_WEBHOOK_ID` | ✅ **LIVE 2026-06-16** (env=live). Replaces Wix Pricing Plans checkout. PAYG + subscribe + cancel proven end-to-end on sandbox AND a real live purchase. Reuses `apply_subscription_event`; `billing.*` only (core mirror deferred). Dual-mode auth (Clerk JWT or legacy key, via `client_api._guard`). Rollback: `PAYPAL_ENABLED=0` → Wix payment fallback at the wixstudio URL. Runbook: `paypal_billing/README.md` |
 
 **Consent = the forward write-path into `core.*`:** recording consent ensures the core account/user/
 person exist, so `core.*` fills going forward (no backfill needed for new signups). Copy lives in
@@ -43,9 +48,12 @@ and the retention day-counts into `core.retention_rule`. **All three consent mom
 signup block (players_enclosure), biometric modal before technique submit (media_room), and parental
 modal when adding juniors at signup (records `minor_processing_parental` per child).
 
-**Env switches (set on the `webhook-server` Render service):** `COCKPIT_ENABLED`, `TRACKING_ENABLED`,
-`FEEDBACK_ENABLED`, `CRM_SYNC_ENABLED`, `CORE_API_ENABLED` + keys `AMPLITUDE_API_KEY`,
-`HUBSPOT_PRIVATE_APP_TOKEN`, `KLAVIYO_API_KEY`. Tunables: `NPS_TRIGGER_N` (3), `NPS_COOLDOWN_DAYS` (90).
+**Env (set on the `webhook-server` Render service):** as of **2026-06-17** the `COCKPIT_ENABLED` /
+`TRACKING_ENABLED` / `FEEDBACK_ENABLED` / `CONSENT_ENABLED` / `CORE_API_ENABLED` switches are **inert** —
+those features register unconditionally. The only env that still matters here: keys `AMPLITUDE_API_KEY`,
+`HUBSPOT_PRIVATE_APP_TOKEN`, `KLAVIYO_API_KEY` (presence gates Amplitude forwarding + `crm_sync`), plus
+tunables `NPS_TRIGGER_N` (3), `NPS_COOLDOWN_DAYS` (90). `AUTH_V2_ENABLED` / `PAYPAL_ENABLED` remain as
+rollback switches.
 
 ## ACTIVATED 2026-06-16 (pre-launch, no customers)
 `render.yaml` sets `TRACKING_ENABLED=1`, `CONSENT_ENABLED=1`, `FEEDBACK_ENABLED=1`, `COCKPIT_ENABLED=1`

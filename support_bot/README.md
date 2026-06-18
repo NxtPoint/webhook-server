@@ -2,7 +2,7 @@
 
 > Customer-service chatbot for the portal. Claude Haiku with prompt caching + forced tool-use, FAQ-only, escalates anything not covered to `info@ten-fifty5.com`.
 
-**Canonical implementation reference:** [`../docs/support_bot.md`](../docs/support_bot.md). This README is the file-level orientation; the docs/ doc covers backend architecture, cost model, guardrails, and iteration loop in depth.
+**Canonical implementation reference:** [`../docs/business/features.md`](../docs/business/features.md) (Support Bot section). This README is the file-level orientation; the business doc covers backend architecture, cost model, guardrails, and iteration loop in depth.
 
 ## What this owns
 
@@ -109,7 +109,6 @@ The `POST /escalate` endpoint then SES-emails the full transcript to `info@ten-f
 
 ## See also
 
-- [`../docs/support_bot.md`](../docs/support_bot.md) — **canonical implementation reference**
-- [`../docs/support_bot_design.md`](../docs/support_bot_design.md) — original design doc (banner-flagged as historical; §2 UX section is stale, backend rationale still useful)
-- [`../docs/business.md`](../docs/business.md) §4 block-reason cascade — how the bot routes account-specific questions
-- [`../CLAUDE.md`](../CLAUDE.md) §Support Bot
+- [`../docs/business/features.md`](../docs/business/features.md) (Support Bot section) — **canonical implementation reference**
+- [`../docs/business/_archive/support-bot-design.md`](../docs/business/_archive/support-bot-design.md) — original design doc (historical; §2 UX section is stale, backend rationale still useful)
+- [`../docs/business/README.md`](../docs/business/README.md) §5 block-reason cascade — how the bot routes account-specific questions

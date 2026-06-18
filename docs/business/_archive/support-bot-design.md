@@ -6,9 +6,9 @@
 > - The backend architecture, prompts, FAQ contract, cost model, and escalation rules in this doc are **still accurate** — only the UX surface changed.
 >
 > **For current state, read these first:**
-> - [`support_bot.md`](support_bot.md) — canonical live-implementation reference (the page, endpoints, cost, guardrails)
-> - [`../support_bot/README.md`](../support_bot/README.md) — file map and entry points
-> - [`../support_bot/faq.md`](../support_bot/faq.md) — the load-bearing FAQ content the bot answers from
+> - [`../features.md`](../features.md) — canonical live-implementation reference (the page, endpoints, cost, guardrails)
+> - [`../support_bot/README.md`](../../../support_bot/README.md) — file map and entry points
+> - [`../support_bot/faq.md`](../../../support_bot/faq.md) — the load-bearing FAQ content the bot answers from
 >
 > Kept here for backend architecture rationale. Do not implement from §2 (User Experience) — that section is stale.
 

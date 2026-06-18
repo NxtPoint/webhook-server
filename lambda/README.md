@@ -92,4 +92,4 @@ Prerequisites:
 
 - [`../CLAUDE.md`](../CLAUDE.md) §T5 ML Pipeline — high-level pipeline overview
 - `.claude/handover_t5.md` — canonical doc for the T5 pipeline (what runs in the Batch container)
-- [`../docs/env_vars.md`](../docs/env_vars.md) — full env-var matrix including the Lambda
+- [`../docs/business/env-vars.md`](../docs/business/env-vars.md) — full env-var matrix including the Lambda

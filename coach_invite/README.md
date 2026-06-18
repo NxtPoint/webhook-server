@@ -104,8 +104,10 @@ POST /api/coaches/accept-token  body={"token": "..."}
 
 - **The token IS the auth.** The accept endpoint takes no API key. Possession of a valid `invite_token` is sufficient proof of identity. Token entropy is 32 bytes from `secrets.token_urlsafe`.
 - **Single-use.** Token is NULL'd immediately on accept (or on revoke). Replaying the same link fails with 400 `invalid_or_expired_token`.
-- **Re-invite reuses the row.** If a coach was revoked, re-inviting them UPDATEs the same `billing.coaches_permission` row (new token, status reset to `INVITED`). It does not INSERT a duplicate. Permission rows are never DELETEd. See [`../docs/business.md`](../docs/business.md) §6.
-- **Coach cap fires at accept time, not invite time.** Existing accepted links are grandfathered. The owner can invite freely; the gate stops the *coach* from accepting #2 unless they have Coach Pro. See `billing_service.py::coach_accept_gate` and `pricing_strategy.md` §6.
+- **Re-invite reuses the row.** If a coach was revoked, re-inviting them UPDATEs the same `billing.coaches_permission` row (new token, status reset to `INVITED`). It does not INSERT a duplicate. Permission rows are never DELETEd.
+- **Coach cap fires at accept time, not invite time.** Existing accepted links are grandfathered. The owner can invite freely; the gate stops the *coach* from accepting #2 unless they have Coach Pro. See `billing_service.py::coach_accept_gate`.
+
+> **Business rules (invite protocol, cap, idempotency) are canonical in [`../docs/business/coach-model.md`](../docs/business/coach-model.md)** — don't duplicate them here; this README is the code map only.
 - **402 keeps the invite pending.** When the cap blocks an accept, the permission row stays `INVITED` with the token still set. Coach can pay for Coach Pro and click the same email link again.
 - **`coach_account_id` is set lazily.** If the coach doesn't have an account yet at accept time (rare but possible), it stays NULL. They get linked when their account is later created with the matching email.
 - **Email region is `eu-north-1`.** Set via `AWS_REGION` env var. SES domain `ten-fifty5.com` is verified there.
@@ -123,9 +125,8 @@ POST /api/coaches/accept-token  body={"token": "..."}
 
 ## See also
 
-- [`../docs/business.md`](../docs/business.md) §6 — full coach invite + cap rules and idempotency contract
-- [`../docs/pricing_strategy.md`](../docs/pricing_strategy.md) §6 — coach pricing tiers (Phase 2)
+- [`../docs/business/coach-model.md`](../docs/business/coach-model.md) — full coach invite + cap rules and idempotency contract (canonical)
+- [`../docs/business/pricing-and-packages.md`](../docs/business/pricing-and-packages.md) §6 — coach pricing tiers
 - `coaches_api.py` — server-to-server coach permission management (OPS_KEY auth)
 - `client_api.py` `coach_invite` / `coach_revoke` — owner-facing endpoints that orchestrate this module
 - `frontend/coach_accept.html` — the public accept page
-- [`../CLAUDE.md`](../CLAUDE.md) §Coach Invite Flow

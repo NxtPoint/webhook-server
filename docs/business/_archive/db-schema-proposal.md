@@ -1,6 +1,6 @@
 # DB-SCHEMA-PROPOSAL.md  — ⏳ AWAITING APPROVAL (no code written yet)
 
-> **Status:** Proposal for review. Per the task, nothing is implemented until this schema + ER diagram are approved. Builds on [`ARCHITECTURE.md`](ARCHITECTURE.md) + [`DATA-INVENTORY.md`](DATA-INVENTORY.md).
+> **Status:** Proposal for review. Per the task, nothing is implemented until this schema + ER diagram are approved. Builds on [`../architecture.md`](../architecture.md) + [`../architecture.md`](../architecture.md).
 >
 > **Goal:** make our Postgres the **single source of truth** for customers, subscriptions, matches, usage, relationships, and feedback — with consent/minor/retention modelled as first-class, not bolted on.
 
@@ -10,7 +10,7 @@
 
 1. **One canonical schema: `core.*`.** New authoritative home for business entities. The existing `billing.*` and `bronze/silver/gold/ml_analysis.*` are **not** deleted — `billing.*` becomes a legacy projection we backfill-then-deprecate; the medallion analysis layers stay as the analysis SoT and are *linked* (not duplicated) by `core.match` via `task_id`.
 2. **No dual source of truth.** During transition `core.*` is built + seeded but **not yet wired as the prod read/write path** (live-data migration is a separate, gated step — §7). We never run `billing.*` and `core.*` as competing sources; we cut over per-entity.
-3. **Identity ≠ ownership ≠ profile.** Three entities: `account` (billing container), `user` (login identity — enables the real auth that replaces the shared-key model from `ARCHITECTURE.md` §6.1), `person` (player/parent/coach profile, may have no login).
+3. **Identity ≠ ownership ≠ profile.** Three entities: `account` (billing container), `user` (login identity — enables the real auth that replaces the shared-key model from `../architecture.md` §6.1), `person` (player/parent/coach profile, may have no login).
 4. **Events as an append-only stream** (`usage_event`, `credit_ledger`, `subscription_event`) — easy analytics, natural balances, full audit.
 5. **PK strategy:** internal `bigint` identity PKs (matches existing) **plus** a stable `public_id uuid` on externally-exposed entities (account, user, person, match) so APIs never leak enumerable integers and external syncs have a stable key.
 6. **Soft-delete + retention everywhere** PII lives (`deleted_at`, `anonymized_at`, `retention_until`).
@@ -322,7 +322,7 @@ These need a human/legal call before they can be finalised in code:
 2. **Backfill (dry-run first):** one-off script reads `billing.*`/`bronze.*` → writes `core.*`. Reconcile counts; idempotent + re-runnable.
 3. **Dual-write window:** new writes hit `core.*` *and* `billing.*` (or `billing.*` becomes a view over `core.*`) — verify parity before flipping reads.
 4. **Cut over reads** (portal/backoffice → `core_api`), per-entity, behind a flag.
-5. **Sync external systems → core:** the **PayPal** webhook (`/api/billing/paypal/webhook`, live; Wix as fallback) writes `core.subscription`/`core.credit_ledger` directly via the shared `apply_subscription_event`; add a periodic **reconcile-from-PayPal** job (closes the silent-desync risk in `ARCHITECTURE.md` §6.4). Identity SoT is already `core.user` (Clerk via `auth_v2`). *(2026-06-16: this is the deferred `core.*` payment mirror — see `STATUS.md` "Not built yet" + `docs/_investigation/core_db_billing_strategy.md`.)*
+5. **Sync external systems → core:** the **PayPal** webhook (`/api/billing/paypal/webhook`, live; Wix as fallback) writes `core.subscription`/`core.credit_ledger` directly via the shared `apply_subscription_event`; add a periodic **reconcile-from-PayPal** job (closes the silent-desync risk in `../architecture.md` §6.4). Identity SoT is already `core.user` (Clerk via `auth_v2`). *(2026-06-16: this is the deferred `core.*` payment mirror — see `STATUS.md` "Not built yet" + `docs/_investigation/core_db_billing_strategy.md`.)*
 6. **Deprecate `billing.*`** once parity holds for N days.
 
 ---

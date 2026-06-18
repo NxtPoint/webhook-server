@@ -15,9 +15,9 @@ AI tennis match analysis SaaS. Users upload match video → get ATP-grade stats 
   **credit ledger** (PAYG balance), matches, **usage events**, **NPS + survey + tickets**, and a
   full **consent + retention model** (incl. biometric + minor-parental consent).
 - **Shared contracts** in `marketing_crm/contracts/`: `events.md` (event names), `lifecycle_stages.md`
-  (trial/activated/paid/at-risk/churned definitions), `hubspot_field_map.md`, `data_dictionary.md`,
-  `privacy_inputs.md`. **These are the source of truth for naming + definitions.**
-- System maps: `ARCHITECTURE.md`, `DATA-INVENTORY.md`, `WIX-DEPENDENCY.md`, `DB-SCHEMA-PROPOSAL.md`.
+  (trial/activated/paid/at-risk/churned definitions), `hubspot_field_map.md`, `data_dictionary.md`.
+  Privacy inputs moved to `docs/business/privacy-and-consent.md`. **These are the source of truth for naming + definitions.**
+- System maps: `docs/business/architecture.md`; Wix migration record + DB-schema proposal: `docs/business/_archive/`.
 
 ## Non-negotiable integration rules
 1. **`core.*` is the single source of truth.** Klaviyo / HubSpot / Amplitude are *downstream
@@ -31,7 +31,7 @@ AI tennis match analysis SaaS. Users upload match video → get ATP-grade stats 
    that pipe exists — coordinate on which events/traits you need.
 4. **Privacy boundary (hard):** never route **minor PII** (DOB, child names) or **biometric data**
    (pose, video) into Klaviyo / HubSpot / any marketing tool. Marketing email only to contacts with
-   explicit opt-in. See `privacy_inputs.md`.
+   explicit opt-in. See `docs/business/privacy-and-consent.md`.
 5. **Auth is now Clerk** (LIVE 2026-06-17 — migrated off Wix; `/login`, `auth_v2/`). Payment is now
    **direct PayPal** (LIVE 2026-06-16; off Wix). We control the signup/login + checkout flows.
 
@@ -42,7 +42,7 @@ AI tennis match analysis SaaS. Users upload match video → get ATP-grade stats 
 - Does it duplicate something already built (a field, a table, a stage)? → check `data_dictionary.md`.
 
 ## Your immediate parallel tasks (independent of the build)
-- **Privacy/consent policy:** brief is `privacy_inputs.md` (what we collect, sub-processors, consent
+- **Privacy/consent policy:** brief is `docs/business/privacy-and-consent.md` (what we collect, sub-processors, consent
   model, + 6 open legal decisions). Draft → lawyer → final policy versions + retention day-counts
   come BACK to Claude Code to load into the DB.
 - **Klaviyo flows (copy + design):** use `events.md` + `lifecycle_stages.md`. Copy now; live

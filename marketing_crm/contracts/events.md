@@ -32,7 +32,7 @@ here first. Naming: `snake_case`, `object_verb` (past tense).
 - `task_id` is the universal match key (bridges `core.match` ↔ `bronze.submission_context`).
 - Identify by `account.public_id` + `email` (never internal bigint id) in external tools.
 - Money in **cents** (USD) — matches the DB.
-- **Never** put minor PII (DOB, child name) or biometric data in event properties — see `privacy_inputs.md`.
+- **Never** put minor PII (DOB, child name) or biometric data in event properties — see `docs/business/privacy-and-consent.md`.
 
 ## Where each event is emitted (planned)
 - DB: `marketing_crm/tracking/` calls `core_db.repositories.matches.record_usage(...)`.

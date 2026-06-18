@@ -1,6 +1,6 @@
 # tennis_coach
 
-> AI Coach for match analysis. Claude Sonnet over compact match-data payloads built from gold views. Returns coaching cards (pre-generated) and freeform answers (rate-limited). Paid plans only — see [`../docs/business.md`](../docs/business.md) §4.
+> AI Coach for match analysis. Claude Sonnet over compact match-data payloads built from gold views. Returns coaching cards (pre-generated) and freeform answers (rate-limited). Paid plans only — business rules are canonical in [`../docs/business/README.md`](../docs/business/README.md) §5 (don't duplicate them here; this README is the code map).
 
 ## What this owns
 
@@ -122,7 +122,7 @@ The Sonnet prompts also read from existing `gold.match_*` views directly via `da
 
 ## Drift watch
 
-[`../docs/llm_coach_design.md`](../docs/llm_coach_design.md) is the **original design spec** and references `ss_.*` views that no longer exist. Production uses `gold.coach_*` (this module's views) plus existing `gold.match_*`. The design doc carries a banner at the top declaring it historical and pointing to current sources. **Treat `coach_views.py` and `data_fetcher.py` as source of truth**, not the design doc.
+[`../docs/business/_archive/llm-coach-design.md`](../docs/business/_archive/llm-coach-design.md) is the **original design spec** and references `ss_.*` views that no longer exist. Production uses `gold.coach_*` (this module's views) plus existing `gold.match_*`. **Treat `coach_views.py` and `data_fetcher.py` as source of truth**, not the design doc.
 
 ## Required environment variables
 
@@ -133,9 +133,9 @@ The Sonnet prompts also read from existing `gold.match_*` views directly via `da
 
 ## See also
 
-- [`../docs/business.md`](../docs/business.md) §4 — AI Coach paywall + rate-limit rules
-- [`../docs/pricing_strategy.md`](../docs/pricing_strategy.md) §7 — AI Coach access matrix and the "this is the differentiator" positioning
-- [`../docs/llm_coach_design.md`](../docs/llm_coach_design.md) — original design spec (drifted; see drift watch above)
+- [`../docs/business/README.md`](../docs/business/README.md) §5 — AI Coach paywall + rate-limit rules
+- [`../docs/business/pricing-and-packages.md`](../docs/business/pricing-and-packages.md) §7 — AI Coach access matrix and the "this is the differentiator" positioning
+- [`../docs/business/_archive/llm-coach-design.md`](../docs/business/_archive/llm-coach-design.md) — original design spec (drifted; see drift watch above)
 - `support_bot/` — separate module, FAQ-only Haiku bot for support questions
 - `technique/coach_data_fetcher.py` — technique-specific data assembly
 - [`../CLAUDE.md`](../CLAUDE.md) §Dashboards & Gold Views — broader gold-view catalogue

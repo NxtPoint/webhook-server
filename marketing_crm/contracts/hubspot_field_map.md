@@ -24,7 +24,7 @@ Cowork configures the matching HubSpot properties/pipelines; Claude Code writes 
 ## Company / Deal (optional, later)
 - Company ≈ `account` (for coach/academy multi-seat). Deal pipeline ≈ subscription lifecycle.
 
-## ⛔ DO NOT SYNC (privacy boundary — see privacy_inputs.md)
+## ⛔ DO NOT SYNC (privacy boundary — see docs/business/privacy-and-consent.md)
 - **Minor PII:** `person.dob`, child names/notes, anything where `person.is_minor=true`.
 - **Biometric data:** pose keypoints, video, any `ml_analysis.*` content.
 - **Consent evidence / DSAR contents.**

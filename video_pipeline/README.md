@@ -164,7 +164,7 @@ Worker side:
 ## See also
 
 - [`../CLAUDE.md`](../CLAUDE.md) §Video Trim Pipeline
-- [`../docs/env_vars.md`](../docs/env_vars.md) — full env-var matrix including the worker
+- [`../docs/business/env-vars.md`](../docs/business/env-vars.md) — full env-var matrix including the worker
 - `upload_app.py::/video-trim-complete` — the main-API callback receiver
 - `ingest_worker_app.py` step 4 — primary caller
 - `Dockerfile.worker` — container build for the video worker service
