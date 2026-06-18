@@ -286,6 +286,21 @@ def build_flow_coach_pro_upsell():
     }
 
 
+def read_flow(flow_id: str) -> dict:
+    """GET a flow's full definition (beta) so saved condition literals can be read back VERBATIM —
+    e.g. the Coach-Pro >=2/all-time condition Cowork built in the UI. Needs KLAVIYO_API_KEY (Render).
+    Returns the raw Klaviyo response so we mirror the exact operator/timeframe keys, not a guess."""
+    key = (os.getenv("KLAVIYO_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("KLAVIYO_API_KEY not set in this environment")
+    import requests
+    headers = {"Authorization": f"Klaviyo-API-Key {key}", "revision": _REVISION,
+               "accept": "application/vnd.api+json"}
+    r = requests.get(f"{_BASE}{flow_id}/", headers=headers,
+                     params={"additional-fields[flow]": "definition"}, timeout=20)
+    return {"status": r.status_code, "body": r.json() if r.content else {}}
+
+
 def build_all():
     return [build_flow_welcome(), build_flow_conversion(),
             build_flow_coach_engagement(), build_flow_coach_pro_upsell()]

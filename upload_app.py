@@ -4322,6 +4322,25 @@ def ops_backfill_pair_labels():
     return jsonify(result), 200
 
 
+@app.post("/ops/read-klaviyo-flow")
+def ops_read_klaviyo_flow():
+    """Read a Klaviyo flow's full definition back (beta) so saved condition literals can be confirmed
+    VERBATIM — e.g. GET the Coach-Pro >=2/all-time split Cowork built. Body: {"flow_id": "ScQB4T"}.
+    Header-only auth (OPS_KEY)."""
+    if not _guard():
+        return Response("Forbidden", 403)
+    flow_id = ((request.get_json(silent=True) or {}).get("flow_id") or "").strip()
+    if not flow_id:
+        return jsonify({"ok": False, "error": "flow_id required"}), 400
+    try:
+        from marketing_crm.klaviyo.flow_builder import read_flow
+        out = read_flow(flow_id)
+        return jsonify({"ok": out["status"] < 300, **out})
+    except Exception as e:
+        app.logger.exception("ops_read_klaviyo_flow failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.post("/ops/load-retention-rules")
 def ops_load_retention_rules():
     """Idempotently load the interim retention policy into core.retention_rule (the values in
