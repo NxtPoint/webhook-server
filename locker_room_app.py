@@ -63,7 +63,7 @@ MARKETING_HOSTS = _DEFAULT_MARKETING_HOSTS | _env_hosts
 _NO_AUTH_CLIENT = {
     "home.html", "how_it_works.html", "pricing_public.html", "for_coaches.html",
     "for_academies.html", "contact.html", "404.html", "login.html",
-    "privacy_policy.html",
+    "privacy_policy.html", "subprocessors.html",
 }
 
 
@@ -293,6 +293,15 @@ def privacy_policy():
     return _html("privacy_policy.html")
 
 
+@app.get("/subprocessors")
+@app.get("/sub-processors")
+def subprocessors():
+    # Public sub-processor list (marketing-host aware like /privacy-policy; harmless
+    # on the app host). Lists the third-party providers that process personal data
+    # on our behalf + transfer safeguards. Linked from the marketing footer + policy.
+    return _html("subprocessors.html")
+
+
 @app.get("/blog")
 def blog_index():
     return _html(os.path.join("blog", "index.html"))
@@ -382,6 +391,7 @@ _MARKETING_URLS = [
     ("/blog", "weekly", "0.7"),
     ("/contact-us", "yearly", "0.4"),
     ("/privacy-policy", "yearly", "0.3"),
+    ("/subprocessors", "yearly", "0.3"),
 ]
 
 

@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Sub-processors | Ten-Fifty5</title>
+<meta name="description" content="The third-party sub-processors Ten-Fifty5 uses to run the service — what each one does, the data categories involved, and the region and transfer safeguards (DPA + SCCs / DPF).">
+<link rel="canonical" href="https://www.ten-fifty5.com/subprocessors">
+<meta name="robots" content="index, follow">
+
+<!-- Open Graph / social cards -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Ten-Fifty5">
+<meta property="og:title" content="Sub-processors | Ten-Fifty5">
+<meta property="og:description" content="The third-party sub-processors Ten-Fifty5 uses, the data categories involved, and the transfer safeguards in place.">
+<meta property="og:url" content="https://www.ten-fifty5.com/subprocessors">
+<meta property="og:image" content="https://www.ten-fifty5.com/og/og_homepage.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Sub-processors | Ten-Fifty5">
+<meta name="twitter:description" content="The third-party sub-processors Ten-Fifty5 uses and the transfer safeguards in place.">
+<meta name="twitter:image" content="https://www.ten-fifty5.com/og/og_homepage.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-dark: #134221;
+  --green-bg: rgba(26,92,46,0.08);
+  --green-bg-strong: rgba(26,92,46,0.14);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --radius: 4px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-fast: 0.2s;
+  --t-med: 0.4s;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--white); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+a { color: var(--green); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img, svg { display: block; max-width: 100%; }
+button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 28px; }
+
+h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; color: var(--text); }
+h1 { font-size: clamp(2rem, 4.4vw, 3rem); font-weight: 800; line-height: 1.05; }
+h2 { font-size: clamp(1.35rem, 2.6vw, 1.7rem); }
+h3 { font-size: clamp(1.05rem, 1.7vw, 1.2rem); font-weight: 600; }
+
+/* SHARED TOP NAV — centered links, identical across every native marketing page */
+.topnav{position:sticky;top:0;z-index:1000;background:rgba(255,255,255,0.96);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border,#e5e5e5);}
+.topnav-inner{max-width:1200px;margin:0 auto;padding:0 28px;height:62px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:18px;}
+.topnav-logo{justify-self:start;font-weight:800;font-size:1.1rem;letter-spacing:-.01em;color:var(--text,#1a1a1a);text-decoration:none;white-space:nowrap;}
+.topnav-links{display:flex;justify-content:center;align-items:center;gap:22px;}
+.topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec,#6b7280);text-decoration:none;transition:color .2s;white-space:nowrap;}
+.topnav-links a:hover{color:var(--green,#1a5c2e);}
+.topnav-links a.active{color:var(--green,#1a5c2e);font-weight:600;}
+.topnav-right{justify-self:end;display:flex;align-items:center;gap:10px;}
+.topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap;text-decoration:none!important;}
+.topnav-cta:hover{background:var(--green-light,#22783c);}
+.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text,#1a1a1a);cursor:pointer;padding:9px;min-width:44px;min-height:44px;}
+@media(max-width:980px){
+.topnav-inner{display:flex;justify-content:space-between;}
+.topnav-toggle{display:block;}
+.topnav-links{display:none;position:absolute;top:62px;left:0;right:0;background:#fff;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:0;padding:6px 0;border-bottom:1px solid var(--border,#e5e5e5);box-shadow:0 8px 20px rgba(0,0,0,.06);}
+.topnav-links.open{display:flex;}
+.topnav-links a{padding:13px 28px;}
+}
+
+.skip-link{position:absolute;left:-9999px;top:0;z-index:2000;background:var(--green,#1a5c2e);color:#fff;padding:10px 16px;border-radius:4px;font-weight:600;text-decoration:none}
+.skip-link:focus{left:8px;top:8px}
+
+/* ================================================================
+   LEGAL PAGE LAYOUT (shared with privacy_policy.html)
+   ================================================================ */
+.legal-hero { background: var(--bg); border-bottom: 1px solid var(--border); padding: 56px 0 44px; }
+.legal-hero .eyebrow { display:inline-flex; align-items:center; gap:10px; font-size:0.72rem; font-weight:600; color:var(--green); text-transform:uppercase; letter-spacing:0.14em; margin-bottom:16px; }
+.legal-hero .eyebrow::before { content:""; width:20px; height:1px; background:var(--green); opacity:0.6; }
+.legal-hero h1 { margin-bottom: 14px; }
+.legal-updated { font-size: 0.9rem; color: var(--text-sec); }
+.legal-intro { font-size: 1rem; color: var(--text-sec); line-height: 1.65; max-width: 70ch; margin-top: 16px; }
+
+.legal-body { padding: 48px 0 80px; }
+.legal-content { max-width: 880px; margin: 0 auto; }
+.legal-content section { margin-bottom: 40px; }
+.legal-content h2 { margin-bottom: 14px; padding-top: 6px; }
+.legal-content h3 { margin: 22px 0 8px; }
+.legal-content p { color: var(--text); font-size: 0.96rem; line-height: 1.7; margin-bottom: 14px; }
+.legal-content ul { list-style: none; margin: 4px 0 16px; }
+.legal-content ul li { position: relative; padding-left: 22px; margin-bottom: 9px; font-size: 0.95rem; line-height: 1.6; color: var(--text); }
+.legal-content ul li::before { content: ""; position: absolute; left: 4px; top: 0.62em; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.legal-content strong { font-weight: 600; }
+.legal-content .note { background: var(--green-bg); border-left: 3px solid var(--green); border-radius: 0 var(--radius) var(--radius) 0; padding: 14px 18px; font-size: 0.9rem; color: var(--text-sec); line-height: 1.6; margin: 0 0 16px; }
+
+/* Tables */
+.legal-table-wrap { overflow-x: auto; margin: 4px 0 18px; -webkit-overflow-scrolling: touch; }
+table.legal-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 720px; }
+table.legal-table th, table.legal-table td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; line-height: 1.5; }
+table.legal-table thead th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-sec); font-weight: 700; background: var(--bg); }
+table.legal-table tbody td { color: var(--text); }
+table.legal-table tbody td:first-child { font-weight: 600; white-space: nowrap; }
+
+/* Footer (shared marketing footer) */
+.footer { background: #0a1814; color: rgba(255,255,255,0.7); padding: 60px 28px 28px; }
+.footer-inner { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 44px; }
+@media (max-width: 760px) { .footer-inner { grid-template-columns: 1fr 1fr; gap: 32px 24px; } .footer-brand { grid-column: 1 / -1; } }
+.footer a { color: rgba(255,255,255,0.65); }
+.footer-brand { max-width: 300px; }
+.footer-brand-name { font-weight: 800; letter-spacing: 0.1em; color: var(--white); font-size: 1.02rem; margin-bottom: 14px; }
+.footer-brand p { font-size: 0.84rem; line-height: 1.6; color: rgba(255,255,255,0.55); }
+.footer-col h5 { font-size: 0.68rem; font-weight: 700; color: var(--white); text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 14px; }
+.footer-col ul { list-style: none; }
+.footer-col li { margin-bottom: 8px; }
+.footer-col a { font-size: 0.85rem; color: rgba(255,255,255,0.65); transition: color var(--t-fast) var(--ease); text-decoration: none; }
+.footer-col a:hover { color: var(--white); }
+.footer-bottom { max-width: 1200px; margin: 44px auto 0; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: rgba(255,255,255,0.4); flex-wrap: wrap; gap: 10px; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+@media (max-width: 520px) { .wrap { padding: 0 20px; } }
+</style>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+
+<nav class="topnav">
+  <div class="topnav-inner">
+    <a href="https://www.ten-fifty5.com/" class="topnav-logo">TEN-FIFTY5</a>
+    <div class="topnav-links">
+      <a href="https://www.ten-fifty5.com/">Home</a>
+      <a href="https://www.ten-fifty5.com/overview">How It Works</a>
+      <a href="https://www.ten-fifty5.com/pricing">Pricing</a>
+      <a href="https://www.ten-fifty5.com/coaching">For Coaches</a>
+      <a href="https://www.ten-fifty5.com/academies">Academies</a>
+      <a href="https://www.ten-fifty5.com/blog">Blog</a>
+      <a href="https://www.ten-fifty5.com/contact-us">Contact</a>
+    </div>
+    <div class="topnav-right">
+      <a href="/login" class="topnav-cta">Start Free</a>
+      <button class="topnav-toggle" aria-label="Toggle menu" aria-expanded="false" onclick="const o=document.querySelector('.topnav-links').classList.toggle('open');this.setAttribute('aria-expanded',o)">&#9776;</button>
+    </div>
+  </div>
+</nav>
+<span id="main-content" tabindex="-1"></span>
+
+<header class="legal-hero">
+  <div class="wrap">
+    <div class="eyebrow">Legal</div>
+    <h1>Sub-processors</h1>
+    <p class="legal-updated">Last updated: 2026-06-18</p>
+    <p class="legal-intro">
+      To deliver Ten-Fifty5 we rely on a small set of vetted third-party providers ("sub-processors")
+      that process personal data on our behalf. This page lists each one, what it does, the categories
+      of data involved, and where the data is processed together with the transfer safeguards in place.
+      It complements our <a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a>.
+    </p>
+  </div>
+</header>
+
+<div class="legal-body">
+  <div class="wrap">
+    <article class="legal-content">
+
+      <section id="overview">
+        <p>
+          We do not sell your data. We share it with these providers strictly to run the service, under
+          contracts that require them to protect it and process it only on our instructions. For each US
+          provider we maintain a signed <strong>Data Processing Agreement (DPA)</strong> plus the
+          <strong>2021 Standard Contractual Clauses (SCCs)</strong> — relying on the EU-US Data Privacy
+          Framework (DPF) where the provider is validly certified, with the SCCs as the fallback — and a
+          <strong>UK Addendum</strong> for UK data flows.
+        </p>
+        <p class="note">
+          <strong>PayPal</strong> acts as an <strong>independent controller</strong> for the payment data
+          it handles, not as our processor — it is disclosed here as a data recipient for transparency.
+          We store no card details ourselves.
+        </p>
+      </section>
+
+      <section id="list">
+        <h2>Current sub-processors</h2>
+        <div class="legal-table-wrap">
+          <table class="legal-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Purpose</th>
+                <th>Data categories</th>
+                <th>Region / transfer basis</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Amazon Web Services (AWS)</td>
+                <td>Hosting, storage (S3), GPU processing, transactional email (SES)</td>
+                <td>Account data, match video, derived analytics, biometric (pose) data, service email</td>
+                <td>US (us-east-1) &amp; EU (eu-north-1) · DPA + SCCs (DPF where certified); UK Addendum</td>
+              </tr>
+              <tr>
+                <td>SportAI</td>
+                <td>Match video analysis</td>
+                <td>Uploaded match video and derived match statistics</td>
+                <td>Processed under DPA + SCCs where applicable</td>
+              </tr>
+              <tr>
+                <td>Clerk</td>
+                <td>Authentication (login, account, session)</td>
+                <td>Name, email, login / session credentials</td>
+                <td>US · DPA + SCCs (DPF where certified); UK Addendum</td>
+              </tr>
+              <tr>
+                <td>Anthropic</td>
+                <td>AI coach &amp; support assistant</td>
+                <td>Your match statistics and the queries you send to the assistant</td>
+                <td>US · DPA + SCCs (DPF where certified); UK Addendum</td>
+              </tr>
+              <tr>
+                <td>Klaviyo</td>
+                <td>Marketing email (lifecycle / opt-in only)</td>
+                <td>Name, email, marketing engagement — <strong>never minors' data or biometrics</strong></td>
+                <td>US · DPA + SCCs (DPF where certified); UK Addendum</td>
+              </tr>
+              <tr>
+                <td>PayPal</td>
+                <td>Payments</td>
+                <td>Payment / transaction data (we store no card data)</td>
+                <td>US · <strong>Independent controller</strong> for payment data; SCCs where applicable</td>
+              </tr>
+              <tr>
+                <td>Amplitude</td>
+                <td>Product analytics</td>
+                <td>Behavioural usage events (logins, uploads, report views)</td>
+                <td>US · DPA + SCCs (DPF where certified); UK Addendum</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">
+          <strong>HubSpot has been removed</strong> and is no longer used — we are our own CRM. It is
+          dormant and receives no data.
+        </p>
+      </section>
+
+      <section id="changes">
+        <h2>Changes to this list</h2>
+        <p>
+          We may add or change sub-processors as the service evolves. When we do, we will update this page
+          and the "last updated" date above. Where required, we will give advance notice of material
+          changes. Questions about our sub-processors or a specific request: <strong><a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a></strong>.
+        </p>
+      </section>
+
+    </article>
+  </div>
+</div>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-brand-name">TEN-FIFTY5</div>
+      <p>ATP-level match analysis, biomechanical technique breakdown and AI coaching — for serious competitive players and their coaches.</p>
+    </div>
+    <div class="footer-col">
+      <h5>Product</h5>
+      <ul>
+        <li><a href="https://www.ten-fifty5.com/" target="_top">Home</a></li>
+        <li><a href="https://www.ten-fifty5.com/overview" target="_top">How It Works</a></li>
+        <li><a href="https://www.ten-fifty5.com/pricing" target="_top">Pricing</a></li>
+        <li><a href="https://www.ten-fifty5.com/coaching" target="_top">For Coaches</a></li>
+        <li><a href="https://www.ten-fifty5.com/academies" target="_top">For Academies</a></li>
+        <li><a href="https://www.ten-fifty5.com/blog" target="_top">Blog</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h5>Get in touch</h5>
+      <ul>
+        <li><a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a></li>
+        <li><a href="https://www.ten-fifty5.com/contact-us" target="_top">Contact</a></li>
+        <li><a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a></li>
+        <li><a href="https://www.ten-fifty5.com/subprocessors" target="_top">Sub-processors</a></li>
+        <li><a href="#" onclick="if(window.TFCookie){TFCookie.open();}return false;">Cookie settings</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>&copy; 2026 Ten-Fifty5. All rights reserved.</span>
+    <span>Built for the serious player.</span>
+  </div>
+</footer>
+
+<!-- ── Cookie consent (prior opt-in, granular) — self-contained, identical on every marketing page ── -->
+<style>
+#tfck-bar{position:fixed;left:0;right:0;bottom:0;z-index:99998;background:#0a1814;color:rgba(255,255,255,.82);border-top:1px solid rgba(255,255,255,.12);box-shadow:0 -8px 30px rgba(0,0,0,.28);font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+.tfck-inner{max-width:1200px;margin:0 auto;padding:16px 28px;display:flex;flex-wrap:wrap;align-items:center;gap:14px 24px;}
+.tfck-copy{flex:1 1 320px;min-width:260px;font-size:.84rem;line-height:1.55;}
+.tfck-copy strong{color:#fff;font-weight:700;}
+.tfck-copy a{color:#86E8A4;text-decoration:underline;}
+.tfck-cats{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;}
+.tfck-cat{display:inline-flex;align-items:center;gap:7px;font-size:.82rem;color:rgba(255,255,255,.85);cursor:pointer;white-space:nowrap;}
+.tfck-cat input{width:16px;height:16px;accent-color:#22783c;cursor:pointer;}
+.tfck-cat.tfck-locked{color:rgba(255,255,255,.55);cursor:default;}
+.tfck-cat.tfck-locked input{cursor:not-allowed;}
+.tfck-cat.tfck-locked span{font-size:.72rem;color:rgba(255,255,255,.4);}
+.tfck-btns{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto;}
+.tfck-btn{padding:9px 16px;font-size:.82rem;font-weight:600;border-radius:4px;cursor:pointer;border:1px solid transparent;white-space:nowrap;transition:background .2s,border-color .2s,color .2s;}
+.tfck-btn.tfck-primary{background:#1a5c2e;color:#fff;}
+.tfck-btn.tfck-primary:hover{background:#22783c;}
+.tfck-btn.tfck-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.35);}
+.tfck-btn.tfck-ghost:hover{background:rgba(255,255,255,.08);border-color:#fff;}
+.tfck-btn:focus-visible{outline:2px solid #86E8A4;outline-offset:2px;}
+@media(max-width:640px){.tfck-btns{margin-left:0;width:100%;}.tfck-btn{flex:1 1 auto;}}
+</style>
+<script>
+(function () {
+  "use strict";
+  var KEY = "tf_cookie_consent";
+  function read() {
+    try { var r = localStorage.getItem(KEY); return r ? JSON.parse(r) : null; }
+    catch (e) { return null; }
+  }
+  function write(analytics, marketing) {
+    var c = { analytics: !!analytics, marketing: !!marketing, ts: Date.now(), v: 1 };
+    try { localStorage.setItem(KEY, JSON.stringify(c)); } catch (e) {}
+    try { window.dispatchEvent(new Event("tf-consent-changed")); } catch (e) {}
+    return c;
+  }
+  var bar = null;
+  function hide() { if (bar) bar.style.display = "none"; }
+  function openPanel() {
+    build();
+    var c = read() || { analytics: false, marketing: false };
+    var a = document.getElementById("tfck-analytics");
+    var m = document.getElementById("tfck-marketing");
+    if (a) a.checked = !!c.analytics;
+    if (m) m.checked = !!c.marketing;
+    if (bar) bar.style.display = "block";
+  }
+  function acceptAll() { write(true, true); hide(); }
+  function rejectAll() { write(false, false); hide(); }
+  function saveChoices() {
+    var a = document.getElementById("tfck-analytics");
+    var m = document.getElementById("tfck-marketing");
+    write(a && a.checked, m && m.checked); hide();
+  }
+  function build() {
+    if (bar) return;
+    bar = document.createElement("div");
+    bar.id = "tfck-bar";
+    bar.setAttribute("role", "dialog");
+    bar.setAttribute("aria-label", "Cookie consent");
+    bar.innerHTML =
+      '<div class="tfck-inner">' +
+        '<div class="tfck-copy">' +
+          '<strong>We respect your privacy.</strong> We use necessary cookies to run the site. ' +
+          'With your permission we also use analytics and marketing cookies to improve Ten-Fifty5. ' +
+          'Nothing non-essential runs until you choose. ' +
+          '<a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a>.' +
+        '</div>' +
+        '<div class="tfck-cats">' +
+          '<label class="tfck-cat tfck-locked"><input type="checkbox" checked disabled> Necessary <span>(always on)</span></label>' +
+          '<label class="tfck-cat"><input type="checkbox" id="tfck-analytics"> Analytics</label>' +
+          '<label class="tfck-cat"><input type="checkbox" id="tfck-marketing"> Marketing</label>' +
+        '</div>' +
+        '<div class="tfck-btns">' +
+          '<button type="button" class="tfck-btn tfck-ghost" id="tfck-reject">Reject all</button>' +
+          '<button type="button" class="tfck-btn tfck-ghost" id="tfck-save">Save choices</button>' +
+          '<button type="button" class="tfck-btn tfck-primary" id="tfck-accept">Accept all</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(bar);
+    document.getElementById("tfck-accept").addEventListener("click", acceptAll);
+    document.getElementById("tfck-reject").addEventListener("click", rejectAll);
+    document.getElementById("tfck-save").addEventListener("click", saveChoices);
+  }
+  window.TFCookie = { open: openPanel, get: read };
+  function init() { if (!read()) build(); }   // only auto-show when no prior choice
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+</script>
+<!-- ── /Cookie consent ── -->
+</body>
+</html>

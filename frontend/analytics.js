@@ -12,6 +12,24 @@
   var URL_ = API + "/api/track/page";
   var last = null;
 
+  // ── Prior opt-in gate (cookie banner, v2-5) ───────────────────────────────
+  // No page-view leaves the browser until the visitor has GRANTED the Analytics
+  // category. The cookie banner stores the choice in localStorage under
+  // "tf_cookie_consent" = {analytics:bool, marketing:bool, ts, v}. On consent
+  // pages the banner dispatches a "tf-consent-changed" event so a deferred first
+  // view can fire. Member SPAs are first-party/contractual — if they ever run
+  // without the banner present, the URL carries ?email= (authed context), and we
+  // still respect the stored choice if one exists; absent any choice on a public
+  // page, we stay silent (opt-in default = off).
+  function analyticsGranted() {
+    try {
+      var raw = localStorage.getItem("tf_cookie_consent");
+      if (!raw) return false;            // no prior choice → do not track
+      var c = JSON.parse(raw);
+      return !!(c && c.analytics === true);
+    } catch (e) { return false; }
+  }
+
   // First-party anonymous id: read-or-create + persist in localStorage. Survives across
   // page-views/sessions so the server can stitch anonymous traffic to one visitor.
   function anonId() {
@@ -46,6 +64,7 @@
   var UTM = utm();
 
   function send(path) {
+    if (!analyticsGranted()) return;   // prior opt-in: no consent → no beacon
     if (path === last) return;     // de-dupe rapid duplicate fires
     last = path;
     var body = {
@@ -85,4 +104,11 @@
   });
   window.addEventListener("popstate", fire);
   window.addEventListener("hashchange", fire);
+
+  // When the cookie banner grants Analytics later (visitor clicks Accept/Save),
+  // fire the page-view that was suppressed on load. `last` is reset so the
+  // current path isn't treated as a duplicate of a never-sent view.
+  window.addEventListener("tf-consent-changed", function () {
+    if (analyticsGranted()) { last = null; fire(); }
+  });
 })();

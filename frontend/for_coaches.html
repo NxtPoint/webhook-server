@@ -786,6 +786,8 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
         <li><a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a></li>
         <li><a href="https://www.ten-fifty5.com/contact-us" target="_top">Contact</a></li>
         <li><a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a></li>
+        <li><a href="https://www.ten-fifty5.com/subprocessors" target="_top">Sub-processors</a></li>
+        <li><a href="#" onclick="if(window.TFCookie){TFCookie.open();}return false;">Cookie settings</a></li>
         <li style="color:rgba(255,255,255,0.55);font-size:0.85rem;">We usually reply within a day.</li>
       </ul>
     </div>
@@ -837,5 +839,96 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
   setInterval(send, 800);
 })();
 </script>
+<!-- ── Cookie consent (prior opt-in, granular) — self-contained, identical on every marketing page ── -->
+<style>
+#tfck-bar{position:fixed;left:0;right:0;bottom:0;z-index:99998;background:#0a1814;color:rgba(255,255,255,.82);border-top:1px solid rgba(255,255,255,.12);box-shadow:0 -8px 30px rgba(0,0,0,.28);font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+.tfck-inner{max-width:1200px;margin:0 auto;padding:16px 28px;display:flex;flex-wrap:wrap;align-items:center;gap:14px 24px;}
+.tfck-copy{flex:1 1 320px;min-width:260px;font-size:.84rem;line-height:1.55;}
+.tfck-copy strong{color:#fff;font-weight:700;}
+.tfck-copy a{color:#86E8A4;text-decoration:underline;}
+.tfck-cats{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;}
+.tfck-cat{display:inline-flex;align-items:center;gap:7px;font-size:.82rem;color:rgba(255,255,255,.85);cursor:pointer;white-space:nowrap;}
+.tfck-cat input{width:16px;height:16px;accent-color:#22783c;cursor:pointer;}
+.tfck-cat.tfck-locked{color:rgba(255,255,255,.55);cursor:default;}
+.tfck-cat.tfck-locked input{cursor:not-allowed;}
+.tfck-cat.tfck-locked span{font-size:.72rem;color:rgba(255,255,255,.4);}
+.tfck-btns{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto;}
+.tfck-btn{padding:9px 16px;font-size:.82rem;font-weight:600;border-radius:4px;cursor:pointer;border:1px solid transparent;white-space:nowrap;transition:background .2s,border-color .2s,color .2s;}
+.tfck-btn.tfck-primary{background:#1a5c2e;color:#fff;}
+.tfck-btn.tfck-primary:hover{background:#22783c;}
+.tfck-btn.tfck-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.35);}
+.tfck-btn.tfck-ghost:hover{background:rgba(255,255,255,.08);border-color:#fff;}
+.tfck-btn:focus-visible{outline:2px solid #86E8A4;outline-offset:2px;}
+@media(max-width:640px){.tfck-btns{margin-left:0;width:100%;}.tfck-btn{flex:1 1 auto;}}
+</style>
+<script>
+(function () {
+  "use strict";
+  var KEY = "tf_cookie_consent";
+  function read() {
+    try { var r = localStorage.getItem(KEY); return r ? JSON.parse(r) : null; }
+    catch (e) { return null; }
+  }
+  function write(analytics, marketing) {
+    var c = { analytics: !!analytics, marketing: !!marketing, ts: Date.now(), v: 1 };
+    try { localStorage.setItem(KEY, JSON.stringify(c)); } catch (e) {}
+    try { window.dispatchEvent(new Event("tf-consent-changed")); } catch (e) {}
+    return c;
+  }
+  var bar = null;
+  function hide() { if (bar) bar.style.display = "none"; }
+  function openPanel() {
+    build();
+    var c = read() || { analytics: false, marketing: false };
+    var a = document.getElementById("tfck-analytics");
+    var m = document.getElementById("tfck-marketing");
+    if (a) a.checked = !!c.analytics;
+    if (m) m.checked = !!c.marketing;
+    if (bar) bar.style.display = "block";
+  }
+  function acceptAll() { write(true, true); hide(); }
+  function rejectAll() { write(false, false); hide(); }
+  function saveChoices() {
+    var a = document.getElementById("tfck-analytics");
+    var m = document.getElementById("tfck-marketing");
+    write(a && a.checked, m && m.checked); hide();
+  }
+  function build() {
+    if (bar) return;
+    bar = document.createElement("div");
+    bar.id = "tfck-bar";
+    bar.setAttribute("role", "dialog");
+    bar.setAttribute("aria-label", "Cookie consent");
+    bar.innerHTML =
+      '<div class="tfck-inner">' +
+        '<div class="tfck-copy">' +
+          '<strong>We respect your privacy.</strong> We use necessary cookies to run the site. ' +
+          'With your permission we also use analytics and marketing cookies to improve Ten-Fifty5. ' +
+          'Nothing non-essential runs until you choose. ' +
+          '<a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a>.' +
+        '</div>' +
+        '<div class="tfck-cats">' +
+          '<label class="tfck-cat tfck-locked"><input type="checkbox" checked disabled> Necessary <span>(always on)</span></label>' +
+          '<label class="tfck-cat"><input type="checkbox" id="tfck-analytics"> Analytics</label>' +
+          '<label class="tfck-cat"><input type="checkbox" id="tfck-marketing"> Marketing</label>' +
+        '</div>' +
+        '<div class="tfck-btns">' +
+          '<button type="button" class="tfck-btn tfck-ghost" id="tfck-reject">Reject all</button>' +
+          '<button type="button" class="tfck-btn tfck-ghost" id="tfck-save">Save choices</button>' +
+          '<button type="button" class="tfck-btn tfck-primary" id="tfck-accept">Accept all</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(bar);
+    document.getElementById("tfck-accept").addEventListener("click", acceptAll);
+    document.getElementById("tfck-reject").addEventListener("click", rejectAll);
+    document.getElementById("tfck-save").addEventListener("click", saveChoices);
+  }
+  window.TFCookie = { open: openPanel, get: read };
+  function init() { if (!read()) build(); }   // only auto-show when no prior choice
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+</script>
+<!-- ── /Cookie consent ── -->
 </body>
 </html>
