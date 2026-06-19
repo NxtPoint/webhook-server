@@ -297,6 +297,66 @@ def customer_update_profile():
     return _admin_action(_do)
 
 
+# ── DSAR / erasure (GDPR data-subject requests) — admin-gated ────────────────
+@cockpit_bp.route(f"{_PREFIX}/dsar", methods=["GET", "OPTIONS"])
+def dsar_list():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    rows = _rows(
+        "SELECT d.id, d.request_type, d.status, d.requested_at, d.completed_at, d.notes, "
+        "       pe.full_name AS subject, ca.email AS subject_email "
+        "FROM core.data_subject_request d "
+        "LEFT JOIN core.person pe ON pe.id = d.subject_person_id "
+        "LEFT JOIN core.account ca ON ca.id = pe.account_id "
+        "ORDER BY (d.status = 'received') DESC, d.requested_at DESC LIMIT 200")
+    return jsonify({"ok": True, "requests": rows})
+
+
+@cockpit_bp.route(f"{_PREFIX}/dsar/<int:dsar_id>/action", methods=["POST", "OPTIONS"])
+def dsar_action(dsar_id):
+    """Action a DSAR. body {action}: in_progress|completed|rejected, OR erase (runs the GDPR erasure
+    for the subject's account — defaults to dry_run:true; pass dry_run:false to execute)."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    action = (body.get("action") or "").strip().lower()
+    d = _one(
+        "SELECT d.id, d.request_type, ca.email AS subject_email "
+        "FROM core.data_subject_request d "
+        "LEFT JOIN core.person pe ON pe.id = d.subject_person_id "
+        "LEFT JOIN core.account ca ON ca.id = pe.account_id WHERE d.id = :id", {"id": dsar_id})
+    if not d:
+        return jsonify({"ok": False, "error": "DSAR not found"}), 404
+
+    if action == "erase":
+        email = (d.get("subject_email") or "").strip().lower()
+        acct = _one("SELECT id FROM billing.account WHERE lower(email) = lower(:e)", {"e": email}) if email else None
+        if not acct:
+            return jsonify({"ok": False, "error": "no billing account for subject email"}), 404
+        dry = bool(body.get("dry_run", True))  # SAFE DEFAULT — erase is irreversible
+        from cleanup.retention_sweep import erase_account
+        result = erase_account(acct["id"], dry_run=dry)
+        if not dry and result.get("ok"):
+            with get_engine().begin() as conn:
+                conn.execute(text("UPDATE core.data_subject_request "
+                                  "SET status = 'completed', completed_at = now() WHERE id = :id"),
+                             {"id": dsar_id})
+        return jsonify({"ok": True, "action": "erase", "erase": result})
+
+    if action not in ("in_progress", "completed", "rejected"):
+        return jsonify({"ok": False, "error": "unknown action"}), 400
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "UPDATE core.data_subject_request SET status = :s, "
+            "completed_at = CASE WHEN :s = 'completed' THEN now() ELSE completed_at END "
+            "WHERE id = :id"), {"s": action, "id": dsar_id})
+    return jsonify({"ok": True, "status": action})
+
+
 @cockpit_bp.route(f"{_PREFIX}/at-risk", methods=["GET", "OPTIONS"])
 def at_risk():
     if request.method == "OPTIONS":

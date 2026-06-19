@@ -151,6 +151,45 @@ def retention_sweep(dry_run: bool = True, limit: int = 500) -> dict:
             "expired_original_videos": originals}
 
 
+def erase_account(account_id: int, dry_run: bool = True) -> dict:
+    """GDPR erasure for ONE account (DSAR or admin action): delete S3 videos, soft-delete the
+    account's match submissions (orphan-sweep cascades child rows), and anonymise account/member
+    PII (billing row kept anonymised; financial retained separately). dry_run reports, changes
+    nothing. Distinct from the time-based retention sweep — this is on-demand for a subject request."""
+    default_bucket = os.getenv("S3_BUCKET") or ""
+    with engine.begin() as conn:
+        acct = conn.execute(sql_text(
+            "SELECT id, email FROM billing.account WHERE id = :id"), {"id": account_id}).mappings().first()
+        if not acct:
+            return {"ok": False, "error": "account not found", "account_id": account_id}
+        email = acct["email"]
+        subs = conn.execute(sql_text(
+            "SELECT s3_bucket, s3_key, trim_output_s3_key FROM bronze.submission_context "
+            "WHERE lower(email) = lower(:e) AND deleted_at IS NULL"), {"e": email}).mappings().all()
+        vids = []
+        for s in subs:
+            b = s["s3_bucket"] or default_bucket
+            if s["s3_key"]:
+                vids.append((b, s["s3_key"]))
+            if s["trim_output_s3_key"]:
+                vids.append((b, s["trim_output_s3_key"]))
+        videos = _s3_delete(vids, dry_run)
+        if not dry_run:
+            conn.execute(sql_text(
+                "UPDATE bronze.submission_context SET deleted_at = now() "
+                "WHERE lower(email) = lower(:e) AND deleted_at IS NULL"), {"e": email})
+            conn.execute(sql_text(
+                "UPDATE billing.member SET full_name = 'Deleted', surname = NULL, phone = NULL, "
+                "email = NULL, dob = NULL, notes = NULL, profile_photo_url = NULL "
+                "WHERE account_id = :aid"), {"aid": account_id})
+            conn.execute(sql_text(
+                "UPDATE billing.account SET email = :anon, primary_full_name = 'Deleted' "
+                "WHERE id = :aid"),
+                {"anon": f"deleted-{account_id}@anonymised.invalid", "aid": account_id})
+    return {"ok": True, "dry_run": dry_run, "account_id": account_id, "email": email,
+            "submissions": len(subs), "videos": videos, "anonymised": (not dry_run)}
+
+
 @bp.post("/ops/retention-sweep")
 def retention_sweep_endpoint():
     if not _guard_ops():
