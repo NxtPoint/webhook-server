@@ -370,6 +370,9 @@ def billing_init(engine=None):
         # comp flag (sponsored accounts) — additive on existing prod tables.
         conn.execute(text(
             "ALTER TABLE billing.account ADD COLUMN IF NOT EXISTS comp boolean NOT NULL DEFAULT false"))
+        # deactivated_at — closure timestamp; the retention clock for 90-day-after-closure rules.
+        conn.execute(text(
+            "ALTER TABLE billing.account ADD COLUMN IF NOT EXISTS deactivated_at timestamptz"))
         for stmt in _BILLING_RAW_DDL:
             conn.execute(text(stmt))
         exists = conn.execute(text(

@@ -206,6 +206,13 @@ try:
 except Exception:
     app.logger.exception("cleanup.orphan_sweep_bp register failed on boot")
 
+# ---------- Retention sweep (POST /ops/retention-sweep) — DRY-RUN by default ----------
+try:
+    from cleanup import retention_sweep_bp
+    app.register_blueprint(retention_sweep_bp)
+except Exception:
+    app.logger.exception("cleanup.retention_sweep_bp register failed on boot")
+
 # ---------- Read-only diagnostic SQL (POST /ops/diag/sql) ----------
 # Tier-2 autonomy infrastructure — see diag_sql/sql_endpoint.py and
 # docs/north_star.md §Autonomy infrastructure. OPS_KEY-gated, header-only,

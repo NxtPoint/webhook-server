@@ -594,10 +594,19 @@ def record_payment(
 
 def set_account_active(*, account_id: int, active: bool) -> bool:
     """Terminate (active=False) or reactivate (True) an account. Preserves ALL billing
-    history (grants/consumption stay) — termination is a flag, never a delete."""
+    history (grants/consumption stay) — termination is a flag, never a delete. Stamps
+    deactivated_at on termination (the retention clock for the 90-day-after-closure rules);
+    clears it on reactivation."""
     with engine.begin() as conn:
-        conn.execute(text("UPDATE billing.account SET active = :a WHERE id = :id"),
-                     {"a": bool(active), "id": account_id})
+        if active:
+            conn.execute(text(
+                "UPDATE billing.account SET active = true, deactivated_at = NULL WHERE id = :id"),
+                {"id": account_id})
+        else:
+            conn.execute(text(
+                "UPDATE billing.account SET active = false, "
+                "deactivated_at = COALESCE(deactivated_at, now()) WHERE id = :id"),
+                {"id": account_id})
     return True
 
 
