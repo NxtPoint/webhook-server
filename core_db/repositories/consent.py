@@ -76,13 +76,14 @@ def open_dsar(session, *, request_type, subject_person_id=None, requested_by_use
     return req
 
 
-# Current consent policy version stamped on every consent record. INTERIM-FINALISED 2026-06-18
-# (flow_build_spec.md §Privacy decisions); bump when the lawyer signs off the final policy.
-CURRENT_POLICY_VERSION = "1.0-interim-2026-06-18"
+# Current consent policy version stamped on every consent record. FINAL (2026-06-18) — the scope-v2
+# privacy package is adopted; remaining real-world admin (IO registration, Art.27 reps, entity
+# details) is operational, not a blocker on the data policy. Bump the date on any future revision.
+CURRENT_POLICY_VERSION = "1.0-2026-06-18"
 
-# Interim retention policy — (data_class, applies_after, retention_days, note). Loaded into
-# core.retention_rule via load_interim_retention_rules() (idempotent). Source: the interim privacy
-# decisions in flow_build_spec.md / docs/business/privacy-and-consent.md.
+# Retention policy — (data_class, applies_after, retention_days, note). Loaded into
+# core.retention_rule via load_interim_retention_rules() (idempotent). Source: the scope-v2 privacy
+# decisions in docs/business/privacy-and-consent.md.
 INTERIM_RETENTION_RULES = [
     ("match_video",    "upload",             0,    "original upload deleted post-processing"),
     ("match_video",    "account_closure",    90,   "trimmed review clip"),
