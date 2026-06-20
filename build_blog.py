@@ -33,7 +33,6 @@ BLOG_DIR = os.path.join(BASE_DIR, "frontend", "blog")
 POSTS_DIR = os.path.join(BLOG_DIR, "_posts")
 
 SITE = "https://www.ten-fifty5.com"
-APP = "https://info5945780.wixstudio.com/online-tennis-analyt"
 OG_IMAGE = f"{SITE}/og/og_homepage.png"
 
 # ---- Markdown → HTML (minimal) ------------------------------------------------
@@ -231,7 +230,7 @@ NAV = f"""<nav class="topnav">
       <a href="{SITE}/contact-us">Contact</a>
     </div>
     <div class="topnav-right">
-      <a href="{APP}/portal" class="topnav-cta">Start Free</a>
+      <a href="{SITE}/login" class="topnav-cta">Start Free</a>
       <button class="topnav-toggle" aria-label="Toggle menu" onclick="document.querySelector('.topnav-links').classList.toggle('open')">&#9776;</button>
     </div>
   </div>
@@ -370,7 +369,7 @@ COOKIE_BANNER = r"""<!-- Cookie consent (prior opt-in, granular) -->
 CTA_BAND = f"""<div class="cta-band">
   <h3>See your own game in data</h3>
   <p>Your first match is free — no credit card. Full dashboard, heatmaps, and AI coaching in a couple of hours.</p>
-  <a class="btn" href="{APP}/portal" target="_top">Analyse my first match free</a>
+  <a class="btn" href="{SITE}/login" target="_top">Analyse my first match free</a>
 </div>"""
 
 
