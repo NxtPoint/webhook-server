@@ -454,6 +454,28 @@ def sync_crm():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@cockpit_bp.route(f"{_PREFIX}/web-traffic", methods=["GET", "OPTIONS"])
+def web_traffic():
+    """Website-traffic overview (visitors, unique vs returning, devices, countries, top pages,
+    sources, time-on-site) from the cookieless page-view beacon. Aggregation lives in the shared,
+    replicable analytics.traffic module (same engine as the nextpoint repo)."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    try:
+        days = int(request.args.get("days") or 30)
+    except (TypeError, ValueError):
+        days = 30
+    try:
+        from analytics import overview
+        with get_engine().connect() as c:
+            data = overview(c, days=days)
+        return jsonify({"ok": True, **data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 def register(app):
     """Register the cockpit blueprint. Always on (de-gated 2026-06-17, post go-live —
     every route is admin-gated via _admin_ok)."""

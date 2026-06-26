@@ -232,6 +232,7 @@
 <nav class="tabs" id="tabnav" role="tablist" aria-label="Cockpit sections">
   <div class="tab active" role="tab" tabindex="0" data-tab="health"      aria-selected="true">Business health</div>
   <div class="tab"        role="tab" tabindex="0" data-tab="performance" aria-selected="false">Performance</div>
+  <div class="tab"        role="tab" tabindex="0" data-tab="webtraffic"  aria-selected="false">Website traffic</div>
   <div class="tab"        role="tab" tabindex="0" data-tab="customers"   aria-selected="false">Customers</div>
   <div class="tab"        role="tab" tabindex="0" data-tab="risk"        aria-selected="false">At-risk &amp; opportunity</div>
   <div class="tab"        role="tab" tabindex="0" data-tab="ops"         aria-selected="false">Processing ops</div>
@@ -262,6 +263,28 @@
       <div class="chartcard"><h3>AI-coach queries / day</h3><div class="sub">coach queries &amp; distinct users</div><div class="chart" id="chCoach"></div></div>
     </div>
     <div class="sec"><h2>Usage by event type <span class="count" id="usageNote"></span></h2><div class="wrap"><table id="usageTable"></table></div></div>
+  </section>
+
+  <!-- ================= Website traffic ================= -->
+  <section id="tab-webtraffic" class="tabpane hidden" role="tabpanel" aria-label="Website traffic">
+    <div class="controls">
+      <label class="muted" for="wtDays">Window</label>
+      <select id="wtDays" aria-label="Traffic window">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
+      <span class="muted">Cookieless, first-party — counts every visitor (no consent gate).</span>
+    </div>
+    <div class="grid" id="wtCards"></div>
+    <div class="chartgrid">
+      <div class="chartcard"><h3>Visitors &amp; page views</h3><div class="sub">unique visitors vs page views / day</div><div class="chart" id="chWtDaily"></div></div>
+      <div class="chartcard"><h3>Devices</h3><div class="sub">page views by device type</div><div class="chart" id="chWtDevice"></div></div>
+      <div class="chartcard"><h3>Top countries</h3><div class="sub">page views by country (CDN edge)</div><div class="chart" id="chWtCountry"></div></div>
+      <div class="chartcard"><h3>Browsers</h3><div class="sub">page views by browser</div><div class="chart" id="chWtBrowser"></div></div>
+    </div>
+    <div class="sec"><h2>Top pages</h2><div class="wrap"><table id="wtPages"></table></div></div>
+    <div class="sec"><h2>Traffic sources</h2><div class="wrap"><table id="wtSources"></table></div></div>
   </section>
 
   <!-- ================= Customers ================= -->
@@ -479,6 +502,7 @@ async function load(tab, force){
     if(tab==='ops')          await loadOps();
     if(tab==='feedback')     await loadFeedback();
     if(tab==='performance')  await loadPerformance();
+    if(tab==='webtraffic')   await loadWebTraffic();
     if(tab==='kb')           await loadKB();
     loaded[tab]=true;
   }catch(e){ showErr(e.message + '  — check that COCKPIT_ENABLED=1 on the API and your email is an admin.'); }
@@ -986,6 +1010,56 @@ function loadPerformance(){
   });
 }
 window.addEventListener('resize', ()=>{ Object.values(_chartInst).forEach(c=>{ try{ c.resize(); }catch(e){} }); });
+
+/* ================================================================ WEBSITE TRAFFIC
+   Cookieless first-party page-view analytics from core.usage_event (shared engine, replicable
+   across sites). Aggregation is server-side in analytics.traffic; this is pure rendering. */
+function fmtDuration(sec){
+  sec = Math.round(Number(sec)||0);
+  if(!sec) return '—';
+  if(sec < 60) return sec+'s';
+  const m = Math.floor(sec/60), s = sec%60;
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+function loadWebTraffic(){
+  const days = +(document.getElementById('wtDays').value || 30);
+  skel(document.getElementById('wtCards'),'cards');
+  skel(document.getElementById('wtPages'));
+  skel(document.getElementById('wtSources'));
+  return api(`/web-traffic?days=${days}`).then(d=>{
+    const k = d.kpis || {};
+    const cards = [
+      ['Visitors', num(k.unique_visitors), `${num(k.visits)} page views`, 'accent-green'],
+      ['New visitors', num(k.new_visitors), 'first seen in window', 'accent-blue'],
+      ['Returning', num(k.returning_visitors), 'seen before window', ''],
+      ['Page views', num(k.visits), `last ${days} days`, ''],
+      ['Avg time on page', fmtDuration(k.avg_seconds), `median ${fmtDuration(k.median_seconds)}`, 'accent-amber'],
+    ];
+    document.getElementById('wtCards').innerHTML = cards.map(c=>
+      `<div class="card ${c[3]||''}"><div class="k">${esc(c[0])}</div><div class="v">${c[1]}</div><div class="s">${esc(c[2]||'')}</div></div>`).join('');
+
+    const vd = d.visits_daily||[];
+    cLine('chWtDaily', vd.map(r=>when(r.day)), [
+      {name:'Unique visitors', data:vd.map(r=>r.unique_visitors||0), color:CHART_THEME.green},
+      {name:'Page views', data:vd.map(r=>r.visits||0), color:CHART_THEME.blue},
+    ]);
+
+    const dev = d.by_device||[];
+    cBar('chWtDevice', dev.map(r=>r.device), [{name:'Page views', data:dev.map(r=>r.visits||0), color:CHART_THEME.blue}], {yName:'views'});
+
+    const ctry = (d.by_country||[]).slice(0,10);
+    cBar('chWtCountry', ctry.map(r=>r.country), [{name:'Page views', data:ctry.map(r=>r.visits||0), color:CHART_THEME.green}], {yName:'views'});
+
+    const br = d.by_browser||[];
+    cBar('chWtBrowser', br.map(r=>r.browser), [{name:'Page views', data:br.map(r=>r.visits||0), color:CHART_THEME.amber}], {yName:'views'});
+
+    tbl(document.getElementById('wtPages'), ['Path',{label:'Page views',num:true}], d.top_pages||[],
+        r=>`<tr><td>${esc(r.path)}</td><td class="num">${num(r.visits)}</td></tr>`, 'No page views yet');
+    tbl(document.getElementById('wtSources'), ['Source',{label:'Page views',num:true}], d.traffic_sources||[],
+        r=>`<tr><td>${esc(r.source)}</td><td class="num">${num(r.visits)}</td></tr>`, 'No traffic yet');
+  });
+}
+document.getElementById('wtDays').addEventListener('change', ()=>loadWebTraffic());
 
 /* ================================================================ FEEDBACK & KB
    Self-learning workflow. Endpoints live at /api/support/admin (NOT the cockpit C base). */

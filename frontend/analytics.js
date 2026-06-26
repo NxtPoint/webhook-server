@@ -1,80 +1,54 @@
-/* Ten-Fifty5 page-view analytics (navigation + drop-off tracking).
- * Auto-injected into every page served by the Locker Room service. Sends a page_view on load and on
- * SPA/route changes, via navigator.sendBeacon (no CORS preflight, fire-and-forget). Attributes to the
- * account when an email is present in the URL (member pages); anonymous on public marketing pages.
- * No-op server-side unless TRACKING_ENABLED=1. No PII beyond the (already-present) email param.
+/* Ten-Fifty5 first-party, cookieless page-view analytics (powers the cockpit's Website Traffic).
+ *
+ * SHARED ENGINE (replicable across sites — kept in lock-step with the nextpoint repo; only the API
+ * default + anon_id storage key differ per site). Auto-injected into every page served by the Locker
+ * Room + main API services. Sends a page_view on load and on SPA/route changes, and a `leave` event
+ * on unload for time-on-site, via navigator.sendBeacon (text/plain → no CORS preflight, fire-and-
+ * forget). NO cookies, NO third parties: a first-party `anon_id` UUID in localStorage counts UNIQUE
+ * visitors; referrer + UTM give acquisition source; the server adds country (CDN edge header) +
+ * device/browser/OS (User-Agent). NO consent gate — it stores no personal data, so it is exempt from
+ * prior consent (see the privacy policy). No email/PII ever leaves the browser.
  */
 (function () {
   "use strict";
-  var p = new URLSearchParams(location.search);
-  var API = p.get("api") || "https://api.nextpointtennis.com";
-  var EMAIL = (p.get("email") || "").trim() || null;
+  var qp = new URLSearchParams(location.search);
+  var API = (window.__API_BASE || qp.get("api") || "https://api.nextpointtennis.com").replace(/\/+$/, "");
   var URL_ = API + "/api/track/page";
-  var last = null;
+  var ANON_KEY = "tf_anon";
 
-  // ── Prior opt-in gate (cookie banner, v2-5) ───────────────────────────────
-  // No page-view leaves the browser until the visitor has GRANTED the Analytics
-  // category. The cookie banner stores the choice in localStorage under
-  // "tf_cookie_consent" = {analytics:bool, marketing:bool, ts, v}. On consent
-  // pages the banner dispatches a "tf-consent-changed" event so a deferred first
-  // view can fire. Member SPAs are first-party/contractual — if they ever run
-  // without the banner present, the URL carries ?email= (authed context), and we
-  // still respect the stored choice if one exists; absent any choice on a public
-  // page, we stay silent (opt-in default = off).
-  function analyticsGranted() {
-    try {
-      var raw = localStorage.getItem("tf_cookie_consent");
-      if (!raw) return false;            // no prior choice → do not track
-      var c = JSON.parse(raw);
-      return !!(c && c.analytics === true);
-    } catch (e) { return false; }
-  }
-
-  // First-party anonymous id: read-or-create + persist in localStorage. Survives across
-  // page-views/sessions so the server can stitch anonymous traffic to one visitor.
   function anonId() {
-    var k = "tf_anon";
     try {
-      var v = localStorage.getItem(k);
+      var v = localStorage.getItem(ANON_KEY);
       if (v) return v;
-    } catch (e) { /* localStorage blocked (private mode) — fall through to ephemeral id */ }
+    } catch (e) { /* localStorage blocked (private mode) — ephemeral id below */ }
     var id;
-    try {
-      id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
-    } catch (e) { id = null; }
+    try { id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : null; } catch (e) { id = null; }
     if (!id) {
       id = "a-" + Date.now().toString(36) + "-" +
            Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
     }
-    try { localStorage.setItem(k, id); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(ANON_KEY, id); } catch (e) { /* ignore */ }
     return id;
   }
   var ANON = anonId();
 
-  // UTM attribution from the current URL querystring (omit entirely if none present).
   function utm() {
     var keys = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"];
     var out = null;
     keys.forEach(function (k) {
-      var val = p.get(k);
+      var val = qp.get(k);
       if (val) { (out = out || {})[k.slice(4)] = val; }   // utm_source -> source
     });
     return out;
   }
   var UTM = utm();
 
-  function send(path) {
-    if (!analyticsGranted()) return;   // prior opt-in: no consent → no beacon
-    if (path === last) return;     // de-dupe rapid duplicate fires
-    last = path;
-    var body = {
-      path: path,
-      email: EMAIL,
-      referrer: document.referrer || "",
-      anon_id: ANON,
-      props: { title: (document.title || "").slice(0, 120) },
-    };
-    if (UTM) body.utm = UTM;
+  function newPvid() {
+    try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+    return "p-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function post(body) {
     var payload = JSON.stringify(body);
     try {
       if (navigator.sendBeacon) {
@@ -88,14 +62,42 @@
     } catch (e) { /* ignore */ }
   }
 
+  var last = null, pvid = null, startedAt = 0, leaveSent = false;
+
+  function sendLeave() {
+    if (leaveSent || !pvid || !startedAt) return;
+    leaveSent = true;
+    var ms = Date.now() - startedAt;
+    if (ms < 1000 || ms > 6 * 60 * 60 * 1000) return;   // drop sub-1s + runaway tabs
+    post({ event: "leave", path: location.pathname.slice(0, 300),
+           pvid: pvid, anon_id: ANON, duration_ms: ms });
+  }
+
+  function send(path) {
+    if (path === last) return;     // de-dupe rapid duplicate fires
+    sendLeave();                   // close the previous pageview (SPA nav)
+    last = path;
+    pvid = newPvid(); startedAt = Date.now(); leaveSent = false;
+    var body = {
+      path: location.pathname.slice(0, 300),
+      referrer: document.referrer || "",
+      anon_id: ANON,
+      pvid: pvid,
+      sw: (window.screen && screen.width) || window.innerWidth || null,
+      lang: navigator.language || null,
+      props: { title: (document.title || "").slice(0, 120) },
+    };
+    try { body.tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
+    if (UTM) body.utm = UTM;
+    post(body);
+  }
+
   function current() { return location.pathname + (location.hash || ""); }
   function fire() { send(current()); }
 
-  // initial view
   if (document.readyState === "complete" || document.readyState === "interactive") fire();
   else document.addEventListener("DOMContentLoaded", fire);
 
-  // SPA navigation: history API + hash + back/forward
   ["pushState", "replaceState"].forEach(function (m) {
     var orig = history[m];
     if (typeof orig === "function") {
@@ -105,10 +107,8 @@
   window.addEventListener("popstate", fire);
   window.addEventListener("hashchange", fire);
 
-  // When the cookie banner grants Analytics later (visitor clicks Accept/Save),
-  // fire the page-view that was suppressed on load. `last` is reset so the
-  // current path isn't treated as a duplicate of a never-sent view.
-  window.addEventListener("tf-consent-changed", function () {
-    if (analyticsGranted()) { last = null; fire(); }
+  window.addEventListener("pagehide", sendLeave);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") sendLeave();
   });
 })();
