@@ -11,7 +11,7 @@
 # check so the email fires at most once per task.
 #
 # Env vars: SES_FROM_EMAIL, AWS_REGION,
-#   LOCKER_ROOM_BASE_URL (default: https://www.tenfifty5.com/locker-room)
+#   LOCKER_ROOM_BASE_URL (default: https://www.ten-fifty5.com/portal)
 #
 # Transition note: runs alongside _notify_wix in upload_app.py.
 # Remove _notify_wix and WIX_NOTIFY_* env vars once Wix is retired.
