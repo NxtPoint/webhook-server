@@ -15,17 +15,32 @@ rewrite wins, top queries/pages) that the agent uses to pick and write the next 
 
 ## One-time setup (credentials via Render env — nothing in git)
 
-1. **Google Cloud Console** → create/pick a project → **APIs & Services → Enable** the
-   **"Google Search Console API."**
-2. **APIs & Services → Credentials → Create credentials → Service account.** Open it →
-   **Keys → Add key → JSON** → download the file.
-3. **Search Console** (search.google.com/search-console) → your property → **Settings → Users and
-   permissions → Add user** → paste the service account's email
-   (`name@project.iam.gserviceaccount.com`) → role **Full** (or Restricted/read).
-4. In the **Render dashboard**, on the service that runs the cron, add two env vars:
-   - `GSC_SERVICE_ACCOUNT_JSON` = the entire contents of the JSON key file (paste as one value).
-   - `GSC_SITE_URL` = your property id — `sc-domain:ten-fifty5.com` for a domain property, or
-     `https://www.ten-fifty5.com/` for a URL-prefix property (must match GSC exactly).
+Two auth modes. **Use OAuth** — it's keyless and works even when your org blocks service-account
+key creation (the `iam.disableServiceAccountKeyCreation` "Secure by Default" policy).
+
+### Mode A — OAuth refresh token (recommended, keyless)
+
+1. **Google Cloud Console → APIs & Services → Enable "Google Search Console API."**
+2. **Credentials → Create credentials → OAuth client ID → type "Desktop app."** (If asked,
+   configure the OAuth consent screen: External, and add your Google account as a **Test user**.)
+   Download that client's JSON — this is an *OAuth client secret*, NOT a service-account key, so the
+   org policy does not block it.
+3. **Search Console** → your property → **Settings → Users and permissions** → make sure the Google
+   account you'll log in with has access (it's your own property, so it does).
+4. Run the one-time browser login locally:
+   ```bash
+   pip install google-auth-oauthlib
+   .venv/Scripts/python -m seo.authorize path/to/client_secret.json
+   ```
+   It prints `GSC_OAUTH_CLIENT_ID`, `GSC_OAUTH_CLIENT_SECRET`, `GSC_OAUTH_REFRESH_TOKEN`.
+5. In the **Render dashboard**, add those three + `GSC_SITE_URL`
+   (`sc-domain:ten-fifty5.com`, or `https://www.ten-fifty5.com/` for a URL-prefix property).
+
+### Mode B — Service account (only if your org permits key creation)
+
+Enable the API, create a Service Account → **Keys → Add key → JSON**, add its email as a user in
+Search Console, then set `GSC_SERVICE_ACCOUNT_JSON` (full JSON) + `GSC_SITE_URL` in Render.
+*Blocked by `iam.disableServiceAccountKeyCreation` — use Mode A if you hit that.*
 
 ## Run
 

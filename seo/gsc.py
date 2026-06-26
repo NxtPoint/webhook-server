@@ -11,20 +11,41 @@ import requests
 SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 _BASE = "https://searchconsole.googleapis.com/webmasters/v3"
 
-# Env vars (set in the Render dashboard, NOT committed):
-#   GSC_SERVICE_ACCOUNT_JSON — the full service-account JSON (one line/blob)
-#   GSC_SITE_URL             — the GSC property, e.g. "sc-domain:ten-fifty5.com"
-#                              or "https://www.ten-fifty5.com/"
+# Env vars (set in the Render dashboard, NOT committed). Two auth modes — OAuth is preferred and
+# is the path to use when an org policy blocks service-account key creation
+# (iam.disableServiceAccountKeyCreation):
+#
+#   OAuth user creds (recommended, keyless):
+#     GSC_OAUTH_CLIENT_ID      — OAuth 2.0 client id
+#     GSC_OAUTH_CLIENT_SECRET  — OAuth 2.0 client secret
+#     GSC_OAUTH_REFRESH_TOKEN  — refresh token from the one-time `python -m seo.authorize` flow
+#
+#   Service account (only if your org allows key creation):
+#     GSC_SERVICE_ACCOUNT_JSON — the full service-account JSON
+#
+#   Always:
+#     GSC_SITE_URL             — the GSC property, e.g. "sc-domain:ten-fifty5.com"
+#                                or "https://www.ten-fifty5.com/"
 _SA_ENV = "GSC_SERVICE_ACCOUNT_JSON"
 _SITE_ENV = "GSC_SITE_URL"
+_OA_ID = "GSC_OAUTH_CLIENT_ID"
+_OA_SECRET = "GSC_OAUTH_CLIENT_SECRET"
+_OA_REFRESH = "GSC_OAUTH_REFRESH_TOKEN"
+
+TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
 class GSCNotConfigured(RuntimeError):
     """Raised when the GSC env vars are absent — callers degrade cleanly."""
 
 
+def _oauth_ready() -> bool:
+    return bool(os.getenv(_OA_ID) and os.getenv(_OA_SECRET) and os.getenv(_OA_REFRESH))
+
+
 def configured() -> bool:
-    return bool(os.getenv(_SA_ENV) and os.getenv(_SITE_ENV))
+    has_auth = _oauth_ready() or bool(os.getenv(_SA_ENV))
+    return bool(has_auth and os.getenv(_SITE_ENV))
 
 
 def site_url() -> str:
@@ -35,16 +56,31 @@ def site_url() -> str:
 
 
 def _token() -> str:
+    # google-auth imported lazily so the module imports even when it isn't installed.
+    from google.auth.transport.requests import Request
+    # Preferred: OAuth user credentials (keyless — works under the no-key-creation org policy).
+    if _oauth_ready():
+        from google.oauth2.credentials import Credentials
+        creds = Credentials(
+            token=None,
+            refresh_token=os.getenv(_OA_REFRESH),
+            client_id=os.getenv(_OA_ID),
+            client_secret=os.getenv(_OA_SECRET),
+            token_uri=TOKEN_URI,
+            scopes=[SCOPE],
+        )
+        creds.refresh(Request())
+        return creds.token
+    # Fallback: service-account key (only if your org permits key creation).
     raw = os.getenv(_SA_ENV)
     if not raw:
-        raise GSCNotConfigured(f"{_SA_ENV} is not set")
+        raise GSCNotConfigured(
+            f"set either the OAuth vars ({_OA_ID}/{_OA_SECRET}/{_OA_REFRESH}) or {_SA_ENV}")
     try:
         info = json.loads(raw)
     except Exception as e:
         raise GSCNotConfigured(f"{_SA_ENV} is not valid JSON: {e}") from e
-    # Imported lazily so the module imports even when google-auth isn't installed.
     from google.oauth2 import service_account
-    from google.auth.transport.requests import Request
     creds = service_account.Credentials.from_service_account_info(info, scopes=[SCOPE])
     creds.refresh(Request())
     return creds.token
