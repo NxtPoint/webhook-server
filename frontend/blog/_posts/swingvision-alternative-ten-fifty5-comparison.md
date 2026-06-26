@@ -108,7 +108,7 @@ Yes. Your first match includes full match analysis plus five technique analyses,
 
 **Does Ten-Fifty5 work on Android?**
 
-Yes. Ten-Fifty5 is entirely web-based, so it works on any device with a browser — Android phones, iPhones, tablets, laptops, desktops. There's no app to install.
+Yes. Ten-Fifty5 is entirely web-based, so it works on any device with a browser — Android phones, iPhones, tablets, laptops, desktops. There's no app to install. Since SwingVision is iPhone-only, this is the main reason Android players choose Ten-Fifty5 — see our dedicated guide to the [best SwingVision alternative for Android](https://www.ten-fifty5.com/post/swingvision-alternative-for-android).
 
 **How long does Ten-Fifty5 take to process a match?**
 
