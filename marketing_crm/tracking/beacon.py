@@ -16,6 +16,7 @@
 
 import json
 import logging
+import re
 import threading
 
 from flask import Blueprint, jsonify, request
@@ -99,6 +100,11 @@ def page():
                or request.headers.get("X-Country-Code") or "").strip().upper()[:2]
     if country in ("", "XX", "T1"):
         country = None
+    # Fallback when no CDN edge geo header (e.g. not behind Cloudflare): the region code in the
+    # client's Accept-Language, e.g. "en-GB" -> "GB". Coarse but cookieless and IP-free.
+    if not country and lang:
+        m = re.search(r"[-_]([A-Za-z]{2})\b", lang)
+        country = m.group(1).upper() if m else None
     device, browser, os_ = _parse_ua(request.headers.get("User-Agent", ""))
     ctx = {"anon_id": anon_id, "utm": utm, "props": props, "country": country,
            "device": device, "browser": browser, "os": os_, "tz": tz, "lang": lang,
