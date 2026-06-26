@@ -72,8 +72,13 @@ def build_report() -> str:
 
     top_clicks = sorted(cur, key=lambda r: -r.get("clicks", 0))
 
+    # Clean site label from the property id (sc-domain:x / https://www.x/ -> x).
+    site = gsc.site_url()
+    label = site.split(":", 1)[1] if site.startswith("sc-domain:") else site
+    label = label.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+
     L = []
-    L.append("# Ten-Fifty5 — Weekly SEO report (Google Search Console)")
+    L.append(f"# {label} — Weekly SEO report (Google Search Console)")
     L.append(f"\n**Window:** {start} → {end} (vs prior 28 days). Source: GSC — real data.\n")
     L.append("## At a glance")
     L.append(f"- **Clicks:** {int(cc)} ({delta(cc, pc)} WoW)")
@@ -105,6 +110,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Weekly GSC SEO report")
     ap.add_argument("--out", help="write the markdown report to this path (else stdout)")
     args = ap.parse_args(argv)
+    try:  # Windows consoles default to cp1252 and choke on report glyphs (→, etc.)
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     try:
         report = build_report()
     except gsc.GSCNotConfigured as e:
