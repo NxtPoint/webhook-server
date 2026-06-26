@@ -30,3 +30,4 @@ gunicorn==22.0.0
 anthropic>=0.40.0
 sqlparse==0.5.5
 PyJWT[crypto]==2.10.1  # per-user IdP (Clerk) token verification — auth_v2 (dark until AUTH_V2_ENABLED=1)
+google-auth==2.35.0  # service-account token for the GSC weekly SEO report (seo/) — dark until GSC_* env set

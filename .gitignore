@@ -77,3 +77,6 @@ ml_pipeline/fixtures_silver/*.sql.gz
 # the current commit's numbers — you want it diff-visible when it changes).
 # Same applies to the per-fixture _silver_baseline.json files — those ARE
 # committed.
+
+# Generated weekly SEO reports (seo/weekly_seo.py --out)
+seo/reports/
