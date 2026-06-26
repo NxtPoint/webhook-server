@@ -406,6 +406,13 @@ def _blog_slugs():
     return out
 
 
+@app.get("/googleaf962a6e97d36cd2.html")
+def google_site_verification():
+    """Google Search Console HTML-file verification for the ten-fifty5.com property."""
+    return Response("google-site-verification: googleaf962a6e97d36cd2.html",
+                    mimetype="text/html")
+
+
 @app.get("/robots.txt")
 def robots_txt():
     body = "User-agent: *\nAllow: /\n\nSitemap: %s/sitemap.xml\n" % SITE_BASE_URL
