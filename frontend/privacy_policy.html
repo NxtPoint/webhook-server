@@ -467,10 +467,17 @@ table.legal-table tbody td:first-child { font-weight: 600; }
         <section id="cookies">
           <h2>15. Cookies &amp; analytics</h2>
           <p>
-            We use <strong>necessary</strong> cookies to run the site. Non-essential cookies — analytics
-            (e.g. Amplitude) and marketing — only run with your <strong>prior consent</strong>, captured
-            via our cookie banner. Nothing non-essential fires until you accept the relevant category, and
-            you can change your choices anytime via the
+            We use <strong>necessary</strong> cookies to run the site. To understand how many people visit
+            we use <strong>privacy-friendly, cookieless first-party analytics</strong>: it sets no cookies,
+            stores no personal data, does not track you across other sites, and is never sold or shared for
+            advertising. It records only aggregate, non-identifying signals (page counts, a coarse
+            new-vs-returning measure via a first-party identifier, device type, approximate country from the
+            network edge, and time on page). Because it cannot identify you, it runs without a consent prompt.
+          </p>
+          <p>
+            <strong>Non-essential</strong> cookies — marketing, and any third-party product analytics
+            (e.g. Amplitude) for signed-in product usage — only run with your <strong>prior consent</strong>,
+            captured via our cookie banner. You can change your choices anytime via the
             <a href="#" onclick="if(window.TFCookie){TFCookie.open();}return false;">Cookie settings</a>
             link in the footer.
           </p>
@@ -594,13 +601,13 @@ table.legal-table tbody td:first-child { font-weight: 600; }
       '<div class="tfck-inner">' +
         '<div class="tfck-copy">' +
           '<strong>We respect your privacy.</strong> We use necessary cookies to run the site. ' +
-          'With your permission we also use analytics and marketing cookies to improve Ten-Fifty5. ' +
-          'Nothing non-essential runs until you choose. ' +
+          'With your permission we also use marketing cookies to improve Ten-Fifty5. ' +
+          'Our visitor analytics is cookieless and stores no personal data, so it needs no consent. ' +
           '<a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a>.' +
         '</div>' +
         '<div class="tfck-cats">' +
           '<label class="tfck-cat tfck-locked"><input type="checkbox" checked disabled> Necessary <span>(always on)</span></label>' +
-          '<label class="tfck-cat"><input type="checkbox" id="tfck-analytics"> Analytics</label>' +
+          '<label class="tfck-cat tfck-locked"><input type="checkbox" id="tfck-analytics" checked disabled> Analytics <span>(cookieless)</span></label>' +
           '<label class="tfck-cat"><input type="checkbox" id="tfck-marketing"> Marketing</label>' +
         '</div>' +
         '<div class="tfck-btns">' +

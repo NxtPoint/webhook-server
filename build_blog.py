@@ -338,13 +338,13 @@ COOKIE_BANNER = r"""<!-- Cookie consent (prior opt-in, granular) -->
       '<div class="tfck-inner">' +
         '<div class="tfck-copy">' +
           '<strong>We respect your privacy.</strong> We use necessary cookies to run the site. ' +
-          'With your permission we also use analytics and marketing cookies to improve Ten-Fifty5. ' +
-          'Nothing non-essential runs until you choose. ' +
+          'With your permission we also use marketing cookies to improve Ten-Fifty5. ' +
+          'Our visitor analytics is cookieless and stores no personal data, so it needs no consent. ' +
           '<a href="https://www.ten-fifty5.com/privacy-policy" target="_top">Privacy Policy</a>.' +
         '</div>' +
         '<div class="tfck-cats">' +
           '<label class="tfck-cat tfck-locked"><input type="checkbox" checked disabled> Necessary <span>(always on)</span></label>' +
-          '<label class="tfck-cat"><input type="checkbox" id="tfck-analytics"> Analytics</label>' +
+          '<label class="tfck-cat tfck-locked"><input type="checkbox" id="tfck-analytics" checked disabled> Analytics <span>(cookieless)</span></label>' +
           '<label class="tfck-cat"><input type="checkbox" id="tfck-marketing"> Marketing</label>' +
         '</div>' +
         '<div class="tfck-btns">' +
