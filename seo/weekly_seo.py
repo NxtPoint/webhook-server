@@ -39,17 +39,13 @@ def _table(rows, key_label, limit=15):
 _QUESTION = ("how", "what", "why", "best", "vs", "tips", "guide", "drill", "improve", "fix")
 
 
-def build_report() -> str:
-    if not gsc.configured():
-        return ("# Weekly SEO report\n\n> **GSC not configured.** Set `GSC_SERVICE_ACCOUNT_JSON` "
-                "and `GSC_SITE_URL` in the Render dashboard (see seo/README.md), then re-run.\n")
-
+def build_report(label, prop) -> str:
     end, start = _d(3), _d(31)            # GSC lags ~3 days; last 28-day window
     pend, pstart = _d(31), _d(59)          # prior 28-day window for trend
 
-    cur = gsc.query(start=start, end=end, dimensions=("query",), row_limit=5000)
-    prev = gsc.query(start=pstart, end=pend, dimensions=("query",), row_limit=5000)
-    pages = gsc.query(start=start, end=end, dimensions=("page",), row_limit=2000)
+    cur = gsc.query(start=start, end=end, dimensions=("query",), row_limit=5000, site=prop)
+    prev = gsc.query(start=pstart, end=pend, dimensions=("query",), row_limit=5000, site=prop)
+    pages = gsc.query(start=start, end=end, dimensions=("page",), row_limit=2000, site=prop)
 
     cc, ci, cctr = _agg(cur)
     pc, pi, _ = _agg(prev)
@@ -71,11 +67,6 @@ def build_report() -> str:
     ideas += [r for r in strike if r not in ideas]
 
     top_clicks = sorted(cur, key=lambda r: -r.get("clicks", 0))
-
-    # Clean site label from the property id (sc-domain:x / https://www.x/ -> x).
-    site = gsc.site_url()
-    label = site.split(":", 1)[1] if site.startswith("sc-domain:") else site
-    label = label.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
 
     L = []
     L.append(f"# {label} — Weekly SEO report (Google Search Console)")
@@ -106,27 +97,71 @@ def build_report() -> str:
     return "\n".join(L)
 
 
+def _label_from_property(prop: str) -> str:
+    label = prop.split(":", 1)[1] if prop.startswith("sc-domain:") else prop
+    return label.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+
+
+def _targets(args):
+    """Resolve (slug, label, property) tuples to audit. --all = every site in seo/sites.py;
+    --site <slug> = one registered site; otherwise the single GSC_SITE_URL env (back-comat)."""
+    from seo import sites
+    if args.all:
+        return [(s.slug, s.label, s.gsc_property) for s in sites.all_sites()]
+    if args.site:
+        s = sites.get(args.site)
+        if not s:
+            raise SystemExit(f"unknown site '{args.site}'. Known: "
+                             + ", ".join(x.slug for x in sites.all_sites()))
+        return [(s.slug, s.label, s.gsc_property)]
+    prop = gsc.site_url()  # raises GSCNotConfigured if GSC_SITE_URL unset
+    return [("report", _label_from_property(prop), prop)]
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Weekly GSC SEO report")
-    ap.add_argument("--out", help="write the markdown report to this path (else stdout)")
+    ap = argparse.ArgumentParser(description="Weekly GSC SEO report (single or multi-site)")
+    ap.add_argument("--site", help="audit one registered site by slug (see seo/sites.py)")
+    ap.add_argument("--all", action="store_true", help="audit every site in seo/sites.py")
+    ap.add_argument("--out", help="write report(s) here — a file for one site, a directory for --all")
     args = ap.parse_args(argv)
     try:  # Windows consoles default to cp1252 and choke on report glyphs (→, etc.)
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+    if not gsc.auth_ready():
+        print("GSC not configured: set the OAuth env vars (GSC_OAUTH_CLIENT_ID/SECRET/"
+              "REFRESH_TOKEN) — see seo/README.md.", file=sys.stderr)
+        return 2
+
     try:
-        report = build_report()
+        targets = _targets(args)
     except gsc.GSCNotConfigured as e:
         print(f"GSC not configured: {e}", file=sys.stderr)
         return 2
-    if args.out:
-        import os
+
+    import os
+    results = []
+    for slug, label, prop in targets:
+        try:
+            results.append((slug, label, build_report(label, prop)))
+        except Exception as e:  # one site failing must not kill the rest of the run
+            results.append((slug, label, f"# {label}\n\n> Report failed: {e}\n"))
+
+    if args.out and len(results) > 1:                 # --out is a directory for multi-site
+        os.makedirs(args.out, exist_ok=True)
+        for slug, _, report in results:
+            path = os.path.join(args.out, f"{slug}.md")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            print(f"wrote {path}")
+    elif args.out:                                     # single report to a file
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         with open(args.out, "w", encoding="utf-8") as fh:
-            fh.write(report)
+            fh.write(results[0][2])
         print(f"wrote {args.out}")
     else:
-        print(report)
+        print(("\n\n" + "=" * 78 + "\n\n").join(r for _, _, r in results))
     return 0
 
 

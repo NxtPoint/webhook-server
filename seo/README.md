@@ -45,9 +45,15 @@ Search Console, then set `GSC_SERVICE_ACCOUNT_JSON` (full JSON) + `GSC_SITE_URL`
 ## Run
 
 ```bash
-.venv/Scripts/python -m seo.weekly_seo                    # print the report
-.venv/Scripts/python -m seo.weekly_seo --out seo/reports/latest.md
+.venv/Scripts/python -m seo.weekly_seo --all              # audit EVERY site in seo/sites.py
+.venv/Scripts/python -m seo.weekly_seo --site nextpoint    # one registered site by slug
+.venv/Scripts/python -m seo.weekly_seo                     # single site via GSC_SITE_URL env
+.venv/Scripts/python -m seo.weekly_seo --all --out seo/reports   # write one .md per site
 ```
+
+**Multi-site:** one Google account / OAuth token covers every verified property, so the console
+audits all sites at once. Add a site = one line in `seo/sites.py` (after verifying it in Search
+Console under the same Google account). No new credentials, no new deploy.
 
 **Render Cron Job** (weekly): create a Cron Job with command `python -m seo.weekly_seo` and the two
 env vars above. It self-gates — with the vars unset it prints a clear "not configured" notice and

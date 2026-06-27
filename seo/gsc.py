@@ -43,9 +43,14 @@ def _oauth_ready() -> bool:
     return bool(os.getenv(_OA_ID) and os.getenv(_OA_SECRET) and os.getenv(_OA_REFRESH))
 
 
+def auth_ready() -> bool:
+    """True when credentials are present (independent of any single GSC_SITE_URL) — used by the
+    multi-site console, which supplies each property explicitly from seo/sites.py."""
+    return _oauth_ready() or bool(os.getenv(_SA_ENV))
+
+
 def configured() -> bool:
-    has_auth = _oauth_ready() or bool(os.getenv(_SA_ENV))
-    return bool(has_auth and os.getenv(_SITE_ENV))
+    return bool(auth_ready() and os.getenv(_SITE_ENV))
 
 
 def site_url() -> str:
@@ -87,10 +92,12 @@ def _token() -> str:
 
 
 def query(*, start, end, dimensions=("query",), row_limit=1000, filters=None,
-          search_type="web", data_state="final"):
+          search_type="web", data_state="final", site=None):
     """One Search Console searchAnalytics.query call. Returns the list of rows (each row has
-    `keys` aligned to `dimensions`, plus clicks / impressions / ctr / position)."""
-    site = site_url()
+    `keys` aligned to `dimensions`, plus clicks / impressions / ctr / position).
+
+    `site` overrides the GSC property for this call (multi-site); defaults to GSC_SITE_URL."""
+    site = site or site_url()
     url = f"{_BASE}/sites/{requests.utils.quote(site, safe='')}/searchAnalytics/query"
     body = {
         "startDate": start,
