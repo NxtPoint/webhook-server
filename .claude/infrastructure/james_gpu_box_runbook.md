@@ -77,30 +77,66 @@ driver** installed (the virtual-display driver he mentioned is separate).
 
 ---
 
-## Phase 1 — real training (AFTER password rotation + least-priv creds)
+## Phase 1 — real training (AFTER password rotation)
 
-Native Windows, no Docker needed for training (the trainers are torch + cv2 + numpy +
-sqlalchemy + boto3 — all pip-installable). WSL2/Docker is only for Phase 2 (inference).
+Native Windows, no Docker needed (trainers are torch + cv2 + numpy + sqlalchemy +
+psycopg + boto3 — all pip-installable). `batch_train.py --fact <f>` is the SAME
+entrypoint as AWS Batch (`.claude/training_environment.md`), runnable directly on this
+box. Facts: serve/hit/bounce read prod DB; swing needs a built dataset (corpus JSON +
+720p S3 video) and is GPU-bound.
 
-1. **Get the repo on the box.** Private GitHub → either a scoped read-only PAT clone,
-   or AnyDesk file-transfer a zip of `C:\dev\webhook-server`. Then:
-   ```powershell
-   cd C:\t5\webhook-server
-   C:\t5\venv\Scripts\Activate.ps1
-   pip install -r ml_pipeline\requirements.txt   # torch already installed in Phase 0
-   ```
-2. **Give the box S3-only creds** (dedicated least-priv IAM user; env vars, not in git).
-   Prefer pre-building the dataset to S3 so no `DATABASE_URL` is needed.
-3. **Smoke one fact** — identical entrypoint to the AWS path (`.claude/training_environment.md`):
-   ```powershell
-   python -m ml_pipeline.training.batch_train --fact bounce --epochs 5 --no-upload
-   ```
-   Success = it trains and prints val metrics. Then a real run **with** `--upload`
-   pushes weights to `s3://nextpoint-prod-uploads/training/weights/<fact>/_latest/`
-   exactly like the Batch job — the rest of the weights-sync flow (download → rebuild
-   detection image → new job-def rev) is unchanged from the AWS runbook.
-4. **Unattended:** wrap the trainer in a Windows scheduled task / service so runs
-   survive reboot + AnyDesk logoff.
+**Two decisions before you start (see chat):**
+- **(D1) Repo transfer:** git clone with a fine-grained read-only PAT (best for later
+  `git pull` sync) vs AnyDesk file-transfer a zip (no GitHub cred). Recommend git.
+- **(D2) DB access:** the smoke reads prod PG, so the box's **egress IP must be
+  allowlisted on Render PG** (`feedback_render_postgres_ip_allowlist`) and it needs a
+  `DATABASE_URL`. Use a **read-only role scoped to the T5 read schemas**, NOT the master
+  URL — don't put the crown-jewels DSN on someone else's box. (Agent to supply the exact
+  CREATE ROLE / GRANT SQL once we confirm which schemas the trainers read.)
+
+### Step A — repo + deps
+```powershell
+# Git: install from https://git-scm.com/download/win (browser is on the taskbar), defaults.
+cd C:\t5
+git clone https://<PAT>@github.com/NxtPoint/webhook-server.git
+cd C:\t5\webhook-server
+C:\t5\venv\Scripts\Activate.ps1
+# Training deps ONLY (do NOT reinstall torch/torchvision — Phase 0 already has the CUDA build):
+pip install opencv-python==4.9.0.80 numpy==1.26.4 scipy==1.13.1 boto3==1.34.131 `
+    sqlalchemy==2.0.31 "psycopg[binary]==3.1.19" pandas matplotlib seaborn tqdm
+```
+
+### Step B — DB reachability (D2)
+```powershell
+# 1. Get the box's egress IP → add it to Render PG's allowlist (Render dashboard).
+Invoke-RestMethod https://api.ipify.org      # no VPN on this box, so this is the real egress IP
+# 2. Set the read-only DSN for THIS shell only (not persisted, not in git):
+$env:DATABASE_URL = "postgresql://t5_train_ro:<pw>@<host>.render.com/<db>?sslmode=require"
+```
+
+### Step C — the smoke (DB-read only, NO S3 creds, nothing uploaded)
+```powershell
+python -m ml_pipeline.training.batch_train --fact bounce --epochs 5 --no-upload
+```
+Pass = it reads the corpus from PG, builds the bounce dataset, trains 5 epochs **on the
+L40S**, prints val metrics, writes `ml_pipeline/models/bounce_detector_v2_7match.pt`
+locally. `--no-upload` deliberately avoids clobbering the deployed S3 `_latest` weight.
+(If an `import` fails for a missing dep, `pip install` it and re-run — the trainer import
+chain may pull one package beyond the list above; that's expected first-run iteration.)
+
+### Step D — real uploading run (adds least-priv S3, after the smoke is green)
+```powershell
+$env:AWS_ACCESS_KEY_ID="…"; $env:AWS_SECRET_ACCESS_KEY="…"   # dedicated least-priv IAM user
+$env:AWS_REGION="eu-north-1"; $env:S3_BUCKET="nextpoint-prod-uploads"
+python -m ml_pipeline.training.batch_train --fact bounce --epochs 50
+```
+Uploads to `s3://nextpoint-prod-uploads/training/weights/bounce/_latest/`. The rest of
+the weights-sync flow (download → detection rebuild → new job-def rev, rule #8) is
+unchanged from `.claude/training_environment.md`.
+
+### Step E — unattended
+Wrap the trainer in a Windows Scheduled Task (Task Scheduler, "run whether logged on or
+not") so runs survive reboot + AnyDesk logoff. AnyDesk is only for setup/monitoring.
 
 ---
 
