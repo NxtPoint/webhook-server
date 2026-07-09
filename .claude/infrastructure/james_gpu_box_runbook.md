@@ -77,7 +77,27 @@ driver** installed (the virtual-display driver he mentioned is separate).
 
 ---
 
-## Phase 1 — real training (AFTER password rotation)
+## Phase 1 — real training — ✅ FIRST GPU TRAIN SUCCEEDED 2026-07-09
+
+`batch_train --fact bounce --epochs 5 --no-upload` trained on the L40S after wiring the
+DB role + S3 creds. Setup receipts / gotchas hit (in order):
+- **`t5_train_ro` DB role:** created via `psql "$DATABASE_URL"` in the Render *service*
+  shell (NOT pasting SQL into bash directly). `ALTER DEFAULT PRIVILEGES` needs `ON TABLES`
+  (my first version omitted it). **The prod dbname is `sportai_db`** — a wrong dbname in the
+  box DSN surfaces as `FATAL: password authentication failed`, not a "db not found" error
+  (cost us two debugging rounds). Verify the ro login from the Render shell first to isolate
+  DB-side from DSN-side. Password: letters+digits only (symbols break the `postgresql://`
+  URL parse → same misleading auth error).
+- **S3 creds ARE required even for `--no-upload`:** the corpus *registry* is in the DB
+  (`ml_analysis.training_corpus`) but the actual per-task **labels live in S3**
+  (`training/labels/<task>_ball_positions.json`). No creds → every task skipped → "manifest
+  is empty". So the box needs BOTH the `t5_train_ro` DSN AND the `t5-train-james-box` S3
+  key (scoped IAM: GetObject on `training/labels/*` + `training/corpus/*`, GetObject/PutObject
+  on `training/weights/*`; ListBucket NOT needed — trainer fetches by exact key).
+- Env on the box are session-only `$env:` vars (safer for the smoke); persist via an AWS
+  credentials file + a scheduled task for the unattended setup (Phase 1 step E, TODO).
+
+### The original plan (kept for reference)
 
 Native Windows, no Docker needed (trainers are torch + cv2 + numpy + sqlalchemy +
 psycopg + boto3 — all pip-installable). `batch_train.py --fact <f>` is the SAME
