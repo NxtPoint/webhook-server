@@ -80,7 +80,11 @@ driver** installed (the virtual-display driver he mentioned is separate).
 ## Phase 1 — real training — ✅ FIRST GPU TRAIN SUCCEEDED 2026-07-09
 
 `batch_train --fact bounce --epochs 5 --no-upload` trained on the L40S after wiring the
-DB role + S3 creds. Setup receipts / gotchas hit (in order):
+DB role + S3 creds. **Receipt:** manifest 14 tasks / 1293 pos / 7380 samples, best val
+**F1=0.466** @ epoch 3, 288s (epoch 1 ~2.5min warmup, epochs 2-5 ~20s each). **Parity with
+AWS confirmed** — the AWS bounce 5-epoch smoke got F1≈0.47 / rec≈0.81; the box matched
+(F1 0.466, ep-1 rec 0.853). The 5-epoch weight is a LOCAL TOY — not uploaded, don't deploy.
+Setup receipts / gotchas hit (in order):
 - **`t5_train_ro` DB role:** created via `psql "$DATABASE_URL"` in the Render *service*
   shell (NOT pasting SQL into bash directly). `ALTER DEFAULT PRIVILEGES` needs `ON TABLES`
   (my first version omitted it). **The prod dbname is `sportai_db`** — a wrong dbname in the
