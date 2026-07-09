@@ -313,7 +313,8 @@ Always-on (de-gated 2026-06-17 — `register()` registers unconditionally; each 
 **Cron scripts** (root-level, invoked by Render Cron Jobs, not blueprints):
 - `cron_capacity_sweep.py` — periodic billing/capacity sweep (see `docs/business/billing-implementation.md`, `docs/business/env-vars.md`).
 - `cron_monthly_refill.py` — monthly entitlement refill for active subscriptions.
-- `cron_sweep_t5_orphans.py` — every 5 min; fires `POST /ops/sweep-t5-orphans` (pairs with rule #10).
+- `cron_sweep_t5_orphans.py` — every 5 min; fires `POST /ops/sweep-t5-orphans` (pairs with rule #10). Also POSTs `/ops/sync-feedback-signals` on the same tick (feedback consolidation is piggybacked here to avoid a second paid Render cron).
+- `cron_feedback_sync.py` — **NOT a scheduled cron.** Standalone manual backfill (`python cron_feedback_sync.py` from the Render shell) that consolidates `core.*` feedback into `support_bot.feedback_signal`. Going-forward signals fire live at write-time (`marketing_crm/feedback` hooks) + on the orphan-cron tick above; this script is the backfill/safety-net only.
 
 **Ignorable root directories** (present on disk, not part of runtime):
 - `diag_081e089c/`, `data/` — local investigation snapshots / scratch dumps (often gitignored).
@@ -391,6 +392,16 @@ On-demand G-family GPU is **available and prioritised** — eu-north-1 queue ord
 ## Technique analysis (`technique/`)
 
 Biomechanics stroke analysis via external SportAI Technique API. Dev-only (gated to `tomo.stojakovic@gmail.com`). Sport type: `technique_analysis`. Synchronous streaming — a single background thread in `upload_app.py::_technique_run_pipeline()` does download → API call → bronze → silver → trim copy → SES notify, end-to-end. Full reference: `docs/business/features.md` (Technique section).
+
+---
+
+## SEO engine (`seo/`)
+
+Free, keyless SEO automation over **Google Search Console** — no paid tool (replaced Ahrefs; memory `project_gsc_seo_engine`). `weekly_seo.py` pulls GSC data (performance + trend, striking-distance queries at position 5–20, low-CTR rewrite wins, top queries/pages) so blog topics are chosen against real query demand. It runs as a CLI/cron, **not a blueprint**: `.venv/Scripts/python -m seo.weekly_seo`. Auth is OAuth refresh-token (keyless, works despite the org's service-account-key-creation block) — env `GSC_OAUTH_*` + `GSC_SITE_URL` in Render; the same token serves both `ten-fifty5.com` and `nextpointtennis.com`. `sites.py` is the multi-site registry (`--all` / `--site`); `gsc.py` is the API client; `authorize.py` mints the refresh token. Full setup: `seo/README.md`. **Note:** the weekly report's email/Wix findings are known false positives.
+
+## Website analytics (`analytics/`)
+
+Cookieless, consent-exempt traffic aggregation over `core.usage_event` (memory `project_analytics_zeroed_by_consent_banner`). `analytics/traffic.py` is a pure aggregation module — pass it any SQLAlchemy session; it reads `page_view` / `page_leave` beacons written by `marketing_crm/tracking/beacon.py` and is surfaced in the admin cockpit via `marketing_crm/backoffice/blueprint.py`. Built cookieless on purpose: the old consent-banner-gated beacon zeroed cockpit reads from 2026-06-19. The engine is **shared and edited in lock-step across the ten-fifty5 and nextpoint repos** — keep both in sync.
 
 ---
 
