@@ -84,12 +84,28 @@
       if (!parentTrusted(e.origin)) return;
       var r = _pending[d.id]; delete _pending[d.id]; r(d.payload); return;
     }
-    // provider side: a child asking for status/token. Same-origin children only.
-    if (d.dir === "req" && !inIframe) {
-      if (e.origin !== location.origin) return;   // never serve a token cross-origin
-      serveChild(d, e.source);
+    // provider side: a child asking for status/token.
+    if (d.dir === "req") {
+      if (!inIframe) {
+        if (e.origin !== location.origin) return;   // top frame serves same-origin children only
+        serveChild(d, e.source);
+      } else if (e.origin === location.origin) {
+        // MIDDLE frame: we're embedded (e.g. the portal inside NextPoint) and a SAME-ORIGIN
+        // grandchild page (loaded in our content iframe) is asking for auth. We can't mint a
+        // token ourselves in relay mode, so PROXY the request up to our own parent and pass
+        // the answer straight back down — a transparent multi-hop relay.
+        proxyChildRequest(d, e.source, e.origin);
+      }
     }
   });
+
+  // Forward a grandchild's auth request up to our parent, relay the reply back down.
+  function proxyChildRequest(d, src, childOrigin) {
+    callParent(d.kind).then(function (payload) {
+      try { src.postMessage({ __tfauth: 1, dir: "res", id: d.id, payload: payload }, childOrigin || "*"); }
+      catch (e) {}
+    });
+  }
 
   async function serveChild(d, src) {
     await ready();              // ensure our (top-frame) Clerk is resolved
