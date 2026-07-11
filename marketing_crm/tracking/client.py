@@ -75,6 +75,22 @@ def _emit(event_type, email, account_id, user_id, person_id, ref_type, ref_id, p
     except Exception:
         log.exception("track: crm forward failed for %s", event_type)
 
+    # 4) Best-effort: ledger a Google Ads offline conversion if THIS money-event's buyer arrived via a
+    #    gclid'd ad click (closes the loop on the core.acquisition capture). Own session; a no-op for
+    #    non-conversion events and organic buyers. NEVER affects the caller. Shared, portable module —
+    #    identical to the CourtFlow wiring; only recorder.CONVERSION_MAP differs.
+    try:
+        from offline_conversions.recorder import record_from_emit
+        from core_db.db import session_scope
+        payload = dict(properties or {})
+        payload.setdefault("email", email)
+        payload.setdefault("user_id", user_id)
+        payload.setdefault("ref_id", ref_id)
+        with session_scope() as s3:
+            record_from_emit(s3, event_type, payload)
+    except Exception:
+        log.exception("track: offline-conversion ledger failed for %s (non-fatal)", event_type)
+
 
 def _amplitude(event_type, email, account_id, properties):
     key = os.getenv("AMPLITUDE_API_KEY")

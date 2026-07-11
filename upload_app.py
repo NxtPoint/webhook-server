@@ -281,6 +281,20 @@ try:
 except Exception:
     app.logger.exception("marketing_crm page beacon register failed on boot")
 
+# ---------- Google Ads offline-conversion CSV feed (offline_conversions) — dark until env set --------
+# core.offline_conversion ledger (gclid→paying customer) + GET /feeds/google-ads/offline-conversions.csv
+# (HTTP Basic auth; 404 until GOOGLE_ADS_FEED_USER/PASS set). Shared, portable module — identical to
+# the CourtFlow deploy. Conversions are ledgered from the track() funnel (credit_purchased/subscription
+# _started here) when the buyer has a captured gclid on core.acquisition.
+try:
+    from offline_conversions.schema import init as _offline_conv_init
+    from offline_conversions import register as register_offline_conv
+    _offline_conv_init()                 # auto-resolves the core_db engine
+    register_offline_conv(app)
+    app.logger.info("offline_conversions feed registered (/feeds/google-ads/offline-conversions.csv)")
+except Exception:
+    app.logger.exception("offline_conversions register failed on boot")
+
 # ---------- Direct PayPal payments (paypal_billing) — DARK by default ----------
 # Registers checkout + webhook routes only when PAYPAL_ENABLED=1. The public
 # GET /api/billing/paypal/config probe is registered even when dark (reports

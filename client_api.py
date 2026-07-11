@@ -177,6 +177,43 @@ def whoami():
 
 
 # ----------------------------
+# POST /api/client/acquisition — first-touch ad/UTM attribution (gclid capture)
+# ----------------------------
+
+@client_bp.route("/api/client/acquisition", methods=["POST", "OPTIONS"])
+def record_acquisition_ep():
+    """Persist the caller's FIRST-TOUCH ad/UTM attribution (gclid, utm_*) onto core.acquisition.
+    Fired once by /attribution.js on a logged-in page. Best-effort + idempotent (first-touch wins) —
+    always 200 so the client can clear its buffer. Email is the authenticated caller's (JWT-derived,
+    or the legacy ?email/body under the shared key); the client never asserts another account."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _guard():
+        return _forbid()
+    b = request.get_json(silent=True) or {}
+    email = _client_email(b.get("email"))
+    if not email:
+        return jsonify({"ok": True, "stored": False})
+    stored = False
+    try:
+        from core_db.db import session_scope
+        from core_db.repositories.acquisition import record_acquisition
+        attr = {
+            "gclid": b.get("gclid"), "fbclid": b.get("fbclid"),
+            "source": b.get("utm_source"), "medium": b.get("utm_medium"),
+            "campaign": b.get("utm_campaign"), "term": b.get("utm_term"),
+            "content": b.get("utm_content"),
+            "referrer": b.get("referrer"), "landing_page": b.get("landing_page"),
+        }
+        with session_scope() as s:
+            row = record_acquisition(s, email=email, attr=attr)
+            stored = row is not None
+    except Exception:
+        log.exception("acquisition capture failed")
+    return jsonify({"ok": True, "stored": stored})
+
+
+# ----------------------------
 # GET /api/client/matches
 # ----------------------------
 

@@ -95,6 +95,11 @@ def _html(name: str):
             if "/analytics.js" not in html:
                 tag = '<script src="/analytics.js" defer></script>'
                 html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
+            # First-touch ad-click / UTM capture (Google Ads offline conversions). Buffers gclid on the
+            # landing page, flushes to /api/client/acquisition on a logged-in page. Safe no-op otherwise.
+            if "/attribution.js" not in html:
+                atag = '<script src="/attribution.js" defer></script>'
+                html = html.replace("</body>", atag + "\n</body>", 1) if "</body>" in html else html + atag
             return Response(html, mimetype="text/html")
         except Exception:
             return send_file(path)
@@ -164,6 +169,12 @@ def consent_js():
 def analytics_js():
     # Page-view analytics, auto-injected into served HTML pages.
     return _html("analytics.js")
+
+
+@app.get("/attribution.js")
+def attribution_js():
+    # First-touch ad-click / UTM capture (Google Ads offline conversions); auto-injected.
+    return _html("attribution.js")
 
 
 @app.get("/privacy")
