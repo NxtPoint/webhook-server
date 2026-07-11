@@ -49,6 +49,11 @@
 - `PAYPAL_CURRENCY` — presentment currency (default `USD`).
 Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing/README.md`.
 
+**Google Ads offline-conversion feed (`offline_conversions/`, code LIVE 2026-07-11). On the main API service:**
+- `GOOGLE_ADS_FEED_USER` / `GOOGLE_ADS_FEED_PASS` — HTTP Basic credentials Google Ads' scheduled upload sends to fetch `GET /feeds/google-ads/offline-conversions.csv`. **The route is 404/dark until BOTH are set** (keeps the feed off logs + closed by default). `sync:false`. You invent these values (they're just feed access creds).
+- `GOOGLE_ADS_FEED_WINDOW_DAYS` (default `90`) — rolling window of rows served (Google only accepts clicks < 90 days old and de-dupes re-serves).
+- Note: 1050 has **no Google Ads account of its own yet**, so nothing consumes this feed until it advertises separately — but the plumbing activates the moment these are set. Shared byte-identical with nextpoint; account-side runbook: `C:\dev\nextpoint\docs\specs\GOOGLE-ADS-PLAN.md`.
+
 **De-Wix auth — Clerk (`auth_v2/`, LIVE 2026-06-17). On the `webhook-server` service:**
 - `AUTH_V2_ENABLED=1` — turns on Clerk JWT verification in `client_api._guard()` + the other dual-mode guards (alongside the legacy key). `0` = legacy-key-only rollback.
 - `AUTH_PROVIDER=clerk` (informational); `AUTH_ISSUER=https://clerk.ten-fifty5.com`; `AUTH_JWKS_URL=https://clerk.ten-fifty5.com/.well-known/jwks.json`; `AUTH_AUDIENCE` (blank — Clerk default tokens set no `aud`). All public values.
