@@ -11,6 +11,10 @@ Cross-refs (don't duplicate):
 - Build-first/train-LAST philosophy + the 5 facts → `docs/north_star.md` §"RULES OF THE GAME".
 - Batch deploy mechanics (ECR digest pinning, dual-region) → `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST".
 - GPU dev box (the OLD interactive path, now superseded for training) → `.claude/infrastructure/gpu_dev_box_runbook.md`.
+- **Supplementary free GPU (temporary): James's L40S box** → `.claude/infrastructure/james_gpu_box_runbook.md`.
+  Runs these *same* trainers via `batch_train.py` on a borrowed L40S (parity proven, bounce
+  F1 0.466 = AWS). It's **temporary bonus capacity — AWS Batch here stays PRIMARY; don't
+  decommission the AWS path** (memory `project_james_gpu_box`).
 
 ---
 

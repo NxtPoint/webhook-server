@@ -9,21 +9,31 @@ Access is **AnyDesk GUI only** (id `1274243906`) — an agent can't drive it; To
 runs these steps over AnyDesk (PowerShell on the box). The box is **outbound-only**
 (nothing on the internet can connect *in*), so everything here is pull/push-out.
 
+> ## ⚠️ POSITIONING — TEMPORARY bonus capacity; AWS stays PRIMARY (Tomo, 2026-07-11)
+> James's box is a **free, temporary** GPU we use *while it's available* — NOT a
+> replacement for AWS. **Do NOT decommission or let rot the AWS training path**
+> (`ten-fifty5-ml-train` ECR image + job-def, `submit_train_job.py`, the detection
+> job-defs). AWS Batch remains the durable, canonical training + inference path
+> (`.claude/training_environment.md`). This box is a cost-saver for the training
+> *phase* only, and could disappear at any time — never make prod depend on it, and
+> keep everything reproducible on AWS. Parity with AWS is proven (bounce F1 0.466 both).
+
 ---
 
-## THE HARD RULE — creds gate on password rotation
+## Creds on the box — status (✅ done 2026-07-09)
 
-The box's Windows/AnyDesk passwords are currently reused + were shared in plaintext.
-That is **fine for Phase 0** (below) because Phase 0 puts **zero credentials** on the
-box. It is **NOT fine once our AWS/DB creds land** (Phase 1). So:
+Windows + AnyDesk passwords **were rotated** (Tomo, 2026-07-09) before any of our creds
+landed — that gate is cleared. The box now holds two **least-privilege, revocable**
+secrets, both fine to leave on a machine we don't own:
+- **`t5_train_ro`** — read-only Postgres role (SELECT on `ml_analysis.*` + `bronze.player_swing`
+  only; box egress IP allowlisted on Render PG). The earlier "don't put DATABASE_URL on the
+  box" plan was relaxed: a *read-only, T5-scoped* DSN is acceptable and far simpler than
+  pre-staging datasets. Still never the master DSN.
+- **`t5-train-james-box`** IAM user — S3 scoped to `training/*` only (labels/corpus read,
+  weights read/write).
 
-> **Rotate the Windows + AnyDesk passwords BEFORE running Phase 1.** Phase 0 needs no
-> rotation and can run today.
-
-When creds do land: use a **dedicated least-privilege IAM user** scoped to only our
-S3 bucket/prefixes (+ any queue). **Do NOT put the Render `DATABASE_URL` on the box** —
-pre-build the training dataset to S3 and give the box S3-only (avoids
-`feedback_render_postgres_ip_allowlist` entirely).
+**If the box is ever retired:** disable that IAM key + `DROP ROLE t5_train_ro` and the
+exposure is gone. Neither secret can reach billing, customer PII, or the rest of AWS.
 
 ---
 
@@ -163,6 +173,57 @@ Wrap the trainer in a Windows Scheduled Task (Task Scheduler, "run whether logge
 not") so runs survive reboot + AnyDesk logoff. AnyDesk is only for setup/monitoring.
 
 ---
+
+## SEAMLESS RUN — Level 1 (persist creds) + Level 2 (wrapper) — ✅ set up 2026-07-09
+
+So training is **one command, no cred typing**. Four box-local files (secrets stay on the
+box, NOT in git):
+
+**`%USERPROFILE%\.aws\credentials`** + **`\.aws\config`** — the `t5-train-james-box` key;
+boto3 auto-reads it (no more `$env:AWS_*`):
+```
+# credentials
+[default]
+aws_access_key_id = <AKIA…>
+aws_secret_access_key = <secret>
+# config
+[default]
+region = eu-north-1
+```
+
+**`C:\t5\creds.ps1`** — the read-only DB DSN (dot-sourced by the wrapper):
+```powershell
+$env:DATABASE_URL = "postgresql://t5_train_ro:<pw>@<EXTERNAL-HOST>:5432/sportai_db?sslmode=require"
+```
+
+**`C:\t5\train.ps1`** — the wrapper (calls the venv python directly, no activation needed):
+```powershell
+param([string]$Fact = "bounce", [int]$Epochs = 50, [switch]$NoUpload)
+$ErrorActionPreference = "Stop"
+Set-Location C:\t5\webhook-server
+. C:\t5\creds.ps1
+$py = "C:\t5\venv\Scripts\python.exe"
+$a = @("-m","ml_pipeline.training.batch_train","--fact",$Fact,"--epochs",$Epochs)
+if ($NoUpload) { $a += "--no-upload" }
+& $py @a
+```
+
+**`C:\t5\train.bat`** — one-click launcher (dodges the execution-policy prompt):
+```bat
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\t5\train.ps1 %*
+```
+
+**Run training (the whole flow now):**
+```
+C:\t5\train.bat -Fact bounce -Epochs 5 -NoUpload    # smoke
+C:\t5\train.bat -Fact bounce -Epochs 50             # real run, uploads weights to S3
+```
+No env vars, no venv activation, no cred typing. **Level 3** = point Task Scheduler at
+`train.bat` ("run whether logged on or not") for unattended/scheduled runs (TODO). Deploy
+of a trained weight STAYS a manual/agent step behind the `bench` gate (never auto-deploy).
+
+Update `git pull` in `C:\t5\webhook-server` before a run to pick up trainer changes.
 
 ## Phase 2 — detection inference as a pull-worker (LATER, keep AWS primary)
 
