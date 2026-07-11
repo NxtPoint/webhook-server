@@ -249,7 +249,10 @@ def auth_client_js():
     js = (js
           .replace("__AUTH_V2_ENABLED__", os.getenv("AUTH_V2_ENABLED", "0").strip())
           .replace("__CLERK_PUBLISHABLE_KEY__", os.getenv("CLERK_PUBLISHABLE_KEY", "").strip())
-          .replace("__CLERK_JWT_TEMPLATE__", os.getenv("CLERK_JWT_TEMPLATE", "").strip()))
+          .replace("__CLERK_JWT_TEMPLATE__", os.getenv("CLERK_JWT_TEMPLATE", "").strip())
+          # Origins allowed to relay a token when Ten-Fifty5 is embedded as a child iframe
+          # (the NextPoint members area). Empty -> same-origin only (unchanged).
+          .replace("__TF_TRUSTED_PARENT_ORIGINS__", os.getenv("TF_TRUSTED_PARENT_ORIGINS", "").strip()))
     return Response(js, mimetype="application/javascript")
 
 

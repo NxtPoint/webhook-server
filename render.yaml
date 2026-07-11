@@ -61,6 +61,15 @@ services:
         value: "https://clerk.ten-fifty5.com"
       - key: AUTH_AUDIENCE
         value: ""           # leave blank for Clerk default session tokens
+      # FEDERATION — trust NextPoint's Clerk app too, so a NextPoint member can use
+      # Ten-Fifty5 embedded in the NextPoint members area WITHOUT a second login. The
+      # verifier picks the JWKS by the token's `iss` and still fully verifies it. When
+      # AUTH_ISSUERS is set it SUPERSEDES the single AUTH_ISSUER above (kept for rollback:
+      # clear AUTH_ISSUERS to revert to Ten-Fifty5-only). JWKS URLs are positionally paired.
+      - key: AUTH_ISSUERS
+        value: "https://clerk.ten-fifty5.com,https://clerk.nextpointtennis.com"
+      - key: AUTH_JWKS_URLS
+        value: "https://clerk.ten-fifty5.com/.well-known/jwks.json,https://clerk.nextpointtennis.com/.well-known/jwks.json"
 
       # Direct PayPal payments (paypal_billing) — replaces Wix Pricing Plans checkout.
       # LIVE since 2026-06-16: catalog.json carries the live Billing Plan ids, the live
@@ -251,3 +260,9 @@ services:
       # token (add the `email` claim via Configure -> Sessions -> Customize token).
       - key: CLERK_JWT_TEMPLATE
         value: ""
+      # When Ten-Fifty5 is embedded as a child iframe (the NextPoint members area), these
+      # parent origins are allowed to relay a Clerk token to us via postMessage. Empty ->
+      # same-origin only. This is the client-side trust for the SSO embed; the server-side
+      # trust is AUTH_ISSUERS on the API service above.
+      - key: TF_TRUSTED_PARENT_ORIGINS
+        value: "https://nextpointtennis.com,https://www.nextpointtennis.com"

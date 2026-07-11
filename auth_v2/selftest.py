@@ -94,7 +94,9 @@ def run_crypto_and_legacy():
     os.environ["AUTH_ISSUER"] = iss
     os.environ["AUTH_JWKS_URL"] = "https://selftest/.well-known/jwks.json"  # not fetched (stubbed)
     os.environ.pop("AUTH_AUDIENCE", None)
-    verifier._get_jwks_client = lambda: _StubJWKS(pub)
+    os.environ.pop("AUTH_ISSUERS", None)
+    os.environ.pop("AUTH_JWKS_URLS", None)
+    verifier._client_for = lambda *_a, **_k: _StubJWKS(pub)
 
     print("verifier:")
     _check("structural: looks_like_jwt rejects shared key",
@@ -114,6 +116,22 @@ def run_crypto_and_legacy():
     other_priv, _ = _mint_keypair()
     forged = _make_token(other_priv, iss=iss, sub="user_abc", email="a@b.com")
     _check("bad signature rejected", verifier.verify_jwt(forged) is None)
+
+    # ---- federation (multi-issuer allowlist) — accept a partner IdP's tokens too ----
+    iss2 = "https://clerk.partner.example"
+    os.environ["AUTH_ISSUERS"] = iss + "," + iss2
+    os.environ["AUTH_JWKS_URLS"] = ("https://selftest/.well-known/jwks.json,"
+                                    "https://partner/.well-known/jwks.json")
+    tok1 = _make_token(priv, iss=iss, sub="user_own", email="a@b.com")
+    tok2 = _make_token(priv, iss=iss2, sub="user_partner", email="c@d.com")
+    _check("federation: own issuer still verifies",
+           (verifier.verify_jwt(tok1) or {}).get("sub") == "user_own")
+    _check("federation: partner issuer verifies",
+           (verifier.verify_jwt(tok2) or {}).get("sub") == "user_partner")
+    stranger = _make_token(priv, iss="https://clerk.stranger.example", sub="x", email="e@f.com")
+    _check("federation: issuer outside allowlist rejected", verifier.verify_jwt(stranger) is None)
+    os.environ.pop("AUTH_ISSUERS", None)      # restore single-issuer for the remaining checks
+    os.environ.pop("AUTH_JWKS_URLS", None)
 
     # disabled → inert
     os.environ["AUTH_V2_ENABLED"] = "0"

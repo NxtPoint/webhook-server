@@ -23,12 +23,20 @@
     enabled: "__AUTH_V2_ENABLED__" === "1",
     pk: "__CLERK_PUBLISHABLE_KEY__",
     tmpl: "__CLERK_JWT_TEMPLATE__",
+    parents: "__TF_TRUSTED_PARENT_ORIGINS__",
   };
   var P = new URLSearchParams(location.search);
   var legacyKey = (P.get("key") || "").trim();
   var legacyEmail = (P.get("email") || "").trim().toLowerCase();
   var apiBase = (P.get("api") || "https://api.nextpointtennis.com").trim();
   var inIframe = (window.self !== window.top);
+
+  // Origins allowed to RELAY us a token when we're an embedded child (e.g. the NextPoint
+  // members area embedding Ten-Fifty5 to sign the member in seamlessly). Same-origin is
+  // always trusted; unset -> same-origin only (unchanged behaviour). Comma-separated.
+  var trustedParents = (CFG.parents && CFG.parents.indexOf("__") !== 0)
+    ? CFG.parents.split(",").map(function (s) { return s.trim(); }).filter(Boolean) : [];
+  function parentTrusted(origin) { return origin === location.origin || trustedParents.indexOf(origin) >= 0; }
 
   var mode = null;        // 'legacy' | 'clerk'
   var clerk = null;       // top-frame Clerk instance (provider only)
@@ -70,8 +78,10 @@
   window.addEventListener("message", function (e) {
     var d = e.data;
     if (!d || d.__tfauth !== 1) return;
-    // client side: a response to one of our requests
+    // client side: a response to one of our requests. Only accept a relayed token from
+    // a trusted parent origin (else a malicious framer could inject one).
     if (d.dir === "res" && _pending[d.id]) {
+      if (!parentTrusted(e.origin)) return;
       var r = _pending[d.id]; delete _pending[d.id]; r(d.payload); return;
     }
     // provider side: a child asking for status/token. Same-origin children only.

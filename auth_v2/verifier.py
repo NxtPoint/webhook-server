@@ -21,15 +21,27 @@
 #   AUTH_ISSUER       expected `iss`, e.g. https://<frontend-api>
 #   AUTH_AUDIENCE     expected `aud` (OPTIONAL — leave blank for Clerk default tokens)
 #   AUTH_JWT_LEEWAY   clock-skew tolerance in seconds (default 30)
+#
+# FEDERATION (trust >1 IdP — e.g. embed Ten-Fifty5 inside the NextPoint members area
+# and accept NextPoint-issued Clerk tokens too):
+#   AUTH_ISSUERS      comma-separated issuer allowlist, e.g.
+#                     "https://clerk.ten-fifty5.com,https://clerk.nextpointtennis.com"
+#   AUTH_JWKS_URLS    comma-separated JWKS URLs, positionally paired with AUTH_ISSUERS.
+#                     Omit to derive each as "<issuer>/.well-known/jwks.json" (the OIDC
+#                     default — exactly how Clerk publishes).
+# When AUTH_ISSUERS is unset we fall back to the single AUTH_ISSUER/AUTH_JWKS_URL pair,
+# so existing single-instance deployments are byte-for-byte unchanged. Verification is
+# still full: the token's `iss` only SELECTS which JWKS/issuer to check against; the
+# signature + iss are then verified against that issuer's public keys, so a forged
+# `iss` cannot pass (the attacker would need that issuer's private signing key).
 
 import logging
 import os
 
 log = logging.getLogger("auth_v2.verifier")
 
-# Lazily-built singletons (a JWKS client caches signing keys + does its own HTTP).
-_jwks_client = None
-_jwks_url_cached = None
+# Lazily-built PyJWKClients, one per distinct JWKS URL (each caches signing keys + HTTP).
+_jwks_clients = {}   # jwks_url -> PyJWKClient
 
 
 def is_enabled():
@@ -56,21 +68,39 @@ def looks_like_jwt(token):
     return all(seg for seg in token.split("."))
 
 
-def _get_jwks_client():
-    """Build (once) a PyJWKClient for AUTH_JWKS_URL. Rebuilt if the env URL
-    changes. Imports PyJWT lazily so this module imports even if the dep is
-    somehow missing on a box that never enables auth_v2."""
-    global _jwks_client, _jwks_url_cached
-    jwks_url = (os.getenv("AUTH_JWKS_URL") or "").strip()
+def _issuer_map():
+    """{issuer: jwks_url} for every trusted IdP.
+
+    Multi-issuer via AUTH_ISSUERS / AUTH_JWKS_URLS (comma-separated, positionally
+    paired); JWKS URL derived from the issuer when omitted. Falls back to the single
+    AUTH_ISSUER/AUTH_JWKS_URL pair (unchanged legacy behaviour)."""
+    def _jwks_default(iss):
+        return iss.rstrip("/") + "/.well-known/jwks.json"
+
+    issuers = [s.strip() for s in (os.getenv("AUTH_ISSUERS") or "").split(",") if s.strip()]
+    if issuers:
+        urls = [s.strip() for s in (os.getenv("AUTH_JWKS_URLS") or "").split(",") if s.strip()]
+        return {iss: (urls[i] if i < len(urls) else _jwks_default(iss)) for i, iss in enumerate(issuers)}
+
+    iss = (os.getenv("AUTH_ISSUER") or "").strip()
+    if not iss:
+        return {}
+    url = (os.getenv("AUTH_JWKS_URL") or "").strip() or _jwks_default(iss)
+    return {iss: url}
+
+
+def _client_for(jwks_url):
+    """A PyJWKClient for a JWKS URL, cached across calls (signing keys cached 1h).
+    Imports PyJWT lazily so this module imports even if the dep is missing on a box
+    that never enables auth_v2."""
     if not jwks_url:
         return None
-    if _jwks_client is not None and _jwks_url_cached == jwks_url:
-        return _jwks_client
-    from jwt import PyJWKClient  # lazy
-    # lifespan: cache signing keys for an hour; PyJWKClient refetches on cache miss
-    _jwks_client = PyJWKClient(jwks_url, cache_keys=True, lifespan=3600)
-    _jwks_url_cached = jwks_url
-    return _jwks_client
+    c = _jwks_clients.get(jwks_url)
+    if c is None:
+        from jwt import PyJWKClient  # lazy
+        c = PyJWKClient(jwks_url, cache_keys=True, lifespan=3600)
+        _jwks_clients[jwks_url] = c
+    return c
 
 
 def verify_jwt(token):
@@ -82,14 +112,28 @@ def verify_jwt(token):
     if not looks_like_jwt(token):
         return None
 
-    issuer = (os.getenv("AUTH_ISSUER") or "").strip() or None
     audience = (os.getenv("AUTH_AUDIENCE") or "").strip() or None
+    issuers = _issuer_map()
+    if not issuers:
+        log.warning("auth_v2: no issuer/JWKS configured; cannot verify JWT")
+        return None
 
     try:
         import jwt  # lazy import (PyJWT)
-        client = _get_jwks_client()
+        # Read the token's (unverified) `iss` purely to SELECT which trusted issuer +
+        # JWKS to verify against. The signature + iss are then fully verified below, so
+        # a spoofed `iss` can't pass — it would need that issuer's private signing key.
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False})
+        except Exception:
+            return None
+        tok_iss = (unverified.get("iss") or "").strip()
+        jwks_url = issuers.get(tok_iss)
+        if not jwks_url:
+            log.info("auth_v2: token issuer not in allowlist")
+            return None
+        client = _client_for(jwks_url)
         if client is None:
-            log.warning("auth_v2: AUTH_JWKS_URL not set; cannot verify JWT")
             return None
         signing_key = client.get_signing_key_from_jwt(token).key
         options = {
@@ -101,7 +145,7 @@ def verify_jwt(token):
             token,
             signing_key,
             algorithms=["RS256"],
-            issuer=issuer,
+            issuer=tok_iss,           # the allowlisted issuer we matched (verified here)
             audience=audience,
             leeway=_leeway(),
             options=options,
