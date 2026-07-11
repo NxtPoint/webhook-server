@@ -88,9 +88,14 @@ def _issuer_map():
         urls = [s.strip() for s in (os.getenv("AUTH_JWKS_URLS") or "").split(",") if s.strip()]
         return {_norm(iss): (urls[i] if i < len(urls) else _jwks_default(iss)) for i, iss in enumerate(issuers)}
 
-    iss = (os.getenv("AUTH_ISSUER") or "").strip()
-    if not iss:
+    # Single-issuer fallback. Tolerate a comma-LIST mistakenly placed in the singular
+    # AUTH_ISSUER (easy AUTH_ISSUER vs AUTH_ISSUERS slip) → treat it as the allowlist.
+    single = [s.strip() for s in (os.getenv("AUTH_ISSUER") or "").split(",") if s.strip()]
+    if not single:
         return {}
+    if len(single) > 1:
+        return {_norm(iss): _jwks_default(iss) for iss in single}
+    iss = single[0]
     url = (os.getenv("AUTH_JWKS_URL") or "").strip() or _jwks_default(iss)
     return {_norm(iss): url}
 

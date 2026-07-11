@@ -135,7 +135,14 @@ def run_crypto_and_legacy():
     os.environ.pop("AUTH_JWKS_URLS", None)     # JWKS derived from issuer (no ordering to break)
     _check("federation: trailing-slash env issuer still matches (derived JWKS)",
            (verifier.verify_jwt(tok1) or {}).get("sub") == "user_own")
-    os.environ.pop("AUTH_ISSUERS", None)      # restore single-issuer for the remaining checks
+    # a comma-list mistakenly placed in the SINGULAR AUTH_ISSUER must still work
+    os.environ.pop("AUTH_ISSUERS", None)
+    os.environ.pop("AUTH_JWKS_URLS", None)
+    os.environ["AUTH_ISSUER"] = iss + "," + iss2
+    _check("federation: comma-list in singular AUTH_ISSUER tolerated",
+           (verifier.verify_jwt(tok2) or {}).get("sub") == "user_partner")
+    os.environ["AUTH_ISSUER"] = iss         # restore single-issuer for the remaining checks
+    os.environ.pop("AUTH_ISSUERS", None)
     os.environ.pop("AUTH_JWKS_URLS", None)
 
     # disabled → inert
