@@ -130,6 +130,11 @@ def run_crypto_and_legacy():
            (verifier.verify_jwt(tok2) or {}).get("sub") == "user_partner")
     stranger = _make_token(priv, iss="https://clerk.stranger.example", sub="x", email="e@f.com")
     _check("federation: issuer outside allowlist rejected", verifier.verify_jwt(stranger) is None)
+    # trailing slash on an allowlisted issuer must still match a token whose iss has none
+    os.environ["AUTH_ISSUERS"] = iss + "/," + iss2 + "/"
+    os.environ.pop("AUTH_JWKS_URLS", None)     # JWKS derived from issuer (no ordering to break)
+    _check("federation: trailing-slash env issuer still matches (derived JWKS)",
+           (verifier.verify_jwt(tok1) or {}).get("sub") == "user_own")
     os.environ.pop("AUTH_ISSUERS", None)      # restore single-issuer for the remaining checks
     os.environ.pop("AUTH_JWKS_URLS", None)
 

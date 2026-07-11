@@ -69,24 +69,30 @@ def looks_like_jwt(token):
 
 
 def _issuer_map():
-    """{issuer: jwks_url} for every trusted IdP.
+    """{issuer: jwks_url} for every trusted IdP. Issuer keys are normalised (trailing
+    slash stripped) so an env value like ".../  " still matches a token's `iss`.
 
     Multi-issuer via AUTH_ISSUERS / AUTH_JWKS_URLS (comma-separated, positionally
-    paired); JWKS URL derived from the issuer when omitted. Falls back to the single
+    paired); JWKS URL derived from the issuer when omitted — for Clerk the JWKS is
+    always <issuer>/.well-known/jwks.json, so leaving AUTH_JWKS_URLS unset is the
+    safest config (no ordering to get wrong). Falls back to the single
     AUTH_ISSUER/AUTH_JWKS_URL pair (unchanged legacy behaviour)."""
+    def _norm(iss):
+        return iss.strip().rstrip("/")
+
     def _jwks_default(iss):
-        return iss.rstrip("/") + "/.well-known/jwks.json"
+        return _norm(iss) + "/.well-known/jwks.json"
 
     issuers = [s.strip() for s in (os.getenv("AUTH_ISSUERS") or "").split(",") if s.strip()]
     if issuers:
         urls = [s.strip() for s in (os.getenv("AUTH_JWKS_URLS") or "").split(",") if s.strip()]
-        return {iss: (urls[i] if i < len(urls) else _jwks_default(iss)) for i, iss in enumerate(issuers)}
+        return {_norm(iss): (urls[i] if i < len(urls) else _jwks_default(iss)) for i, iss in enumerate(issuers)}
 
     iss = (os.getenv("AUTH_ISSUER") or "").strip()
     if not iss:
         return {}
     url = (os.getenv("AUTH_JWKS_URL") or "").strip() or _jwks_default(iss)
-    return {iss: url}
+    return {_norm(iss): url}
 
 
 def _client_for(jwks_url):
@@ -127,10 +133,11 @@ def verify_jwt(token):
             unverified = jwt.decode(token, options={"verify_signature": False})
         except Exception:
             return None
-        tok_iss = (unverified.get("iss") or "").strip()
-        jwks_url = issuers.get(tok_iss)
+        raw_iss = (unverified.get("iss") or "").strip()
+        jwks_url = issuers.get(raw_iss.rstrip("/"))   # allowlist is trailing-slash-normalised
         if not jwks_url:
-            log.info("auth_v2: token issuer not in allowlist")
+            log.info("auth_v2: token issuer %r not in allowlist %s",
+                     raw_iss, sorted(issuers.keys()))
             return None
         client = _client_for(jwks_url)
         if client is None:
@@ -145,14 +152,14 @@ def verify_jwt(token):
             token,
             signing_key,
             algorithms=["RS256"],
-            issuer=tok_iss,           # the allowlisted issuer we matched (verified here)
+            issuer=raw_iss,           # verify against the token's actual iss (trusted above)
             audience=audience,
             leeway=_leeway(),
             options=options,
         )
         return claims
     except Exception as e:  # InvalidTokenError, JWKS fetch failure, etc.
-        log.info("auth_v2: JWT verification failed: %s", e.__class__.__name__)
+        log.info("auth_v2: JWT verification failed: %s: %s", e.__class__.__name__, e)
         return None
 
 
