@@ -392,6 +392,8 @@ python -m ml_pipeline.diag.serve_viewer <task_id> --video <path>
 
 On-demand G-family GPU is **available and prioritised** — eu-north-1 queue order 1 = `ten-fifty5-ml-ce-eu-ondemand` (EC2); Spot CE `ten-fifty5-ml-compute` is order-2 fallback (confirmed via job `9378f2dd`). The earlier "Spot-only / on-demand quota = 0 (2026-04-15)" reality is **stale** — quota was raised. Prioritise Europe + on-demand for long runs so they aren't Spot-eviction-exposed. Cross-region failover + Spot fallback playbook: `.claude/playbook_aws_batch_ondemand_fallback.md`.
 
+**Training compute.** Canonical = one-off **AWS Batch GPU jobs** (`submit_train_job.py --fact <f>` → `ten-fifty5-ml-train` image → weights to S3): `.claude/training_environment.md`. A **temporary, free supplementary GPU** — a friend's L40S box (Windows/AnyDesk, outbound-only) — also runs the *same* trainers via `batch_train.py` (`C:\t5\train.bat -Fact <f> -Epochs <n>`; parity proven, bounce F1 0.466 = AWS). It is **bonus capacity only — AWS Batch stays PRIMARY; do not decommission the AWS training path and never let prod depend on the borrowed box.** Runbook: `.claude/infrastructure/james_gpu_box_runbook.md`; memory `project_james_gpu_box`. Weight *deploy* always stays a manual/agent step behind the `bench` gate (rule #5).
+
 ---
 
 ## Technique analysis (`technique/`)
