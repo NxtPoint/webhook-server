@@ -297,6 +297,28 @@ def customer_update_profile():
     return _admin_action(_do)
 
 
+@cockpit_bp.route(f"{_PREFIX}/customer/set-role", methods=["POST", "OPTIONS"])
+def customer_set_role():
+    """Correct a customer who picked the wrong role at signup (e.g. chose Coach instead of
+    Player). Flips billing.member.role; switching to player also grants the free-trial signup
+    bonus a coach signup skips (idempotent — once per account, ever)."""
+    def _do(body, acct):
+        role = (body.get("role") or "").strip().lower()
+        if role not in ("player_parent", "coach"):
+            return jsonify({"ok": False, "error": "role must be 'player_parent' or 'coach'"}), 400
+        from billing_service import set_primary_member_role, grant_signup_bonus
+        set_primary_member_role(account_id=acct["id"], role=role)
+        signup_bonus = False
+        if role == "player_parent":
+            try:
+                grant_signup_bonus(int(acct["id"]))  # idempotent; ensures the free trial exists
+                signup_bonus = True
+            except Exception:
+                pass  # best-effort — never fail the role change on a bonus hiccup
+        return jsonify({"ok": True, "role": role, "signup_bonus_ensured": signup_bonus})
+    return _admin_action(_do)
+
+
 # ── DSAR / erasure (GDPR data-subject requests) — admin-gated ────────────────
 @cockpit_bp.route(f"{_PREFIX}/dsar", methods=["GET", "OPTIONS"])
 def dsar_list():

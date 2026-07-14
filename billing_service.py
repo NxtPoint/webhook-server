@@ -644,6 +644,24 @@ def update_primary_member_profile(*, account_id: int, fields: dict) -> dict:
     return {"updated": sorted(updates.keys())}
 
 
+# Role is deliberately NOT in _EDITABLE_MEMBER_FIELDS: it gates uploads and dashboards
+# (entitlements_api: can_upload requires role != 'coach'), so it is an explicit admin
+# action, not a self-serve profile edit. Flipping it here is the ONE supported way to
+# correct a customer who picked the wrong role at signup.
+def set_primary_member_role(*, account_id: int, role: str) -> dict:
+    """Set the account's primary member role to 'player_parent' or 'coach'."""
+    role = (role or "").strip().lower()
+    if role not in ("player_parent", "coach"):
+        raise ValueError("role must be 'player_parent' or 'coach'")
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE billing.member SET role = :role "
+                 "WHERE account_id = :aid AND is_primary = true"),
+            {"role": role, "aid": account_id},
+        )
+    return {"role": role}
+
+
 # ----------------------------
 # Coach gate — Phase 2 cap
 # See docs/business/pricing-and-packages.md §6. First linked player is free;

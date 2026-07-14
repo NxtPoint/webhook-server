@@ -676,7 +676,7 @@ function renderAdminActions(s){
 
   box.innerHTML = `
     <div class="admincard">
-      <h3 class="ahead">⚙️ Admin actions <span class="lock">email &amp; role are not editable here</span></h3>
+      <h3 class="ahead">⚙️ Admin actions <span class="lock">email is not editable here</span></h3>
 
       <div class="ablock">
         <h4>Account status</h4>
@@ -699,6 +699,21 @@ function renderAdminActions(s){
       </div>
 
       <div class="ablock">
+        <h4>Account role <span class="hint-life">controls uploads &amp; dashboards</span></h4>
+        <div class="arow">
+          <div class="afield"><label for="ac_role">Role</label>
+            <select id="ac_role">
+              <option value="player_parent"${s.role==='coach'?'':' selected'}>Player / Parent</option>
+              <option value="coach"${s.role==='coach'?' selected':''}>Coach</option>
+            </select>
+          </div>
+          <span class="grow" style="flex:1"></span>
+          <button class="btn primary" id="ac_saverole">Change role</button>
+        </div>
+        <div class="anote">Player / Parent can upload matches and see their own data. Coach is view-only (no uploads). Switching to Player grants the one-time free-trial credits (1 match + 5 techniques) if not already given.</div>
+      </div>
+
+      <div class="ablock">
         <h4>Credits <span class="hint-life">life-long — never expire</span></h4>
         <div class="arow">
           <div class="afield"><label for="ac_matches">Match credits</label><input type="number" id="ac_matches" min="0" step="1" value="0"></div>
@@ -714,7 +729,7 @@ function renderAdminActions(s){
         <div class="arow" style="align-items:stretch">${profileFields}</div>
         <div class="arow" style="margin-top:10px">
           <button class="btn primary" id="ac_saveprofile">Save profile</button>
-          <span class="anote">Only changed fields are sent. Email and role are intentionally not editable.</span>
+          <span class="anote">Only changed fields are sent. Email is not editable; change role above.</span>
         </div>
       </div>
 
@@ -729,6 +744,7 @@ function renderAdminActions(s){
   if(compToggle) compToggle.onchange = ()=> setComp(compToggle.checked, compToggle);
 
   bind('ac_grant', addCredits);
+  bind('ac_saverole', changeRole);
   bind('ac_saveprofile', saveProfile);
   bind('ac_terminate', terminateAccount);
   bind('ac_cancelsub', cancelSubscription);
@@ -752,6 +768,15 @@ async function adminAct(btn, fn, okMsg){
 async function setComp(comp, toggle){
   await adminAct(toggle, ()=> post(`/customer/set-comp`, {email:cur360.email, comp:!!comp}, C),
     comp ? 'Marked as sponsored (free / unlimited)' : 'Sponsored status removed');
+}
+async function changeRole(btn){
+  const sel = document.getElementById('ac_role');
+  const role = sel ? sel.value : '';
+  const cur  = (cur360.summary && cur360.summary.role) || 'player_parent';
+  if(role===cur){ toast('Role is already set to that','bad'); return; }
+  const label = role==='coach' ? 'Coach' : 'Player / Parent';
+  await adminAct(btn, ()=> post(`/customer/set-role`, {email:cur360.email, role}, C),
+    `Role changed to ${label}`);
 }
 async function addCredits(btn){
   const matches    = parseInt(document.getElementById('ac_matches').value,10) || 0;
