@@ -239,7 +239,10 @@ def webhook():
         _pay = _extract_payment(etype, resource, norm)
         if _pay and _pay.get("provider_payment_id"):
             from billing_service import record_payment
-            record_payment(**_pay)
+            # record_payment returns True only when a NEW row is inserted, so the ops
+            # alert fires once even if PayPal retries the webhook.
+            if record_payment(**_pay):
+                _alert_money_event(_pay)
     except Exception:
         current_app.logger.exception("paypal payment record failed (%s)", etype)
 
@@ -248,11 +251,65 @@ def webhook():
     if not norm.get("buyer_email"):
         return jsonify({"ok": True, "skipped": "no_email", "event_type": etype})
 
+    # Churn alert — a subscription was cancelled/expired/suspended.
+    if norm.get("event_type") == "PLAN_CANCELLED":
+        _alert_subscription_cancelled(norm)
+
     out, status = apply_subscription_event(norm, provider="paypal")
     # Account-not-found must not make PayPal retry forever — accept + skip.
     if status == 404:
         return jsonify({"ok": True, "skipped": "account_not_found"}), 200
     return jsonify(out), (200 if status == 200 else status)
+
+
+# ── ops alerts (best-effort; never break the webhook) ────────────────────────
+
+def _fmt_money(cents, currency) -> str:
+    if cents is None:
+        return "(unknown amount)"
+    sym = {"GBP": "£", "USD": "$", "EUR": "€"}.get((currency or "").upper(), (currency or "") + " ")
+    return f"{sym}{abs(cents) / 100:.2f}"
+
+
+def _alert_money_event(pay: dict) -> None:
+    """Ops email on a newly-recorded money movement — payment in (the fun one) or refund out."""
+    try:
+        from coach_invite.video_complete_email import send_ops_email
+        amt = _fmt_money(pay.get("amount_cents"), pay.get("currency"))
+        kind = pay.get("kind")
+        if kind in ("refund", "reversal"):
+            send_ops_email(
+                f"↩️ Refund processed: -{amt}",
+                f"A {kind} was processed.\n\nAmount:  -{amt}\n"
+                f"Payment: {pay.get('provider_payment_id')}\nEvent:   {pay.get('event_type')}",
+            )
+        else:
+            label = "Subscription payment" if kind == "subscription_payment" else "PAYG top-up"
+            send_ops_email(
+                f"💰 Payment received: {amt} ({pay.get('plan_code') or '—'})",
+                "Money just came in! 🎾💸\n\n"
+                f"Amount:   {amt}\nType:     {label}\n"
+                f"Customer: {pay.get('buyer_email') or '—'}\n"
+                f"Plan:     {pay.get('plan_code') or '—'}\n"
+                f"Payment:  {pay.get('provider_payment_id')}",
+            )
+    except Exception:
+        current_app.logger.exception("paypal money alert failed")
+
+
+def _alert_subscription_cancelled(norm: dict) -> None:
+    """Ops email when a subscription is cancelled/expired/suspended (churn signal)."""
+    try:
+        from coach_invite.video_complete_email import send_ops_email
+        send_ops_email(
+            f"⚠️ Subscription cancelled: {norm.get('buyer_email') or '—'}",
+            "A subscription was cancelled / expired.\n\n"
+            f"Customer: {norm.get('buyer_email') or '—'}\n"
+            f"Plan:     {norm.get('plan_code') or '—'}\n"
+            f"Sub ID:   {norm.get('provider_subscription_id') or '—'}",
+        )
+    except Exception:
+        current_app.logger.exception("paypal cancel alert failed")
 
 
 # ── event normalization (always re-fetches authoritative state from PayPal) ──

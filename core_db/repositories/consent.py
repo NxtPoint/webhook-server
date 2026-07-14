@@ -73,7 +73,37 @@ def open_dsar(session, *, request_type, subject_person_id=None, requested_by_use
     )
     session.add(req)
     session.flush()
+    _alert_dsar_opened(session, req, subject_person_id)
     return req
+
+
+def _alert_dsar_opened(session, req, subject_person_id):
+    """Ops email on a new data-subject request — GDPR response deadlines apply, and this is
+    the easiest alert to miss (it only shows in the cockpit otherwise). Best-effort; the
+    email must never break the DSAR intake, so all of it is swallowed on error."""
+    try:
+        from coach_invite.video_complete_email import send_ops_email
+        subject = "—"
+        if subject_person_id is not None:
+            try:
+                from core_db.models import Person, Account
+                p = session.get(Person, subject_person_id)
+                if p is not None:
+                    acct = session.get(Account, p.account_id) if getattr(p, "account_id", None) else None
+                    subject = (getattr(acct, "email", None) or getattr(p, "full_name", None) or "—")
+            except Exception:
+                pass
+        send_ops_email(
+            f"🔐 DSAR opened: {req.request_type} ({subject})",
+            "A data-subject request was raised — GDPR response deadlines apply.\n\n"
+            f"Type:    {req.request_type}\n"
+            f"Subject: {subject}\n"
+            f"Request: #{getattr(req, 'id', '—')}\n"
+            f"Notes:   {req.notes or '—'}\n\n"
+            "Action it in Cockpit → DSAR.",
+        )
+    except Exception:
+        pass
 
 
 # Current consent policy version stamped on every consent record. FINAL (2026-06-18) — the scope-v2

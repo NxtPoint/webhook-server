@@ -168,6 +168,33 @@ def _signal(signal_type, **kw):
         log_feedback_signal(signal_type, **kw)
     except Exception:
         pass
+    # High-signal unhappiness → ops email (best-effort). Only the two churn-risk signals;
+    # generic in-app widget feedback is not alerted (lives in the cockpit).
+    if signal_type in ("nps_detractor", "survey_cancellation"):
+        _alert_feedback(signal_type, kw)
+
+
+def _alert_feedback(signal_type, kw):
+    """Ops email on a detractor NPS or a cancellation reason. Never raises."""
+    try:
+        from coach_invite.video_complete_email import send_ops_email
+        email = kw.get("email") or "—"
+        comment = kw.get("question") or "(no comment)"
+        if signal_type == "nps_detractor":
+            score = (kw.get("raw_feedback") or {}).get("score")
+            send_ops_email(
+                f"📉 NPS detractor ({score}/10): {email}",
+                f"A customer left a low NPS score.\n\n"
+                f"Customer: {email}\nScore:    {score}/10\nComment:  {comment}",
+            )
+        else:  # survey_cancellation
+            send_ops_email(
+                f"👋 Cancellation reason: {email}",
+                f"A customer submitted a cancellation reason.\n\n"
+                f"Customer: {email}\nReason:   {kw.get('context') or '—'}\nComment:  {comment}",
+            )
+    except Exception:
+        pass
 
 
 def register(app):
