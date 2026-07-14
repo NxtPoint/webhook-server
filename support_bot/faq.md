@@ -40,6 +40,15 @@ Email info@ten-fifty5.com from your current account email and tell us the new
 one. Account email is tied to your billing identity and your match data, so we
 make this change manually to avoid orphaning anything.
 
+## account.wrong_role
+**Q: I signed up as a coach (or player) by mistake — how do I change my account type?**
+
+Email info@ten-fifty5.com and tell us which you meant to be — Player/Parent or
+Coach. We switch it for you (it's a quick admin change). It matters because a
+coach account is view-only and can't upload matches, while a player account can
+upload and gets the free-trial credits. Once we've switched you, just log in
+again and you'll have the right access.
+
 ## account.linked_players
 **Q: How do I add a child or another player to my account?**
 

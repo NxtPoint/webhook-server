@@ -1088,6 +1088,25 @@ def register_member():
     except Exception:
         pass
 
+    # Ops alert — a real person just registered. Best-effort; never blocks signup.
+    try:
+        from coach_invite.video_complete_email import send_ops_email
+        role_label = "Coach" if role == "coach" else "Player / Parent"
+        full = (first_name + (" " + surname if surname else "")).strip()
+        src = (payload.get("source") or payload.get("utm_source") or "").strip() or "—"
+        lines = [
+            "A new client just registered on TEN-FIFTY5.",
+            "",
+            f"Name:    {full or '—'}",
+            f"Email:   {email}",
+            f"Role:    {role_label}",
+            f"Source:  {src}",
+            f"Account: #{int(acct.id)}",
+        ]
+        send_ops_email(f"New client registered: {full or email} ({role_label})", "\n".join(lines))
+    except Exception:
+        logging.getLogger(__name__).exception("signup ops-alert failed for account_id=%s", acct.id)
+
     return jsonify({"ok": True, "account_id": int(acct.id)})
 
 

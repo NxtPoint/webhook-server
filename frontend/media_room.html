@@ -620,10 +620,12 @@ function renderStep1(el) {
   };
 
   const available = CARDS.filter(c => c.available);
-  // Only dev accounts see the "Coming Soon" teasers (T5 / Serve / Rally / Technique /
-  // Doubles). Technique et al are still under development, so a normal customer sees
-  // ONLY the live SportAI Singles match upload — nothing unfinished is advertised.
-  const comingSoon = devAccess ? CARDS.filter(c => !c.available) : [];
+  // Customers see Serve / Rally / Technique / Doubles as "Coming Soon" — a deliberate
+  // signal that the product roadmap is evolving. Singles (T5) is hidden from customers
+  // (it's our internal ML pipeline, a duplicate of the live SportAI Singles). Dev
+  // accounts have T5/Serve/Rally/Technique as *available*, so their Coming Soon is
+  // just whatever's left (Doubles).
+  const comingSoon = CARDS.filter(c => !c.available && (devAccess || c.type !== 'singles_t5'));
 
   const comingSoonHtml = comingSoon.length
     ? `

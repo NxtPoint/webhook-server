@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 SES_FROM_EMAIL = os.environ.get("SES_FROM_EMAIL", "noreply@ten-fifty5.com").strip()
 LOCKER_ROOM_BASE_URL = os.environ.get("LOCKER_ROOM_BASE_URL", "https://www.ten-fifty5.com/portal").strip()
+# Ops inbox BCC'd on every customer completion email so the team can see each
+# analysis went out. Set OPS_NOTIFY_EMAIL="" to disable.
+OPS_NOTIFY_EMAIL = os.environ.get("OPS_NOTIFY_EMAIL", "info@ten-fifty5.com").strip()
 
 
 def _build_html(customer_name: str, player_a: str, player_b: str,
@@ -133,11 +136,17 @@ def send_completion_email(task_id: str, customer_email: str, customer_name: str,
 
     locker_room_url = LOCKER_ROOM_BASE_URL
 
+    destination = {"ToAddresses": [customer_email]}
+    # BCC the ops inbox so the team sees the confirmation went through (unless the
+    # customer IS the ops inbox — no point BCC'ing yourself).
+    if OPS_NOTIFY_EMAIL and OPS_NOTIFY_EMAIL.lower() != customer_email.strip().lower():
+        destination["BccAddresses"] = [OPS_NOTIFY_EMAIL]
+
     try:
         ses = boto3.client("ses", region_name=AWS_REGION)
         resp = ses.send_email(
             Source=SES_FROM_EMAIL,
-            Destination={"ToAddresses": [customer_email]},
+            Destination=destination,
             Message={
                 "Subject": {
                     "Data": "Your match analysis is ready - TEN-FIFTY5",
@@ -168,4 +177,31 @@ def send_completion_email(task_id: str, customer_email: str, customer_name: str,
         return {"ok": False, "error": err}
     except Exception as e:
         log.error("Email send error for %s task_id=%s: %s", customer_email, task_id, e)
+        return {"ok": False, "error": str(e)}
+
+
+def send_ops_email(subject: str, text_body: str, html_body: str | None = None) -> dict:
+    """Send a plain internal notification to the ops inbox (OPS_NOTIFY_EMAIL).
+    Used for new-signup alerts and processing-failure alerts. Best-effort — the
+    caller should never let a failure here break the flow it's reporting on.
+    Returns {ok, message_id} or {ok: False, error}."""
+    if not OPS_NOTIFY_EMAIL:
+        return {"ok": False, "error": "ops_notify_disabled"}
+    body = {"Text": {"Data": text_body, "Charset": "UTF-8"}}
+    if html_body:
+        body["Html"] = {"Data": html_body, "Charset": "UTF-8"}
+    try:
+        ses = boto3.client("ses", region_name=AWS_REGION)
+        resp = ses.send_email(
+            Source=SES_FROM_EMAIL,
+            Destination={"ToAddresses": [OPS_NOTIFY_EMAIL]},
+            Message={"Subject": {"Data": subject[:200], "Charset": "UTF-8"}, "Body": body},
+        )
+        return {"ok": True, "message_id": resp.get("MessageId", "")}
+    except ClientError as e:
+        err = e.response["Error"]["Message"]
+        log.error("Ops email failed (%s): %s", subject, err)
+        return {"ok": False, "error": err}
+    except Exception as e:
+        log.error("Ops email error (%s): %s", subject, e)
         return {"ok": False, "error": str(e)}

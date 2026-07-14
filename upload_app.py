@@ -365,6 +365,18 @@ def _resolve_batch_regions_priority() -> list:
 BATCH_REGIONS_PRIORITY = _resolve_batch_regions_priority()
 T5_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
 TECHNIQUE_SPORT_TYPES = {"technique_analysis"}
+# Sport types still under development — not offered to customers. The Media Room
+# only surfaces these to dev accounts; this set lets the server enforce the same
+# rule so a crafted request can't submit an unfinished pipeline. Keep in sync with
+# the dev-gating in frontend/media_room.html.
+DEV_ONLY_SPORT_TYPES = T5_SPORT_TYPES | TECHNIQUE_SPORT_TYPES
+DEV_UPLOAD_EMAILS = {
+    e.strip().lower()
+    for e in os.getenv(
+        "DEV_UPLOAD_EMAILS", "tomo.stojakovic@gmail.com,info@ten-fifty5.com"
+    ).split(",")
+    if e.strip()
+}
 AUTO_DUAL_SUBMIT_T5 = os.getenv("AUTO_DUAL_SUBMIT_T5", "0").lower() in ("1", "true", "yes", "y")
 # Phase 5c.2 — when T5 ingest completes for a `tennis_singles_t5` row whose SA
 # pair is also complete, fire `export_sa_ball_positions` and record the result
@@ -500,6 +512,13 @@ def _upload_entitlement_gate(email: str, sport_type: str | None = None) -> tuple
     if role == "coach":
         return False, "coach_cannot_upload"
 
+    # Dev-only pipelines (T5 / Technique) are still under development. Block them
+    # server-side for anyone outside the dev allowlist, mirroring the Media Room UI
+    # gate — otherwise a hand-crafted request could submit an unfinished job.
+    if sport_known and (sport_type or "").strip().lower() in DEV_ONLY_SPORT_TYPES \
+            and e not in DEV_UPLOAD_EMAILS:
+        return False, "sport_type_not_available"
+
     # With a known sport_type, check the matching credit pool precisely.
     # Without sport_type (multipart/presign before submit), pass if the user
     # has credits of EITHER type — the submit endpoint re-checks precisely.
@@ -567,6 +586,8 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ses_notified_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ses_notify_error TEXT",
+        # Ops failure-alert audit — set once the failure email for this task has been sent.
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ops_failure_notified_at TIMESTAMPTZ",
 
         # --- NEW: typed score + timing + SR fields (idempotent) ---
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_set1_games INT",
@@ -4660,6 +4681,102 @@ def ops_sweep_t5_orphans():
 
     threading.Thread(target=_worker, args=(orphans,), daemon=True).start()
     result["triggered"] = [{"task_id": o["task_id"]} for o in orphans]
+    return jsonify(result), 200
+
+
+@app.post("/ops/alert-failures")
+def ops_alert_failures():
+    """Email the ops inbox about processing failures that haven't been alerted yet.
+
+    Covers EVERY failure path (both the main app and the ingest worker) from one
+    place, instead of hooking the ~15 scattered sites that set last_status='failed'.
+    A task qualifies if it FAILED (last_status='failed' or ingest_error is set),
+    is not soft-deleted, hasn't already been alerted (ops_failure_notified_at NULL),
+    and failed within the recent window (avoids blasting historical backlog).
+
+    Idempotent: each alerted task is stamped ops_failure_notified_at so it fires
+    once. Body (all optional): {dry_run:true, limit:50, window_hours:48}.
+    Header-only auth (OPS_KEY). Called on the 5-min cron tick.
+    """
+    if not _guard():
+        return Response("Forbidden", 403)
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+    limit = int(body.get("limit", 50))
+    window_hours = int(body.get("window_hours", 48))
+    if limit < 1 or limit > 500:
+        return jsonify({"ok": False, "error": "limit must be in [1, 500]"}), 400
+    if window_hours < 1 or window_hours > 720:
+        return jsonify({"ok": False, "error": "window_hours must be in [1, 720]"}), 400
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql_text("""
+                SELECT task_id::text AS task_id, email, customer_name, sport_type,
+                       player_a_name, player_b_name, match_date, location,
+                       last_status, ingest_error,
+                       COALESCE(ingest_finished_at, last_status_at, created_at) AS failed_at
+                  FROM bronze.submission_context
+                 WHERE deleted_at IS NULL
+                   AND ops_failure_notified_at IS NULL
+                   AND (last_status = 'failed' OR ingest_error IS NOT NULL)
+                   AND ingest_error IS DISTINCT FROM 'Cancelled by user'
+                   AND ingest_error IS DISTINCT FROM 'aborted: match deleted by user'
+                   AND COALESCE(ingest_finished_at, last_status_at, created_at)
+                         > NOW() - (:wh || ' hours')::interval
+                 ORDER BY COALESCE(ingest_finished_at, last_status_at, created_at) ASC
+                 LIMIT :lim
+            """), {"wh": str(window_hours), "lim": limit}).mappings().all()
+    except Exception as e:
+        app.logger.exception("OPS ALERT-FAILURES query failed")
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+    failures = [dict(r) for r in rows]
+    result = {"ok": True, "dry_run": dry_run, "found": len(failures), "alerted": []}
+
+    if dry_run:
+        result["sample"] = [
+            {"task_id": f["task_id"], "email": f.get("email"),
+             "sport_type": f.get("sport_type"), "error": (f.get("ingest_error") or "")[:200]}
+            for f in failures[:10]
+        ]
+        return jsonify(result), 200
+
+    from coach_invite.video_complete_email import send_ops_email
+    alerted = []
+    for f in failures:
+        tid = f["task_id"]
+        players = " vs ".join(p for p in [f.get("player_a_name"), f.get("player_b_name")] if p)
+        lines = [
+            "A TEN-FIFTY5 upload FAILED to process.",
+            "",
+            f"Customer: {f.get('customer_name') or '—'}  <{f.get('email') or '—'}>",
+            f"Type:     {f.get('sport_type') or '—'}",
+            f"Match:    {players or '—'}"
+            + (f"  ({f.get('match_date')})" if f.get("match_date") else ""),
+            f"Location: {f.get('location') or '—'}",
+            f"Failed:   {f.get('failed_at')}",
+            f"Status:   {f.get('last_status') or '—'}",
+            f"Error:    {(f.get('ingest_error') or '—')[:1500]}",
+            f"Task:     {tid}",
+        ]
+        sent = send_ops_email(
+            f"⚠️ Upload failed: {f.get('customer_name') or f.get('email') or tid}",
+            "\n".join(lines),
+        )
+        # Stamp only on a genuine send so a transient SES error retries next tick.
+        if sent.get("ok"):
+            try:
+                with engine.begin() as conn:
+                    conn.execute(sql_text(
+                        "UPDATE bronze.submission_context SET ops_failure_notified_at = now() "
+                        "WHERE task_id = :t"), {"t": tid})
+                alerted.append(tid)
+            except Exception:
+                app.logger.exception("ALERT-FAILURES stamp failed task_id=%s", tid)
+
+    result["alerted"] = alerted
     return jsonify(result), 200
 
 
