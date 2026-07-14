@@ -217,6 +217,21 @@ def record_acquisition_ep():
 # GET /api/client/matches
 # ----------------------------
 
+def _is_admin_email(email: Optional[str]) -> bool:
+    """True if the (normalised) email is on the admin whitelist."""
+    return _norm_email(email) in ADMIN_EMAILS
+
+
+def _can_view_task(owner_email, requester_email) -> bool:
+    """READ-access rule for match/practice detail, footage, and dashboards: the task's
+    owner OR an admin. Admins review every client's processed footage from the Locker
+    Room front door. Writes (edit/delete/reprocess) stay owner-only, deliberately."""
+    if not owner_email:
+        return False
+    return _norm_email(owner_email) == _norm_email(requester_email) \
+        or _is_admin_email(requester_email)
+
+
 @client_bp.route("/api/client/matches", methods=["GET", "OPTIONS"])
 def list_matches():
     if not _guard():
@@ -226,9 +241,21 @@ def list_matches():
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
+    # Admin front-door view: see EVERY client's processed footage, not just your own.
+    # Optional ?client_email=<addr> narrows to one client (the client-name filter).
+    # Non-admins are always scoped to their own email.
+    is_admin = _is_admin_email(email)
+    client_filter = _norm_email(request.args.get("client_email")) if is_admin else email
+    show_all = is_admin and not client_filter
+
+    where = "" if show_all else "WHERE g.email = :email"
+    order = "g.created_at DESC NULLS LAST" if show_all \
+        else "g.match_date ASC NULLS LAST, g.created_at ASC"
+    params = {} if show_all else {"email": client_filter}
+
     with engine.connect() as conn:
         rows = conn.execute(
-            text("""
+            text(f"""
                 SELECT
                     g.task_id, g.match_date, g.location,
                     g.player_a_name, g.player_b_name, g.sport_type,
@@ -249,16 +276,17 @@ def list_matches():
                     sc.trim_duration_s
                 FROM gold.vw_client_match_summary g
                 JOIN bronze.submission_context sc ON sc.task_id = g.task_id
-                WHERE g.email = :email
-                ORDER BY g.match_date ASC NULLS LAST, g.created_at ASC
+                {where}
+                ORDER BY {order}
             """),
-            {"email": email},
+            params,
         ).mappings().all()
 
     matches = []
     for r in rows:
         matches.append({
             "task_id": r["task_id"],
+            "client_email": r["email"],  # whose account this match belongs to (admin view)
             "match_date": str(r["match_date"]) if r["match_date"] else None,
             "location": r["location"],
             "player_a_name": r["player_a_name"],
@@ -299,7 +327,8 @@ def list_matches():
             "trim_duration_s": float(r["trim_duration_s"]) if r["trim_duration_s"] else None,
         })
 
-    return jsonify({"ok": True, "matches": matches})
+    return jsonify({"ok": True, "matches": matches,
+                    "is_admin": is_admin, "all_clients": show_all})
 
 
 def _format_score(r) -> str:
@@ -362,7 +391,7 @@ def match_detail(task_id: str):
             {"tid": task_id},
         ).scalar_one_or_none()
 
-        if not owner or _norm_email(owner) != email:
+        if not _can_view_task(owner, email):
             return jsonify({"ok": False, "error": "not_found"}), 404
 
         # Point-level detail from silver
@@ -868,7 +897,7 @@ def footage_url(task_id: str):
             {"tid": task_id},
         ).mappings().first()
 
-    if not row or _norm_email(row["email"]) != email:
+    if not _can_view_task(row["email"] if row else None, email):
         return jsonify({"ok": False, "error": "not_found"}), 404
 
     if row["trim_status"] != "completed" or not row["trim_output_s3_key"]:
@@ -1623,7 +1652,7 @@ def practice_detail(task_id):
             text("SELECT email, sport_type FROM bronze.submission_context WHERE task_id = :tid"),
             {"tid": task_id},
         ).mappings().first()
-    if not owner or _norm_email(owner["email"]) != email:
+    if not _can_view_task(owner["email"] if owner else None, email):
         return jsonify({"ok": False, "error": "not_found"}), 404
 
     practice_type = owner["sport_type"]
@@ -1749,7 +1778,7 @@ def practice_heatmap(task_id, heatmap_type):
             text("SELECT email FROM bronze.submission_context WHERE task_id = :tid"),
             {"tid": task_id},
         ).mappings().first()
-    if not owner or _norm_email(owner["email"]) != email:
+    if not _can_view_task(owner["email"] if owner else None, email):
         return jsonify({"ok": False, "error": "not_found"}), 404
 
     with engine.connect() as conn:
@@ -1791,12 +1820,14 @@ def practice_heatmap(task_id, heatmap_type):
 # ============================================================================
 
 def _owns_task(conn, task_id, email):
-    """Return True if the given email owns the given task_id."""
+    """Return True if the email may VIEW the task — its owner, or an admin. Used by the
+    match dashboard endpoints (KPI + breakdowns) so admins can verify any client's
+    dashboards from the front door."""
     owner = conn.execute(
         text("SELECT email FROM bronze.submission_context WHERE task_id = :tid"),
         {"tid": task_id},
     ).scalar_one_or_none()
-    return owner is not None and _norm_email(owner) == email
+    return _can_view_task(owner, email)
 
 
 def _gold_one(view_name, task_id):
@@ -2037,7 +2068,7 @@ def match_analysis(task_id):
                 {"tid": task_id},
             ).mappings().first()
 
-            if not meta or _norm_email(meta["email"]) != email:
+            if not _can_view_task(meta["email"] if meta else None, email):
                 return jsonify({"ok": False, "error": "not_found"}), 404
 
             # Use the same proven column list as the existing match_detail endpoint,

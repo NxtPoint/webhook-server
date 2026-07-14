@@ -577,6 +577,10 @@ function apiFetch(path, opts = {}) {
 }
 
 let matches = [], usage = null, players = [], profile = null, entitlements = null, members = [], coaches = [];
+// Admin front-door: when the logged-in user is an admin, /api/client/matches returns
+// EVERY client's processed footage (not just their own). We then group by processing
+// day, show which client each match belongs to, and offer a client filter.
+let IS_ADMIN = false, adminFilter = '';
 // Cache of gold.match_kpi rows keyed by task_id. Populated on demand by the
 // hero (latest match) and the Edit panel (whichever match is opened).
 const kpiCache = new Map();
@@ -625,6 +629,7 @@ async function init() {
     safeFetch('/api/client/coaches'),
   ]);
   const EXCLUDE_TYPES = ['serve_practice', 'rally_practice', 'tennis_singles_t5'];
+  IS_ADMIN = !!(mData.ok && mData.is_admin);
   matches = (mData.ok ? mData.matches : []).filter(m => !EXCLUDE_TYPES.includes(m.sport_type));
   usage = null;  // legacy variable kept for code that hasn't been migrated yet
   players = pData.ok ? pData.players : [];
@@ -826,6 +831,10 @@ function render() {
   // Populate sections
   if (matches.length === 0) {
     document.getElementById('matchGroups').innerHTML = '<div class="empty-state"><h3>No matches yet</h3><p>Your matches will appear here once your first video is processed.</p></div>';
+  } else if (IS_ADMIN) {
+    // Admin all-clients view: skip the personal "Latest Match" hero (not
+    // meaningful across every client) and render the grouped-by-day list.
+    renderGroupedMatches();
   } else {
     renderHero();
     renderGroupedMatches();
@@ -1326,9 +1335,10 @@ document.getElementById('videoModal').addEventListener('click', function(e) {
 // ============ GROUPED MATCHES ============
 
 function renderGroupedMatches() {
+  matches.forEach((m, i) => { m._idx = i; });  // stable idx for openDetail/remove
+  if (IS_ADMIN) { renderAdminMatches(); return; }
   const groups = {};
-  matches.forEach((m, i) => {
-    m._idx = i;
+  matches.forEach((m) => {
     const d = m.match_date ? new Date(m.match_date) : (m.created_at ? new Date(m.created_at) : null);
     const yr = d ? d.getFullYear() : 'Unknown';
     const mo = d ? d.getMonth() : 0;
@@ -1368,51 +1378,118 @@ function renderGroupedMatches() {
       <div class="group-content ${moOpen?'open':''}" id="grp-${gid}">
         <div class="match-list">`;
 
-      moMatches.forEach(m => {
-        const status = normalizeStatus(m.last_status);
-        const meta = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
-        const hasTrim = m.trim_status === 'completed' && m.trim_output_s3_key;
-        const trimProcessing = m.trim_status && m.trim_status !== 'completed' && m.trim_status !== 'failed';
-        let watchHtml;
-        if (hasTrim) {
-          watchHtml = `<button class="btn-watch" onclick="event.stopPropagation();playFootage('${m.task_id}')" title="Watch footage">&#9654; Watch Footage</button>`;
-        } else if (trimProcessing) {
-          watchHtml = `<span class="badge-processing" title="Footage is still being prepared">&#9203; Processing</span>`;
-        } else {
-          // Legacy uploads with no trim, or trim_status='failed'. Keep the slot
-          // visible (disabled) so the action row stays consistent across all rows.
-          watchHtml = `<button class="btn-watch" disabled onclick="event.stopPropagation()" title="Footage not available for this match" style="background:var(--white);color:var(--text-dim);border:1px solid var(--border);">&#9654; Watch Footage</button>`;
-        }
-
-        const analysisReady = status.cls === 'processed' && (m.total_points || 0) > 0;
-        const analysisAction = analysisReady
-          ? `onclick="event.stopPropagation();openAnalysis('${m.task_id}')"`
-          : 'onclick="event.stopPropagation()" disabled';
-        const analysisTitle = analysisReady ? 'Open match analytics' : 'Analytics not yet available';
-        // Body-click: prefer Analysis when available, fall back to Edit.
-        const cardBodyAction = analysisReady
-          ? `onclick="openAnalysis('${m.task_id}')"`
-          : `onclick="openDetail(${m._idx})"`;
-        html += `<div class="match-card" ${cardBodyAction}>
-          <div class="match-info">
-            <div class="match-opponent">${esc(m.player_a_name||'Player A')} vs ${esc(m.player_b_name||'Opponent')}</div>
-            <div class="match-meta">${esc(meta)} <span class="status-badge ${status.cls}">${status.label}</span></div>
-          </div>
-          <div class="match-right">
-            <div class="match-score">${esc(m.score||'')}</div>
-            ${watchHtml}
-            <button class="btn-edit" onclick="event.stopPropagation();openDetail(${m._idx})">Edit</button>
-            <button class="btn-edit" ${analysisAction} title="${analysisTitle}">Analysis</button>
-            <button class="btn-remove" onclick="event.stopPropagation();confirmRemoveMatch(${m._idx})" title="Remove this match from your profile">Remove</button>
-          </div>
-        </div>`;
-      });
+      html += moMatches.map(m => matchCardHtml(m, false)).join('');
       html += '</div></div>';
     });
     html += '</div></div>';
   });
   html += '</div>';
   container.innerHTML = html;
+}
+
+// Single match-card renderer, shared by the client (year/month) and admin (per-day)
+// views. showClient adds a line naming which client the match belongs to.
+function matchCardHtml(m, showClient) {
+  const status = normalizeStatus(m.last_status);
+  const meta = [m.match_date, m.location].filter(Boolean).join(' • ');
+  const hasTrim = m.trim_status === 'completed' && m.trim_output_s3_key;
+  const trimProcessing = m.trim_status && m.trim_status !== 'completed' && m.trim_status !== 'failed';
+  let watchHtml;
+  if (hasTrim) {
+    watchHtml = `<button class="btn-watch" onclick="event.stopPropagation();playFootage('${m.task_id}')" title="Watch footage">&#9654; Watch Footage</button>`;
+  } else if (trimProcessing) {
+    watchHtml = `<span class="badge-processing" title="Footage is still being prepared">&#9203; Processing</span>`;
+  } else {
+    watchHtml = `<button class="btn-watch" disabled onclick="event.stopPropagation()" title="Footage not available for this match" style="background:var(--white);color:var(--text-dim);border:1px solid var(--border);">&#9654; Watch Footage</button>`;
+  }
+  const analysisReady = status.cls === 'processed' && (m.total_points || 0) > 0;
+  const analysisAction = analysisReady
+    ? `onclick="event.stopPropagation();openAnalysis('${m.task_id}')"`
+    : 'onclick="event.stopPropagation()" disabled';
+  const analysisTitle = analysisReady ? 'Open match analytics' : 'Analytics not yet available';
+  // Admin cards are review-only (writes are owner-scoped on the server): body-click
+  // opens Analysis when ready, otherwise does nothing. Client cards keep Edit fallback.
+  const cardBodyAction = analysisReady
+    ? `onclick="openAnalysis('${m.task_id}')"`
+    : (showClient ? '' : `onclick="openDetail(${m._idx})"`);
+  const clientLine = (showClient && m.client_email)
+    ? `<div class="match-meta" style="color:var(--text-dim)">&#128100; ${esc(m.client_email)}</div>`
+    : '';
+  // Admin (showClient) sees view actions only — Watch Footage + Analysis. Clients also
+  // get Edit + Remove (which write, and stay owner-only on the server).
+  const ownerActions = showClient ? '' :
+    `<button class="btn-edit" onclick="event.stopPropagation();openDetail(${m._idx})">Edit</button>
+     <button class="btn-remove" onclick="event.stopPropagation();confirmRemoveMatch(${m._idx})" title="Remove this match from your profile">Remove</button>`;
+  return `<div class="match-card" ${cardBodyAction}>
+    <div class="match-info">
+      <div class="match-opponent">${esc(m.player_a_name||'Player A')} vs ${esc(m.player_b_name||'Opponent')}</div>
+      <div class="match-meta">${esc(meta)} <span class="status-badge ${status.cls}">${status.label}</span></div>
+      ${clientLine}
+    </div>
+    <div class="match-right">
+      <div class="match-score">${esc(m.score||'')}</div>
+      ${watchHtml}
+      <button class="btn-edit" ${analysisAction} title="${analysisTitle}">Analysis</button>
+      ${ownerActions}
+    </div>
+  </div>`;
+}
+
+// Admin front-door: ALL clients' processed footage, grouped by processing day,
+// with a client filter (email or player name). Click any row to watch its trimmed
+// footage or open its dashboards — exactly what the client sees — to verify it processed.
+function renderAdminMatches() {
+  const container = document.getElementById('matchGroups');
+  const f = (adminFilter || '').trim().toLowerCase();
+  const view = f
+    ? matches.filter(m => [m.client_email, m.player_a_name, m.player_b_name]
+        .some(v => (v || '').toLowerCase().includes(f)))
+    : matches;
+
+  const groups = {};
+  view.forEach(m => {
+    const d = m.created_at ? new Date(m.created_at) : (m.match_date ? new Date(m.match_date) : null);
+    const key = d && !isNaN(d) ? d.toISOString().slice(0, 10) : 'Unknown';
+    (groups[key] = groups[key] || []).push(m);
+  });
+  const days = Object.keys(groups).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+
+  let html = '<div style="background:var(--white);border:1px solid var(--border);border-radius:var(--radius);padding:16px 16px 8px;box-shadow:0 1px 3px rgba(0,0,0,0.04)">'
+    + `<div class="section-label" style="margin-bottom:12px">All Processed Footage — Admin (${view.length})</div>`
+    + `<input id="adminMatchFilter" placeholder="Filter by client email or player name…" value="${esc(adminFilter)}" oninput="onAdminFilter(this.value)" `
+    + 'style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:14px;border:1px solid var(--border);border-radius:8px;font-size:14px">';
+
+  if (!days.length) {
+    html += '<div class="empty-state" style="padding:20px"><p>No matches for that filter.</p></div>';
+  }
+  days.forEach((day, di) => {
+    const dm = groups[day];
+    const gid = `d${di}`;
+    const open = di === 0;
+    const label = day === 'Unknown'
+      ? 'Unknown date'
+      : new Date(day + 'T00:00:00').toLocaleDateString(undefined,
+          { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+    html += `<div class="year-group">
+      <div class="year-header" onclick="toggleGroup('${gid}')">
+        <span class="chevron ${open ? 'open' : ''}" id="chev-${gid}">&#9654;</span>
+        <span>${esc(label)}</span>
+        <span class="group-count">${dm.length} processed</span>
+      </div>
+      <div class="group-content ${open ? 'open' : ''}" id="grp-${gid}">
+        <div class="match-list">${dm.map(m => matchCardHtml(m, true)).join('')}</div>
+      </div></div>`;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function onAdminFilter(v) {
+  adminFilter = v;
+  renderAdminMatches();
+  // Restore focus + caret after the re-render replaces the input node.
+  const inp = document.getElementById('adminMatchFilter');
+  if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
 }
 
 function toggleGroup(id) {
