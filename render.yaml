@@ -242,6 +242,15 @@ services:
       # - key: MARKETING_HOSTS
       #   value: "www.ten-fifty5.com,ten-fifty5.com"
 
+      # --- Google tag (GA4) — organic measurement for the marketing site + blog. Injected by
+      # locker_room_app._marketing_head into every served page's <head>. Value is PUBLIC (it
+      # appears in page source), so committed INLINE here — NEVER blank: a blank committed value
+      # gets re-clobbered to empty on every blueprint sync and silently darkens the tag (this
+      # exact trap dark-ed the NextPoint tag for a week, 2026-07). GA4-only for now (no paid ads
+      # for Ten-Fifty5 yet); GOOGLE_ADS_ID stays unset so no Ads tag renders.
+      - key: GA4_MEASUREMENT_ID
+        value: "G-4167EPFS34"   # GA4 property "Ten-Fifty5" (www.ten-fifty5.com web stream)
+
       # De-Wix auth (Phase 1) — the /login page (Clerk). Served by THIS service.
       # DARK: with AUTH_V2_ENABLED=0 /login shows a "being set up" notice and Wix
       # login stays the only door. To go live: set CLERK_PUBLISHABLE_KEY (pk_…),

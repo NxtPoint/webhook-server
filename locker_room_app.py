@@ -36,6 +36,7 @@
 
 import os
 import glob
+import json
 from flask import Flask, send_file, jsonify, request, Response, redirect, abort
 
 app = Flask(__name__)
@@ -67,6 +68,63 @@ _NO_AUTH_CLIENT = {
 }
 
 
+# --- Google marketing tags (GA4 + Ads) — the portable measurement layer, ported from the
+# NextPoint (courtflow) web_app._google_tag_head pattern. ALL env-gated + DARK by default:
+# the gtag.js loader renders ONLY when Ten-Fifty5's own IDs are set on this service, so
+# shipping this is a no-op until the env is set. Values are PUBLIC (they appear in page
+# source), so once set they should be committed inline in render.yaml (NOT blank) — a blank
+# committed value gets re-clobbered to empty on every blueprint sync, silently darkening the
+# tag (this exact trap dark-ed the NextPoint tag for a week, 2026-07). cfTrack/cfConversion
+# are ALWAYS defined as SAFE NO-OPS so any data-conv CTA works whether or not the tag is set.
+GA4_MEASUREMENT_ID = os.environ.get("GA4_MEASUREMENT_ID", "").strip()   # G-XXXXXXXXXX
+GOOGLE_ADS_ID = os.environ.get("GOOGLE_ADS_ID", "").strip()            # AW-XXXXXXXXXX (unused for now)
+GOOGLE_ADS_CONVERSIONS_RAW = os.environ.get("GOOGLE_ADS_CONVERSIONS", "").strip()
+
+
+def _ads_conversions() -> dict:
+    """Map of semantic event -> Ads conversion send_to, from GOOGLE_ADS_CONVERSIONS (JSON)."""
+    if not GOOGLE_ADS_CONVERSIONS_RAW:
+        return {}
+    try:
+        v = json.loads(GOOGLE_ADS_CONVERSIONS_RAW)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _marketing_head() -> str:
+    """gtag.js loader + GA4/Ads config + safe cfTrack/cfConversion stubs for <head>. Stubs are
+    ALWAYS emitted (safe no-ops when no tag); the loader/config is added only when an ID is set.
+    A site-wide listener fires a conversion when a CTA with data-conv="…" is clicked."""
+    stubs = (
+        "<script>window.dataLayer=window.dataLayer||[];"
+        "window.cfTrack=window.cfTrack||function(n,p){if(window.gtag){gtag('event',n,p||{});}};"
+        "window.cfConversion=window.cfConversion||function(n,p){if(window.cfTrack)window.cfTrack(n,p);"
+        "var m=(window.__T5&&window.__T5.adsConversions)||{};"
+        "if(window.gtag&&m[n]){gtag('event','conversion',Object.assign({send_to:m[n]},p||{}));}};"
+        "document.addEventListener('click',function(e){var a=e.target&&e.target.closest&&"
+        "e.target.closest('a[data-conv]');if(a){var n=a.getAttribute('data-conv')||'sign_up';"
+        "if(window.cfConversion)window.cfConversion(n);}},true);</script>"
+    )
+    if not (GA4_MEASUREMENT_ID or GOOGLE_ADS_ID):
+        return stubs
+    primary = GA4_MEASUREMENT_ID or GOOGLE_ADS_ID
+    cfgs = ""
+    if GA4_MEASUREMENT_ID:
+        cfgs += f"gtag('config',{json.dumps(GA4_MEASUREMENT_ID)});"
+    if GOOGLE_ADS_ID:
+        cfgs += f"gtag('config',{json.dumps(GOOGLE_ADS_ID)});"
+    gmap = json.dumps({"ga4": GA4_MEASUREMENT_ID or None, "adsId": GOOGLE_ADS_ID or None,
+                       "adsConversions": _ads_conversions()})
+    loader = (
+        f'<script async src="https://www.googletagmanager.com/gtag/js?id={primary}"></script>'
+        "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
+        f"gtag('js',new Date());{cfgs}"
+        f"window.__T5=Object.assign(window.__T5||{{}},{gmap});</script>"
+    )
+    return loader + stubs
+
+
 def _html(name: str):
     path = os.path.join(FRONTEND_DIR, name)
     if not os.path.isfile(path):
@@ -77,6 +135,13 @@ def _html(name: str):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 html = f.read()
+            # Google tag (GA4) — the ad-attribution/measurement layer. Rides EVERY page incl. the
+            # marketing/SEO + blog pages (which need GA4 most). Dark until GA4_MEASUREMENT_ID set.
+            mkt = _marketing_head()
+            if "</head>" in html:
+                html = html.replace("</head>", mkt + "\n</head>", 1)
+            else:
+                html = mkt + "\n" + html
             # Shared dual-mode auth helper (TFAuth) for the logged-in app pages.
             # In <head>, non-defer, so window.TFAuth exists before page scripts run.
             # Skipped for marketing/blog/login; legacy (Wix) behaviour is unchanged
