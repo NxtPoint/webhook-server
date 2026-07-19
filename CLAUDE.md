@@ -28,6 +28,7 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Environment variables (any service)** → `docs/business/env-vars.md`.
 - **Technique pipeline** → `docs/business/features.md` (Technique section) + `technique/README.md`.
 - **Support bot** → `docs/business/features.md` (Support Bot section) + `support_bot/README.md`.
+- **Retiring the dormant Wix scaffolding** → `docs/DE-WIX-DECOMMISSION.md`. As of 2026-07 the live product is 100% Render (Clerk auth + PayPal payments) and **there were never any Wix customers** — but ~48 files still reference Wix and the columns are load-bearing schema (`account.external_wix_id`, `credit_ledger.external_wix_id` inside the billing grant-idempotency UNIQUE index, a CHECK allowing `wix_subscription`/`wix_payg`). It is inert at runtime and harmless to leave. **Status: PLANNED, not started — don't opportunistically "clean up" Wix references.**
 
 ## Things not to do (load-bearing)
 
@@ -66,6 +67,8 @@ The main service is `name: webhook-server` in `render.yaml` (legacy slug) but Re
 **Blog is statically generated** by `build_blog.py` (dependency-free, no framework): drop `frontend/blog/_posts/<slug>.md` with `title`/`description`/`date` frontmatter (optional `image: /blog/images/<file>` → hero + index thumbnail; served via the `/blog/images/<f>` route), run `.venv/Scripts/python build_blog.py`, commit the generated `frontend/blog/*.html`. Each post gets the shared nav + footer, Article + BreadcrumbList JSON-LD, Open Graph tags (its own hero as the OG card), a canonical at `/post/<slug>`, and is auto-added to the generated sitemap. Markdown supports `##`–`####` headings, lists, `**bold**`, `*italics*`, links, and pipe tables.
 
 **Marketing assets + polish (2026-06-15):** all 6 marketing pages + the blog share one sticky centered top-nav (current page highlighted) + footer, unified 1200px width, WCAG-AA contrast, and a skip-to-content link. Brand favicon (`/favicon.svg|.ico|.png`, `/apple-touch-icon.png`), per-page social cards (`/og/<file>`, 1200×630), and a **branded 404** (`frontend/404.html` via the `locker_room_app.py` errorhandler — HTML for browsers, JSON for `/api`·`/ops`). The design system is duplicated per file, so site-wide nav/colour/width changes are N-file edits. Full reference: `docs/business/marketing-and-seo.md` + `frontend/README.md`.
+
+**`locker_room_app._html()` is the universal injection point.** Every served page (marketing, blog, member SPA) gets four things stitched into its `<head>` by that one helper: `auth_client.js`, `analytics.js`, `attribution.js`, and the **GA4 gtag loader** (`GA4_MEASUREMENT_ID`, property "Ten-Fifty5"; `cfTrack`/`cfConversion` are safe no-ops). Add a site-wide script here, not per file. **Env-var trap:** `GA4_MEASUREMENT_ID` is committed **inline** in `render.yaml` — the value is public (it's in page source) and a blank committed value gets clobbered to empty on blueprint sync, silently darkening the tag (this dark-ed the NextPoint tag for a week). `GOOGLE_ADS_ID` stays unset — no paid ads for Ten-Fifty5 yet, so no Ads tag renders.
 
 **Shell** — default is PowerShell (use `$null` not `/dev/null`, `$env:VAR` not `$VAR`, backtick for line continuation, `if ($?) { B }` not `A && B`). Bash also available via the Bash tool.
 
@@ -197,7 +200,9 @@ Owner invites coaches from the Locker Room "Invite Coach" tab. Data in `billing.
 - Idempotent: re-inviting a revoked coach reuses the row (status → INVITED, new token, new email). Tokens single-use.
 
 ### Email (AWS SES)
-Two emails (both in `coach_invite/`): coach invite (on `POST /api/client/coach-invite`) and video complete (ingest step 7 + task-status auto-fire, idempotent via `ses_notified_at`).
+Two customer emails (both in `coach_invite/`): coach invite (on `POST /api/client/coach-invite`) and video complete (ingest step 7 + task-status auto-fire, idempotent via `ses_notified_at`).
+
+**Ops alerts** — `coach_invite/video_complete_email.py::send_ops_email()` is the single helper for internal notifications to `OPS_NOTIFY_EMAIL`. All best-effort (never fail the request) and fired from the choke point that owns the fact, not from the route: `paypal_billing/webhook.py` (payment received / refund / cancellation — gated on `record_payment()` returning a NEW row so PayPal retries don't double-email), `marketing_crm/feedback/blueprint.py::_signal()` (NPS detractor + cancellation reason), `core_db/repositories/consent.py::open_dsar()` (DSAR/erasure — covers both the biometric-withdrawal and direct-request paths), plus signup / completion-BCC / `/ops/alert-failures`.
 
 SES region `eu-north-1` (Stockholm, matches Render). IAM user `nextpoint-uploader` needs `ses:SendEmail` / `ses:SendRawEmail`. Domain `ten-fifty5.com` verified via DKIM. Must be out of sandbox to send to unverified recipients. Env: `SES_FROM_EMAIL` (default `noreply@ten-fifty5.com`), `COACH_ACCEPT_BASE_URL` (default `https://api.nextpointtennis.com`), `LOCKER_ROOM_BASE_URL` (default `https://www.ten-fifty5.com/portal`).
 
@@ -206,6 +211,8 @@ Portal chat using Claude Haiku 4.5. FAQ-only (answers strictly from `support_bot
 
 ### Client API (`client_api.py`)
 Auth: `X-Client-Key` header. Admin endpoints additionally require email in `ADMIN_EMAILS` (hardcoded: `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`). Surface: customer-facing dashboard data + profile / entitlements / members / matches / footage URLs + `/backoffice/*` admin endpoints + **`POST /api/client/acquisition`** (first-touch gclid/utm capture → `core.acquisition`, fired by `attribution.js` — see the Growth/CRM offline-conversion note). Dashboard endpoints: `docs/business/features.md` (Dashboards section). Full list: grep `@.*\.route` in `client_api.py`.
+
+**Admin front door (2026-07-14):** an `ADMIN_EMAILS` user gets **read-only** visibility over *every* client's footage — `/api/client/matches` drops the per-email filter (optional `?client_email=` narrows; rows carry `client_email`, response flags `is_admin`/`all_clients`), and read endpoints allow owner-OR-admin via `_can_view_task()` / `_owns_task` (match detail, footage-url, match + practice dashboards, match-analysis). **Writes (edit / reprocess / delete) stay owner-only, deliberately** — don't extend `_can_view_task` to a write path. `frontend/locker_room.html` renders the admin view grouped by processing day.
 
 ### Growth / CRM stack (`marketing_crm/` + `core_db/` + `core_api/`)
 The de-Wix growth + canonical-data layer. **Now always-on** (de-gated 2026-06-17 — cockpit/consent/feedback/tracking/core_api register unconditionally; `crm_sync` self-gates on HubSpot/Klaviyo keys). Living status doc: `docs/business/growth-and-crm.md` (start here). `marketing_crm/` sub-packages: `backoffice` (admin cockpit), `consent` (consent capture + biometric/parental modals), `privacy` (policy + decisions), `tracking` (page-view beacon + event tracking → `core.*`), `feedback` (in-app feedback + NPS), `klaviyo` / `crm_sync` (CRM flows), `outreach`, `contracts`. The canonical DB is `core_db/` (`models.py` / `schema.py` / `repositories/`, schema `core.*` — customers/users/subs/matches/usage/feedback/consent), surfaced over HTTP by `core_api/` (`/api/core/*`, registered in boot, dual-mode auth). `core.user` carries `auth_provider` + `auth_provider_uid` — **now LIVE for Clerk** (the de-Wix auth target, shipped). Design rationale: `docs/business/_archive/db-schema-proposal.md`; system maps: `docs/business/architecture.md`; auth/payment + Wix migration record: `docs/business/_archive/wix-migration-record.md`.
@@ -230,7 +237,7 @@ Pages:
 - `/practice`, `/match-analysis` — analytics SPAs (see `docs/business/features.md` Dashboards section).
 - Public marketing (served host-switched by the Locker Room service — see Services table): `/` (`home.html`), `/overview` (`how_it_works.html`), `/pricing` (`pricing_public.html` on a marketing host), `/coaching` (`for_coaches.html`), `/academies` (`for_academies.html`), `/contact-us` (`contact.html`), `/blog`, `/post/<slug>`. Blog HTML is generated by `build_blog.py` from `frontend/blog/_posts/*.md`.
 
-**Wix dependencies — ALL MIGRATED 2026-06-16 (kept only as rollback fallbacks):**
+**Wix dependencies — ALL MIGRATED 2026-06-16 (kept only as rollback fallbacks; retirement plan in `docs/DE-WIX-DECOMMISSION.md` is PLANNED, not started):**
 1. Member authentication → **Clerk** (`auth_v2/`, dual-mode) — see the AUTH CUTOVER note below.
 2. Payment checkout → **direct PayPal** (`paypal_billing/`, LIVE) — see the PAYMENT CUTOVER note below.
 3. Subscription event webhook → **PayPal webhook** (`/api/billing/paypal/webhook`) feeds the same `apply_subscription_event` grant path; the Wix `/api/billing/subscription/event` endpoint stays for the fallback.
@@ -323,6 +330,7 @@ Always-on (de-gated 2026-06-17 — `register()` registers unconditionally; each 
 
 **Ignorable root directories** (present on disk, not part of runtime):
 - `diag_081e089c/`, `data/` — local investigation snapshots / scratch dumps (often gitignored).
+- `marketing_crm/outreach/` — the package is code, but its **contents are gitignored** (`.gitignore:66`) because it holds prospect CSVs. A permanently-dirty `?? marketing_crm/outreach/` in `git status` is expected, not work-in-progress.
 - `static/`, `templates/` — Flask defaults; actual SPAs live under `frontend/`, inspection templates inlined in `ui_app.py`.
 
 `frontend/` contains all SPA HTML; served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`.
