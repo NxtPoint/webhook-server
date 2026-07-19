@@ -80,3 +80,6 @@ ml_pipeline/fixtures_silver/*.sql.gz
 
 # Generated weekly SEO reports (seo/weekly_seo.py --out)
 seo/reports/
+
+# local read-only DB credential for devenv/seed_local.py — never commit
+devenv/.env.local
