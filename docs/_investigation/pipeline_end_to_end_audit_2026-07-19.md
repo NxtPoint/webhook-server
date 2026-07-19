@@ -219,7 +219,25 @@ Batches 3 and 4 should not ship until the Render validation above answers items 
 
 Source: `sportai docs.docx` (Tennis Beta, "Result in detail"), read 2026-07-19. This addendum **supersedes** several findings above. Read it before acting on anything in this report.
 
-## ⚠ NEW P0 — SportAI's X axis is the SINGLES court [0, 8.23]; our config assumes a DOUBLES court [0, 10.97]
+## ~~NEW P0 — SportAI's X axis is the SINGLES court~~ — **RETRACTED 2026-07-19, the code was right**
+
+> **This finding is WITHDRAWN. Do not act on it.** Measured against production:
+>
+> | statistic (floor bounces, `tennis_singles`, in-court y) | observed | doubles frame predicts | singles frame predicts |
+> |---|---|---|---|
+> | p05 `court_x` | **1.47** | 1.37 (`singles_left_x`) | ~0.4 |
+> | p50 `court_x` | **5.49** | 5.485 (centre) | ~4.1 |
+> | p95 `court_x` | **9.44** | 9.60 (`singles_right_x`) | ~7.8 |
+>
+> `bronze.ball_bounce.court_x` is in the **doubles frame [0, 10.97]**, exactly as `SPORT_CONFIG` declares. The existing constants are correct and every x-derived field below is fine.
+>
+> **Why the docs misled me:** SportAI uses *different frames for different fields*. `bounce_heatmap` really is a 23.77×8.23 singles grid — measured at **24 rows × 9 cols** in production, matching the docs — but `court_pos` is not on that grid. I generalised the documented heatmap dimensions to the bounce coordinates. The documentation's `court_pos — "[0:8.23, 0:23.77]"` line is simply **wrong** for delivered data.
+>
+> **Lesson for this codebase: vendor docs are a hypothesis, production data is the authority.** Every remaining docs-derived claim in this addendum (confidence key names, `warmups`, `swing_type` domain, `meta`) is therefore *unverified* and must be measured before being acted on. See "Docs-derived claims still needing measurement" at the end.
+>
+> Retained below strictly as a record of the reasoning and its refutation.
+
+## ~~Original claim~~ — SportAI's X axis is the SINGLES court [0, 8.23]; our config assumes a DOUBLES court [0, 10.97]
 
 The docs state the court coordinate range three separate times, unambiguously:
 
@@ -289,9 +307,21 @@ FROM bronze.ball_bounce WHERE task_id = '<a sportai task>';
 - x runs far-side left→right — **matches docs** (origin = top-left as seen from camera).
 - **`serve_d` should be: a forehand overhead struck behind the baseline is assumed a serve** ("rare to have an overhead from behind the baseline"). Docs agree: `fh_overhead` = *"Forehand overhead (often a serve)"*. Note the current gate is `y < 1.5` / `y > 22.27`, i.e. it also admits overheads up to **1.5 m inside** the court — more permissive than "behind the baseline". That tolerance exists for T5 calibration error (the comment at `:89-96` records SportAI's own values sitting at ~0.0 or ~24.47, i.e. genuinely at/behind the baseline), so it can likely be tightened for the SportAI path specifically.
 
-## Revised priority
+## Docs-derived claims still needing measurement
 
-1. **P0 — the X-frame mismatch.** Confirm against data, then fix. Everything x-derived depends on it; fixing anything else first risks tuning against a broken frame.
-2. P1 — serve service-box test (needs the corrected x frame to be written correctly).
-3. P1 — hollow-ingest billing; NULL-as-zero rendering; deleted matches on dashboards. All independent of the frame question and safe to fix now.
-4. P2 — confidences remap, `warmups` ingest, `meta`/fps persistence.
+The retracted P0 proved the vendor docs do not reliably describe delivered data. Everything below came from the docs and is **unverified** until measured:
+
+| claim | verifying query |
+|---|---|
+| confidence keys are `pose_/ball_/swing_/final_confidences`, so the typed columns are always NULL | `SELECT count(*) FILTER (WHERE tracking_confidence IS NOT NULL), count(*), jsonb_object_keys(data) FROM bronze.session_confidences …` |
+| `swing_type` domain is exactly `fh_overhead/fh/1h_bh/2h_bh/other` (⇒ `'Slice'` unreachable, serve-list branches dead) | `SELECT swing_type, count(*) FROM bronze.player_swing GROUP BY 1 ORDER BY 2 DESC;` |
+| SportAI supplies a top-level `warmups[]` we ignore | `SELECT meta->'keys' FROM bronze.session LIMIT 5;` — `_ensure_session` stores the payload's top-level key names |
+| the metadata object is `meta`, not `metadata`, and carries `video_info.fps` | same query as above |
+| `team_sessions.team_front` = camera-side player | `SELECT * FROM bronze.team_session LIMIT 5;` vs known near/far |
+
+## Revised priority (post-retraction)
+
+1. **P1 — the serve service-box test** (`:945`). Now the top item. Unaffected by the retraction: it is a *y*-axis and box-membership defect, and the x bounds it needs are the existing, correct `1.37 / 9.60`. The centre service line is **5.485** — which is already `MID_X_DEFAULT`, so the fix is to use that fixed value rather than the drifting `AVG`.
+2. **P1 — service-line constants** `6.40 / 17.37` → **5.485 / 18.285**. A pure y-axis error, untouched by the frame question, and it still mis-defines `shot_phase_d`.
+3. **P1 — hollow-ingest billing; NULL-as-zero rendering; deleted matches on dashboards; the `ball_position` GENERATED DDL** (reproduced fatal on a fresh DB). All independent of geometry and safe to fix now.
+4. **P2 — the docs-derived items above**, each only after its verifying query.
