@@ -338,6 +338,45 @@ thumbnail_crops · warmups
 
 **Sizing (`fh_overhead` ≈ serves).** `fh_overhead` is 31.7% of all swings — implausible for genuine overheads, entirely consistent with serves (≈⅓ of shots in singles). This supports the owner's rule that a forehand overhead behind the baseline is a serve, and means serve detection rests on a single swing type plus a geometric test.
 
+## GROUND-TRUTH VALIDATION — task `052786b4` (owner-played, 2026-07-19)
+
+The owner played and uploaded a known match, giving us the first true reference. **Truth: 2 games (1-1), 18 points — game 1 = 10 points, game 2 = 8 points, ~25 serves.**
+
+### What the pipeline got RIGHT
+
+| | truth | silver | |
+|---|---|---|---|
+| points | 18 | 18 | ✓ |
+| games | 2 | 2 | ✓ |
+| points per game | 10 + 8 | 10 + 8 | ✓ |
+| deuce/ad alternation | strict | strict across all 18 | ✓ |
+| server end | changes at game 2 | near (g1) → far (g2) | ✓ |
+
+Point/game structure derivation is **correct**, not lossy. Several severity estimates in this report assumed otherwise and were wrong.
+
+**The owner's serve rule is confirmed:** all 27 detected serves were struck *strictly behind* the baseline — near server `y ≈ 24.5` (baseline 23.77), far server `y ≈ -1.3` (baseline 0). None sits in the 0–1.5 m inside-court band the current gate at `:551-553` admits. Tightening `serve_d` to "fh_overhead strictly behind the baseline" costs zero recall here and drops 155→103 false serves on the pathological task `0336b82b`.
+
+### F4 CONFIRMED with a measured impact
+
+Point 5 was a double fault. Both its serve rows carry `serve_try_ix_in_point = 'Double'`, so its first serve is invisible to `gold.match_kpi`'s denominator (`gold_init.py:255`):
+
+- computed: 9 in ÷ **17** attempts = **52.9%**
+- truth: 9 in ÷ **18** attempts = **50.0%**
+
+**One double fault inflated first-serve % by 2.9 points**, and the error scales with double-fault rate — flattering exactly the players who serve worst. This is no longer a code-reading inference; it is measured against a known match.
+
+### NEW P2 — `_validate_rally_count` is anchored to the unreliable side
+
+`build_silver_v2.py:1692-1720` compares silver points against `bronze.rally` and warns on divergence. On this match it emitted:
+
+```
+RALLY VALIDATION WARNING silver_points=18 vs bronze_rallies=27 (33.3%)
+```
+
+Silver's 18 is **correct**; SportAI's 27 rallies is the wrong number — it over-segments (27 rallies for 18 actual points). The validator treats the unreliable input as truth and flags the correct output. On `0336b82b` it fires at 92.9% for the same reason in the opposite direction (bronze reports only 8 rallies for a full match).
+
+So the check produces false alarms in both directions and cannot be used as a quality signal. Either re-anchor it to serve-derived point counts, or drop it. Its current form actively misleads — it sent this audit chasing a non-existent "silver is losing a third of the match" defect until owner ground truth corrected it.
+
 ## NEW P2 — prod silver mixes code vintages, and has no provenance to tell them apart
 
 Found while validating the local dev environment (2026-07-19). Rebuilding silver locally from the *same* bronze rows:
