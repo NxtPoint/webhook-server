@@ -377,6 +377,36 @@ Silver's 18 is **correct**; SportAI's 27 rallies is the wrong number — it over
 
 So the check produces false alarms in both directions and cannot be used as a quality signal. Either re-anchor it to serve-derived point counts, or drop it. Its current form actively misleads — it sent this audit chasing a non-existent "silver is losing a third of the match" defect until owner ground truth corrected it.
 
+## VIDEO-RECONCILED GROUND TRUTH — `vw_point_hardening.xlsx` (task `840cacb7`)
+
+The owner hand-reconciled 93 silver rows against video footage, logging 17 discrepancies. Categorised:
+
+| class | n | nature |
+|---|---|---|
+| player id `118` vs `119` | 8 | stroke/phase/outcome identical, only the id differs — the `_resolve_two_players` de-ghosting fold (finding S4) |
+| **false serves** | 4 | pipeline says Serve; video says Forehand (Rally / Transition / Return) |
+| near/far mix-up (`118` vs `22`) | 1 | genuine cross-court misattribution |
+| wrongly excluded | 2 | `exclude_d = TRUE` on shots the video confirms were real |
+| outcome-only | 2 | serve correct, outcome wrong (incl. a Double Fault scored as "In") |
+
+### The false serves are BRONZE errors and are not fixable in silver
+
+Three candidate `_d`-layer fixes were tested against this ground truth. **All three failed:**
+
+1. **Inherit SA's `serve` flag** — SportAI reports `serve = TRUE` on **all four** false serves, with `swing_type = 'fh_overhead'` and `ball_hit_location_y` of 24.47 / -2.17 / -1.58 / -1.92 (all strictly behind a baseline). SportAI classified a forehand struck ~2 m behind the baseline as an overhead *and* flagged it a serve. Both available signals are wrong in the same direction, so switching sources fixes nothing.
+2. **Require a time gap before a serve** (a serve starts a point) — inverted. Gap before *real* serves: median 15.7 s, min 5.1 s. Gap before *false* serves: median 28.5 s, max 33.6 s. The false serves look *more* like point-starts than real ones, so this rule would reject real serves and keep the fakes.
+3. **Use ball speed** (serves are fastest) — `ball_speed` is NULL on 24 of the 25 serve rows in this match. No signal to use.
+
+At least one case is a **missed detection** compounding a misclassification: at t=602.40 the video shows a *return*, meaning the actual serve ~1 s earlier was never detected at all, and the return inherited the serve label.
+
+**Conclusion — this is a genuine ceiling.** Under RULE 1 (bronze owns the fact; silver inherits and derives), these errors cannot be corrected in the derived layer, because every bronze signal that could discriminate is itself wrong. The honest responses are (a) flag and measure the uncertainty rather than presenting it as clean, and (b) fix it upstream — SportAI accuracy, or T5.
+
+**Lesson on fixture durability:** this match's bronze and silver rows were **soft-deleted 2026-04-27 and swept**, so the annotated ground truth can no longer be rebuilt from source — only the spreadsheet survives. Any match used as a ground-truth reference must be protected from the orphan sweep.
+
+### NEW — serve-speed KPIs are computed on a partial sample
+
+`ball_speed` coverage on serve rows, measured locally: **73%** (`079d2c62`), **62%** (`052786b4`), **28%** (`0336b82b`). SQL `AVG` silently ignores NULLs, so `gold.match_kpi.pa_serve_speed_avg`, `pa_first_serve_speed_avg` and the fastest-serve tiles are averages over whichever subset SportAI happened to measure — presented on the dashboard as if they described the whole match. Nothing surfaces the coverage. On a match like `0336b82b` the "average serve speed" describes barely a quarter of the serves.
+
 ## NEW P2 — prod silver mixes code vintages, and has no provenance to tell them apart
 
 Found while validating the local dev environment (2026-07-19). Rebuilding silver locally from the *same* bronze rows:
