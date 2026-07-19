@@ -307,17 +307,36 @@ FROM bronze.ball_bounce WHERE task_id = '<a sportai task>';
 - x runs far-side left→right — **matches docs** (origin = top-left as seen from camera).
 - **`serve_d` should be: a forehand overhead struck behind the baseline is assumed a serve** ("rare to have an overhead from behind the baseline"). Docs agree: `fh_overhead` = *"Forehand overhead (often a serve)"*. Note the current gate is `y < 1.5` / `y > 22.27`, i.e. it also admits overheads up to **1.5 m inside** the court — more permissive than "behind the baseline". That tolerance exists for T5 calibration error (the comment at `:89-96` records SportAI's own values sitting at ~0.0 or ~24.47, i.e. genuinely at/behind the baseline), so it can likely be tightened for the SportAI path specifically.
 
-## Docs-derived claims still needing measurement
+## Docs-derived claims — MEASURED against production 2026-07-19
 
-The retracted P0 proved the vendor docs do not reliably describe delivered data. Everything below came from the docs and is **unverified** until measured:
+The retracted P0 proved vendor docs do not reliably describe delivered data, so every remaining docs-derived claim was measured before being accepted. Results:
 
-| claim | verifying query |
+**Actual top-level payload keys** (from `bronze.session.meta->'keys'`, which stores what each payload really contained):
+
+```
+ball_bounces · ball_positions · bounce_heatmap · confidences · debug_data
+highlights · meta · player_positions · players · rallies · team_sessions
+thumbnail_crops · warmups
+```
+
+**Actual `swing_type` domain** (`bronze.player_swing`): `fh` 1296 · `fh_overhead` 1230 · `1h_bh` 506 · `other` 458 · `2h_bh` 394 — exactly the five documented values, nothing else.
+
+**Actual `confidences` keys** (`bronze.session_confidences.data`): `ball_confidences`, `final_confidences`, `pose_confidences`, `swing_confidences`.
+
+| claim | verdict |
 |---|---|
-| confidence keys are `pose_/ball_/swing_/final_confidences`, so the typed columns are always NULL | `SELECT count(*) FILTER (WHERE tracking_confidence IS NOT NULL), count(*), jsonb_object_keys(data) FROM bronze.session_confidences …` |
-| `swing_type` domain is exactly `fh_overhead/fh/1h_bh/2h_bh/other` (⇒ `'Slice'` unreachable, serve-list branches dead) | `SELECT swing_type, count(*) FROM bronze.player_swing GROUP BY 1 ORDER BY 2 DESC;` |
-| SportAI supplies a top-level `warmups[]` we ignore | `SELECT meta->'keys' FROM bronze.session LIMIT 5;` — `_ensure_session` stores the payload's top-level key names |
-| the metadata object is `meta`, not `metadata`, and carries `video_info.fps` | same query as above |
-| `team_sessions.team_front` = camera-side player | `SELECT * FROM bronze.team_session LIMIT 5;` vs known near/far |
+| SportAI supplies `warmups[]` that we ignore | ✅ **CONFIRMED** — key present; `ingest_bronze_strict` never reads it while pass 3 hand-rolls warm-up exclusion |
+| the object is `meta`, not `metadata` | ✅ **CONFIRMED** — `_derive_task_id`'s `payload["metadata"]` (`ingest_bronze.py:96`) has never matched. Masked only because both prod callers pass `task_id` explicitly. `meta.video_info.fps` is available and discarded |
+| confidence typed columns are always NULL ⇒ quality gate dead | ✅ **CONFIRMED** — none of the four probed key names (`tracking_confidence`/`tracking`/`court_detection`/`court`, `ingest_bronze.py:651-661`) exists in the payload. The `< 0.5` gate at `build_silver_v2.py:1761` has never fired |
+| `'Slice'` stroke unreachable | ✅ **CONFIRMED** — no `slice` variant is ever emitted; the bucket is permanently zero |
+| serve-detection swing list is 3/4 dead code | ✅ **CONFIRMED** — of `('fh_overhead','bh_overhead','overhead','smash')` only `fh_overhead` can match. Retires the earlier "smash misdetected as serve" finding entirely |
+| `team_sessions.team_front` = camera-side player | ⏳ not yet measured |
+
+**New, found by measurement:** SportAI sends `debug_data`; the ingest looks for `debug_events`/`events_debug` (`ingest_bronze.py:846`), so `bronze.debug_event` is permanently empty. Same class as the `meta`/`metadata` bug — a guessed key name never checked against a payload.
+
+**Why the confidence remap matters more than it looks.** The discarded block is the only quality signal SportAI gives us, and `ball_confidences` is its weakest component (the docs' own example shows `ball: 0.30984`, `ball_detection_frequency: 0`). Poor ball detection is the upstream cause of the missing-bounce cascade documented above — fabricated `body` serve locations, inverted `depth_d`, false double faults from absent coordinates. Remapping to `final_confidences.ball` / `.final` would let a match be flagged as low-quality *before* a customer opens a dashboard built on it.
+
+**Sizing (`fh_overhead` ≈ serves).** `fh_overhead` is 31.7% of all swings — implausible for genuine overheads, entirely consistent with serves (≈⅓ of shots in singles). This supports the owner's rule that a forehand overhead behind the baseline is a serve, and means serve detection rests on a single swing type plus a geometric test.
 
 ## Revised priority (post-retraction)
 
