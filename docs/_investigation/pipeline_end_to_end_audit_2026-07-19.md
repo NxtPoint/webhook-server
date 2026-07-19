@@ -212,3 +212,86 @@ Ordered so that each batch is independently shippable and verifiable, and so the
 | **5 — Aggregation ownership** | serve-strategy point count into the view; return-% denominator into the view; `gold.practice_summary`; `model` predicates as defence-in-depth | Medium. Mostly moving existing math into SQL. |
 
 Batches 3 and 4 should not ship until the Render validation above answers items 1-3 — a fix built on the wrong axis convention or the wrong speed unit would be worse than the bug.
+
+---
+
+# ADDENDUM — after reading the SportAI API documentation
+
+Source: `sportai docs.docx` (Tennis Beta, "Result in detail"), read 2026-07-19. This addendum **supersedes** several findings above. Read it before acting on anything in this report.
+
+## ⚠ NEW P0 — SportAI's X axis is the SINGLES court [0, 8.23]; our config assumes a DOUBLES court [0, 10.97]
+
+The docs state the court coordinate range three separate times, unambiguously:
+
+- Ball Bounces: *"Coordinate X is between 0 and 8.23 meters (27ft), and Y is between 0 and 23.77 meters (78ft)"*; `court_pos` — *"Units: meters [0:8.23, 0:23.77]"*
+- Player Positions: `court_X, court_Y: scalar [0:8.23, 0:23.77]`, and *"distance, in meters, from top left corner of the court (as seen from camera)"*
+- Bounce Heatmap: *"the bounce matrix dimensions are 23.77x8.23, which reflect the court dimensions"*
+
+**27 ft is the singles width.** SportAI's X origin is the singles sideline; the doubles alleys are not represented at all.
+
+Our `SPORT_CONFIG` (`build_silver_v2.py:79-97`) assumes the opposite frame:
+
+```
+doubles_width_m 10.97 · singles_left_x 1.37 · singles_right_x 9.60
+```
+
+`SX_LEFT = 1.37`, `SX_RIGHT = 9.60` (`:478-479`), `MID_X_DEFAULT = SX_LEFT + S_WIDTH/2 = 5.485` (`:485`), zone lanes `z2/z3/z4 = 3.4275 / 5.485 / 7.5425` (`:1497-1499`).
+
+**This config is correct for T5** — `ml_pipeline/camera_calibration.py:56` maps to `COURT_WIDTH_DOUBLES_M`, centre `10.97/2` (`:783`). It is wrong for SportAI, and SportAI is the customer-facing path. One shared config cannot serve two different coordinate frames.
+
+### Consequences for every x-derived field on the SportAI path
+
+| Field | Code | Effect in SportAI's [0, 8.23] frame |
+|---|---|---|
+| **In/out sideline test** | `court_x < 1.37 OR court_x > 9.60` (`:942`) | **Left:** balls landing in `x ∈ [0, 1.37)` — the leftmost **16.6% of the singles court** — are wrongly scored `'Error'`. **Right:** `x > 9.60` is unreachable (max 8.23), so a ball out over the right sideline is **never** detected as out. Wrong in both directions at once. |
+| **Deuce/ad split** | fallback `mid = 5.485` (`:485`) | True centre is **4.115**. The dynamic `AVG` (`:497-511`) partially self-corrects, but its own filter `BETWEEN 1.37 AND 9.60` discards every serve struck from `x < 1.37`, biasing the mean; with no qualifying serve it falls back to 5.485, which is 1.37 m off centre. |
+| **`serve_location` wide/body/T** | anchored at `SX_LEFT`/`SX_RIGHT` (`:1099-1116`) | Bins start 1.37 m inside the true sideline; the wide/body/T distribution is shifted across the whole court. |
+| **`rally_location` lanes A-D** | `z2/z3/z4 = 3.4275/5.485/7.5425` (`:1497-1499`) | True quartiles of [0, 8.23] are **2.06 / 4.115 / 6.17**. Lanes shift ~1.37 m; lane D collapses from a full quarter to the last 0.69 m. Placement heatmaps skew accordingly. |
+| **x normalisation / mirroring** | `10.97 - x` (`:1559-1569`) | Should be `8.23 - x`. Far-player x is mirrored to a point **2.74 m** off, so near/far placement data are not comparable — silently corrupting every combined heatmap. |
+
+**This outranks the serve-box defect.** That one affects serve legality; this affects *every* x-derived fact in the system.
+
+**Must be confirmed against data before any fix** (one query):
+```sql
+SELECT MIN(court_x), MAX(court_x), AVG(court_x),
+       COUNT(*) FILTER (WHERE court_x > 8.23) AS above_singles_width
+FROM bronze.ball_bounce WHERE task_id = '<a sportai task>';
+```
+`MAX ≤ 8.23` with zero rows above → singles frame confirmed. Run the same against a T5 task, where the max should approach 10.97.
+
+## Findings RETRACTED or downgraded by the docs
+
+- **`ball_speed` unit — RESOLVED, no bug.** Docs: *"Estimated ball velocity just after the ball was hit. **Unit: km/h**"*. My earlier "if it's m/s everything is 3.6× wrong" risk is **withdrawn**. The missing on-screen unit labels remain a display defect, not a correctness one.
+- **X-axis orientation — RESOLVED, code is correct.** *"distance from top left corner of the court (as seen from camera)"* ⇒ x increases camera-left→right, y increases far→near. The deuce/ad mirroring direction and `server_end_d` (`y < 1.5 → far`) are both right.
+- **"Smash behind the baseline misdetected as a serve" — cannot fire on SportAI.** The documented `swing_type` domain is **exactly** `fh_overhead`, `fh`, `1h_bh`, `2h_bh`, `other`. No `smash`, no `overhead`, no `bh_overhead` — those branches at `:551-553` are dead code on this path (they may still matter for T5, which emits its own vocabulary).
+- **`ball_impact_location` / `ball_impact_type` / `intercepting_player_id` / `ball_trajectory` are documented "Not in use yet"** — always null. The suggestion to reuse `ball_impact_location` instead of solving bounce-matching is void.
+- **`ball_position.X/Y` units — RESOLVED.** Normalised *image* coordinates `[0,1]`, not court metres. Nothing consumes them, so this is inert.
+
+## New defects the docs expose
+
+1. **The confidence quality gate is 100% dead, not merely zero-sensitive.** Documented keys under `confidences` are `pose_confidences`, `ball_confidences`, `swing_confidences`, `final_confidences`. `_upsert_session_confidences` (`ingest_bronze.py:651-661`) probes for `tracking_confidence`, `tracking`, `court_detection`, `court` — **none of which exist**. Both typed columns are therefore *always* NULL, so `build_silver_v2.py:1761`'s `< 0.5` warning can never fire. The raw object *is* preserved in `data` jsonb, so nothing is lost — the extraction just needs remapping to `final_confidences.final` / `.ball` / `.pose`. This upgrades the earlier "0.0 is falsy" finding.
+
+2. **`swing_type = 'slice'` is unreachable.** `stroke_d` maps `'slice'/'bh_slice'/'fh_slice'` → `'Slice'` (`:1647`), but SportAI never emits them. Any Slice category on a dashboard is permanently zero for SportAI matches.
+
+3. **SportAI hands us `warmups` and we ignore it.** The docs define a top-level `warmups[]` with `start_time`, `end_time`, `warmup_confidence`, `method`, `reason`. `ingest_bronze_strict` does not read the key at all — while pass 3 hand-rolls an elaborate warm-up exclusion heuristic. A supplied bronze fact being re-derived (RULE 1 violation), and very likely a free accuracy win on `exclude_d`.
+
+4. **The metadata key is `meta`, not `metadata`.** `_derive_task_id` (`:96-97`) reads `payload["metadata"]`. Per the docs the object is `meta`, and it carries `video_info` with **`fps`**, plus `sport_type`, `n_players`, `n_rallies`, `n_floor_bounces`. The fps that bronze lacks *is* in the payload, discarded twice over — wrong key name, and never persisted.
+
+5. **`team_sessions` is documented ground truth for near/far.** `team_front` = *"close to the camera"*, `team_back` = far. `gold.vw_player` instead infers A/B by `MAX(player_id)` over an unfiltered set. The reliable signal is already ingested into `bronze.team_session` and unused.
+
+6. **Bounce `type` is exactly `"floor"` or `"swing"`, where `"swing"` means a racket contact.** Confirms the Pass-2 fallback defect: with no floor bounce in the window, the code takes a *racket* contact as the shot's landing coordinate. It should return NULL. The documented domain being closed makes `type IS NULL` rare, which lowers the NULLS-FIRST bug's frequency without making it correct.
+
+7. **`serve` is a documented, reasonably reliable flag** — *"The first swing of a rally almost always has serve=true"* — that we deliberately ignore in favour of geometry (`:533-560`). Worth revisiting as a conjunct rather than a replacement.
+
+## Owner's stated ground truth (2026-07-19)
+
+- far side `y = 0`, near side `y ≈ 23` — **matches docs and code.**
+- x runs far-side left→right — **matches docs** (origin = top-left as seen from camera).
+- **`serve_d` should be: a forehand overhead struck behind the baseline is assumed a serve** ("rare to have an overhead from behind the baseline"). Docs agree: `fh_overhead` = *"Forehand overhead (often a serve)"*. Note the current gate is `y < 1.5` / `y > 22.27`, i.e. it also admits overheads up to **1.5 m inside** the court — more permissive than "behind the baseline". That tolerance exists for T5 calibration error (the comment at `:89-96` records SportAI's own values sitting at ~0.0 or ~24.47, i.e. genuinely at/behind the baseline), so it can likely be tightened for the SportAI path specifically.
+
+## Revised priority
+
+1. **P0 — the X-frame mismatch.** Confirm against data, then fix. Everything x-derived depends on it; fixing anything else first risks tuning against a broken frame.
+2. P1 — serve service-box test (needs the corrected x frame to be written correctly).
+3. P1 — hollow-ingest billing; NULL-as-zero rendering; deleted matches on dashboards. All independent of the frame question and safe to fix now.
+4. P2 — confidences remap, `warmups` ingest, `meta`/fps persistence.
