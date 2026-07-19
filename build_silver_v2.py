@@ -176,6 +176,13 @@ ALL_COLS = OrderedDict({
     "shot_key_q":            "text",
     "aggression_d":          "text",
     "depth_d":               "text",
+    # Is the stored bounce coordinate CONSISTENT with what actually happened?
+    # NULL = no bounce data; FALSE = the coordinate contradicts observed play
+    # or is physically impossible; TRUE = no contradiction found. Never edits
+    # court_x/court_y — bronze owns those (RULE #1); this only records whether
+    # they can be believed, so presentation can drop them instead of drawing a
+    # legitimate rally shot outside the court.
+    "bounce_plausible_d":    "boolean",
     # Model source discriminator — allows SportAI and T5 rows to coexist
     "model":                 "text DEFAULT 'sportai'",
 })
@@ -1764,6 +1771,99 @@ def pass5_analytics(conn: Connection, task_id: str, cfg: dict) -> int:
 
 
 # ============================================================
+# PASS 6: Bounce plausibility (UPDATE)
+# ============================================================
+
+def pass6_bounce_plausibility(conn: Connection, task_id: str, cfg: dict) -> int:
+    """Flag bounce coordinates that contradict what actually happened.
+
+    Motivation (owner, 2026-07-19): serves appear OUTSIDE the court on the
+    placement heatmaps despite having been played on and won — which "casts a
+    shadow of doubt on our data integrity". Measured on task 052786b4 (owner
+    ground truth), 4 of 18 in-play serves carry a bounce outside the service
+    box, two of them physically impossible (court_y = 24.11 and -6.32).
+
+    We do NOT touch court_x/court_y. Bronze owns those facts (RULE #1). This
+    records whether they can be BELIEVED, so presentation can omit a bad point
+    instead of drawing a legitimate rally shot beyond the baseline.
+
+    A bounce is implausible when:
+      1. it sits far outside any conceivable court envelope; or
+      2. a serve bounced on the server's OWN side of the net (impossible); or
+      3. a serve that was demonstrably IN — it came back, or it won the point
+         outright — has a bounce outside the service box. The rally is the
+         evidence; the coordinate is the thing that must be wrong.
+
+    Faulted serves are deliberately NOT flagged: a fault legitimately lands
+    outside the box, and `shot_ix_in_point` is NULL for them, so they cannot
+    satisfy the "was returned" test.
+    """
+    half_y = float(cfg["half_y"])
+    svc = float(cfg["service_line_m"])          # 6.40m from the net
+    sx_left, sx_right = float(cfg["singles_left_x"]), float(cfg["singles_right_x"])
+    mid_x = sx_left + float(cfg["singles_width"]) / 2.0   # centre service line
+    tol = 0.30                                  # line-call tolerance, metres
+
+    sql = f"""
+    WITH ctx AS (
+      SELECT p.id,
+             p.serve_d, p.server_end_d, p.serve_side_d, p.court_x, p.court_y,
+             -- ace_d / service_winner_d are EXISTS-stamped on EVERY row of the
+             -- point, so a FAULTED first serve inherits them. Require a live
+             -- shot index to pick out the contact serve; faulted serves carry
+             -- shot_ix_in_point = NULL and are legitimately allowed to land out.
+             (COALESCE(p.ace_d, FALSE) OR COALESCE(p.service_winner_d, FALSE))
+               AND p.shot_ix_in_point IS NOT NULL AS won_outright,
+             EXISTS (
+               SELECT 1 FROM {SILVER_SCHEMA}.{TABLE} q
+               WHERE q.task_id = p.task_id
+                 AND q.point_key = p.point_key
+                 AND COALESCE(q.serve_d, FALSE) = FALSE
+                 AND q.shot_ix_in_point > p.shot_ix_in_point
+             ) AS was_returned
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET bounce_plausible_d = CASE
+      WHEN c.court_x IS NULL OR c.court_y IS NULL THEN NULL
+      -- (1) nowhere near a tennis court
+      WHEN c.court_x < -1.5 OR c.court_x > 12.5
+        OR c.court_y < -3.0 OR c.court_y > 27.0 THEN FALSE
+      -- (2) a serve cannot land on the server's own side of the net
+      WHEN COALESCE(c.serve_d, FALSE)
+       AND c.server_end_d = 'near' AND c.court_y > :half_y THEN FALSE
+      WHEN COALESCE(c.serve_d, FALSE)
+       AND c.server_end_d = 'far'  AND c.court_y < :half_y THEN FALSE
+      -- (3) a serve that came back, or won the point outright, WAS in
+      WHEN COALESCE(c.serve_d, FALSE)
+       AND (c.was_returned OR c.won_outright)
+       AND NOT (
+             c.court_y BETWEEN
+               (CASE WHEN c.server_end_d = 'near' THEN :half_y - :svc ELSE :half_y END) - :tol
+               AND
+               (CASE WHEN c.server_end_d = 'near' THEN :half_y ELSE :half_y + :svc END) + :tol
+         AND c.court_x BETWEEN
+               (CASE WHEN (c.server_end_d = 'near' AND c.serve_side_d = 'deuce')
+                       OR (c.server_end_d = 'far'  AND c.serve_side_d = 'ad')
+                     THEN :sx_left ELSE :mid_x END) - :tol
+               AND
+               (CASE WHEN (c.server_end_d = 'near' AND c.serve_side_d = 'deuce')
+                       OR (c.server_end_d = 'far'  AND c.serve_side_d = 'ad')
+                     THEN :mid_x ELSE :sx_right END) + :tol
+           ) THEN FALSE
+      ELSE TRUE
+    END
+    FROM ctx c
+    WHERE p.task_id = :tid AND p.id = c.id;
+    """
+    return conn.execute(text(sql), {
+        "tid": task_id, "half_y": half_y, "svc": svc, "tol": tol,
+        "sx_left": sx_left, "sx_right": sx_right, "mid_x": mid_x,
+    }).rowcount or 0
+
+
+# ============================================================
 # VALIDATION
 # ============================================================
 
@@ -1853,6 +1953,7 @@ def build_silver_v2(task_id: str, replace: bool = False) -> Dict:
         out["pass3_rows"] = pass3_point_context(conn, task_id, cfg)
         out["pass4_rows"] = pass4_zones_and_normalize(conn, task_id, cfg)
         out["pass5_rows"] = pass5_analytics(conn, task_id, cfg)
+        out["pass6_rows"] = pass6_bounce_plausibility(conn, task_id, cfg)
 
         out.update(_validate_rally_count(conn, task_id))
 

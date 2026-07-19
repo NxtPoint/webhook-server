@@ -136,6 +136,14 @@ services:
       - key: CLIENT_API_KEY
         sync: false
 
+      # Silver serve source. 'auto' inherits SportAI's bronze `serve` flag
+      # (RULE #1 — bronze owns the fact) but falls back to the geometric gate
+      # when SA's flag has obviously collapsed. Measured agreement: 96%/92% on
+      # healthy matches vs 5.8% on the one camera-setup video the geometric
+      # gate was built for. Rollback: set to "geometric".
+      - key: SILVER_SERVE_SOURCE
+        value: "auto"
+
   # =========================================
   # 2) Ingest worker service
   # =========================================
@@ -191,6 +199,12 @@ services:
 
       - key: INGEST_REPLACE_EXISTING
         value: "1"
+
+      # Must match the main API — this worker builds silver for SportAI
+      # matches, so a mismatch would produce two different serve derivations
+      # depending on which service happened to run the build.
+      - key: SILVER_SERVE_SOURCE
+        value: "auto"
 
   # =========================================
   # 4) Video trim worker service
