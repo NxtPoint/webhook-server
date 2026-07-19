@@ -58,6 +58,7 @@
 # Court geometry constants are in SPORT_CONFIG dict (currently tennis_singles only).
 # Quality gate: skips ingest if tracking_confidence < 0.5 (from bronze.session_confidences).
 
+import os
 import logging
 from typing import Dict, Optional
 from collections import OrderedDict
@@ -75,6 +76,20 @@ TABLE = "point_detail"
 # ============================================================
 
 DEFAULT_SPORT_TYPE = "tennis_singles"
+
+# Where pass 3 gets `serve_d` from. See the SERVE_SOURCE comment in
+# pass3_point_context. 'geometric' preserves historical behaviour; 'sa' inherits
+# SportAI's bronze serve flag (RULE #1 — bronze owns the fact). Env-gated so a
+# regression is a dashboard setting away from rollback, with no redeploy.
+SERVE_SOURCE = (os.getenv("SILVER_SERVE_SOURCE") or "geometric").strip().lower()
+if SERVE_SOURCE not in ("geometric", "sa", "sa_or_geom", "auto"):
+    SERVE_SOURCE = "geometric"
+
+# 'auto' trusts SA's flag unless it disagrees wildly with the geometric
+# candidate count, which is the signature of the camera-setup failure that
+# motivated the geometric gate. Measured: healthy matches agree to within 4%
+# (26/27, 24/26); the pathological task 0336b82b sits at 9/155 = 5.8%.
+SERVE_SA_MIN_AGREEMENT = float(os.getenv("SILVER_SERVE_SA_MIN_AGREEMENT") or 0.50)
 
 SPORT_CONFIG: Dict[str, Dict[str, float]] = {
     "tennis_singles": {
@@ -469,6 +484,51 @@ def pass2_bounce(conn: Connection, task_id: str, cfg: dict) -> int:
 #  17. SERVE LOCATION (1-8): service box divided into 4 quadrants per side.
 # ============================================================
 
+def _resolve_serve_source(conn: Connection, task_id: str, eps: float, court_len: float) -> str:
+    """Resolve SERVE_SOURCE, applying the 'auto' plausibility guard.
+
+    SportAI's bronze `serve` flag is the better source on healthy footage — it
+    is the vendor's own model, and RULE #1 says bronze owns the fact. But it
+    derives from SA's rally detection, and one camera setup collapsed that
+    (task 0336b82b: 9 serves flagged where geometry finds 155, i.e. 93% of the
+    match would be discarded).
+
+    'auto' therefore uses SA unless the two independent estimates disagree
+    wildly. Measured agreement: 26/27 and 24/26 on healthy matches, 9/155 on
+    the pathological one — the populations are three orders apart, so the
+    threshold is not delicate.
+    """
+    if SERVE_SOURCE != "auto":
+        return SERVE_SOURCE
+
+    row = conn.execute(text(f"""
+        SELECT
+          COUNT(*) FILTER (WHERE COALESCE(serve, FALSE))                        AS sa_serves,
+          COUNT(*) FILTER (WHERE lower(COALESCE(trim(swing_type),''))
+                                 IN ('fh_overhead','bh_overhead','overhead','smash')
+                             AND ball_hit_location_y IS NOT NULL
+                             AND (ball_hit_location_y < :eps
+                                  OR ball_hit_location_y > (:y_max - :eps)))    AS geom_serves
+        FROM {SILVER_SCHEMA}.{TABLE}
+        WHERE task_id = :tid
+    """), {"tid": task_id, "eps": float(eps), "y_max": float(court_len)}).fetchone()
+
+    sa_n, geom_n = int(row[0] or 0), int(row[1] or 0)
+    if geom_n == 0:
+        return "sa"
+    agreement = sa_n / geom_n
+    if agreement < SERVE_SA_MIN_AGREEMENT:
+        log.warning(
+            "SERVE SOURCE task_id=%s: SA flag rejected (sa=%d vs geometric=%d, "
+            "agreement=%.1f%% < %.0f%%) — falling back to geometric",
+            task_id, sa_n, geom_n, 100 * agreement, 100 * SERVE_SA_MIN_AGREEMENT,
+        )
+        return "geometric"
+    log.info("SERVE SOURCE task_id=%s: using SA flag (sa=%d vs geometric=%d, agreement=%.1f%%)",
+             task_id, sa_n, geom_n, 100 * agreement)
+    return "sa"
+
+
 def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     pf = _resolve_two_players(conn, task_id)
     p1, p2 = pf["p1"], pf["p2"]
@@ -547,15 +607,32 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         --     T5 this gate is always superseded (the overlay is unconditional).
         --   'other' excluded from the swing list — without a serve flag it leaks
         --   non-serves (deep clearing groundstrokes).
+        --
+        -- SERVE_SOURCE (env `SILVER_SERVE_SOURCE`, default 'geometric'):
+        --   'geometric' — the historical gate described above.
+        --   'sa'        — inherit SportAI's bronze `serve` flag verbatim
+        --                 (RULE #1: one-model-per-fact; bronze owns the fact).
+        --   'sa_or_geom'— union of both (highest recall, lowest precision).
+        -- Ground truth on task 052786b4 (owner-played, 18 pts / 2 games / 25
+        -- serves): geometric=27, SA=26, truth=25.
         CASE
+          WHEN :serve_src = 'sa'  THEN b.serve
+          WHEN :serve_src = 'sa_or_geom' AND b.serve THEN TRUE
           WHEN lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
            AND b.y IS NOT NULL
            AND (b.y < :eps OR b.y > (:y_max - :eps))
           THEN TRUE
           ELSE FALSE
         END AS serve_d,
-        -- server_end_d (raw) — same geometric criteria as serve_d.
+        -- server_end_d (raw) — mirrors whichever serve_d source is active.
+        -- Under 'sa' the eps band is irrelevant: the end is simply which half
+        -- of the court the server was standing in.
         CASE
+          WHEN :serve_src = 'sa' THEN
+            CASE WHEN b.serve AND b.y IS NOT NULL
+                 THEN CASE WHEN b.y < :half_y THEN 'far' ELSE 'near' END END
+          WHEN :serve_src = 'sa_or_geom' AND b.serve AND b.y IS NOT NULL
+            THEN CASE WHEN b.y < :half_y THEN 'far' ELSE 'near' END
           WHEN lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
            AND b.y IS NOT NULL
            AND (b.y < :eps OR b.y > (:y_max - :eps))
@@ -1413,6 +1490,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         "half_y": float(HALF_Y),
         "svc": float(SVC_LINE), "far_svc": float(FAR_SVC_LINE),
         "b1": float(B1), "b2": float(B2), "b3": float(B3),
+        "serve_src": _resolve_serve_source(conn, task_id, EPS, COURT_LEN),
     }
 
     # --- Route B staging (perf, no behaviour change) -----------------------
