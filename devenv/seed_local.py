@@ -35,6 +35,7 @@ Then build silver/gold locally against the seeded data:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from typing import Iterable
@@ -84,23 +85,73 @@ def _assert_local(url: str) -> None:
         sys.exit("REFUSING: :55432 is the CourtFlow local DB, not this project's dev DB.")
 
 
-def _writable_columns(conn, schema: str, table: str) -> list[str]:
-    """Column list minus GENERATED columns.
+def _writable_columns(conn, schema: str, table: str) -> dict[str, str]:
+    """Writable columns -> udt_name, excluding GENERATED columns.
 
-    Postgres rejects any INSERT that supplies a value for a GENERATED ALWAYS
-    column, and bronze has several (ball_bounce.court_x/court_y/image_x/image_y
-    are generated from the court_pos/image_pos arrays). Filtering them here is
-    the difference between a working copy and a hard failure mid-seed.
+    Two things bite here:
+
+    1. Postgres rejects any INSERT that supplies a value for a GENERATED ALWAYS
+       column, and bronze has seven (ball_bounce.court_x/court_y/image_x/image_y
+       and ball_position.x/y/timestamp).
+    2. jsonb columns come back from SELECT as Python dicts/lists, which psycopg
+       cannot adapt as bind parameters. We need the type to know which columns
+       to re-serialise and CAST on the way in -- hence returning types, not just
+       names.
     """
     rows = conn.execute(sql_text("""
-        SELECT column_name
+        SELECT column_name, udt_name
         FROM information_schema.columns
         WHERE table_schema = :s AND table_name = :t
           AND is_generated <> 'ALWAYS'
-          AND (is_identity <> 'YES' OR column_default IS NOT NULL OR TRUE)
         ORDER BY ordinal_position
     """), {"s": schema, "t": table}).fetchall()
-    return [r[0] for r in rows]
+    return {r[0]: r[1] for r in rows}
+
+
+def _source_column_defs(conn, schema: str, table: str) -> list[tuple[str, str]]:
+    """(name, rendered type) for real, non-generated columns, from pg_catalog.
+
+    `format_type` gives the exact declared type (numeric(5,1), timestamptz, …)
+    which information_schema.data_type flattens.
+    """
+    rows = conn.execute(sql_text("""
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod)
+        FROM pg_attribute a
+        JOIN pg_class c     ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = :s AND c.relname = :t
+          AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
+        ORDER BY a.attnum
+    """), {"s": schema, "t": table}).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def _sync_missing_columns(src_conn, tgt_conn, table: str) -> list[str]:
+    """Add columns the source has and the target lacks.
+
+    Bronze schema is managed idempotently across several _init/_ensure_*
+    functions (db_init.bronze_init, ingest_worker_app._ensure_schema,
+    upload_app), so no single call reproduces production's real shape --
+    submission_context's set-score columns are the case that caught us.
+    Mirroring the source is the only way to be faithful.
+    """
+    # Existence must be tested against ALL columns, not just writable ones:
+    # a column can exist on the target as GENERATED (so it is absent from
+    # _writable_columns) while existing on the source as a plain column. That
+    # is exactly the ball_position.x/y/timestamp divergence, and testing the
+    # writable set would report a phantom "added" for a no-op ALTER.
+    tgt = {r[0] for r in tgt_conn.execute(sql_text("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'bronze' AND table_name = :t
+    """), {"t": table}).fetchall()}
+    added = []
+    for name, typ in _source_column_defs(src_conn, "bronze", table):
+        if name not in tgt:
+            tgt_conn.execute(sql_text(
+                f'ALTER TABLE bronze.{table} ADD COLUMN IF NOT EXISTS "{name}" {typ}'
+            ))
+            added.append(name)
+    return added
 
 
 def _table_exists(conn, schema: str, table: str) -> bool:
@@ -154,10 +205,18 @@ def copy_task(src, tgt, task_id: str, batch: int = 2000) -> dict[str, int]:
         with src.connect() as sc, tgt.begin() as tc:
             if not (_table_exists(sc, "bronze", table) and _table_exists(tc, "bronze", table)):
                 continue
-            src_cols = set(_writable_columns(sc, "bronze", table))
-            cols = [c for c in _writable_columns(tc, "bronze", table) if c in src_cols]
+            added = _sync_missing_columns(sc, tc, table)
+            if added:
+                print(f"  [schema] bronze.{table}: added {len(added)} missing column(s): "
+                      f"{', '.join(added[:6])}{' …' if len(added) > 6 else ''}")
+
+            src_cols = _writable_columns(sc, "bronze", table)
+            tgt_cols = _writable_columns(tc, "bronze", table)
+            cols = [c for c in tgt_cols if c in src_cols]
             if not cols:
                 continue
+
+            json_cols = {c for c in cols if tgt_cols[c] in ("json", "jsonb")}
 
             collist = ", ".join(f'"{c}"' for c in cols)
             rows = sc.execute(
@@ -169,10 +228,23 @@ def copy_task(src, tgt, task_id: str, batch: int = 2000) -> dict[str, int]:
                 continue
 
             tc.execute(sql_text(f"DELETE FROM bronze.{table} WHERE task_id = :t"), {"t": task_id})
-            placeholders = ", ".join(f":{c}" for c in cols)
+            # jsonb needs an explicit CAST: the driver sees a dict/list and has
+            # no way to know it is destined for a json column.
+            placeholders = ", ".join(
+                (f"CAST(:{c} AS JSONB)" if c in json_cols else f":{c}") for c in cols
+            )
             ins = sql_text(f'INSERT INTO bronze.{table} ({collist}) VALUES ({placeholders})')
+
+            def _prep(r):
+                d = dict(r)
+                for c in json_cols:
+                    v = d.get(c)
+                    if v is not None and not isinstance(v, str):
+                        d[c] = json.dumps(v)
+                return d
+
             for i in range(0, len(rows), batch):
-                tc.execute(ins, [dict(r) for r in rows[i:i + batch]])
+                tc.execute(ins, [_prep(r) for r in rows[i:i + batch]])
             counts[table] = len(rows)
     return counts
 
@@ -209,6 +281,17 @@ def main() -> int:
     import db_init  # noqa: E402  (import AFTER DATABASE_URL is pointed at the target)
     db_init.bronze_init()
     print(f"bronze schema ready on {target_url.split('@')[-1]}")
+
+    # build_silver_v2 pass 3 reads ml_analysis.video_analysis_jobs even for
+    # SportAI tasks (it resolves fps there, and simply finds no row). The table
+    # must therefore EXIST locally or every build dies on an UndefinedTable.
+    try:
+        import ml_pipeline.db_schema as t5_schema  # noqa: E402
+        t5_schema.ml_analysis_init()
+        print("ml_analysis schema ready (needed by build_silver_v2 pass 3)")
+    except Exception as e:  # noqa: BLE001
+        print(f"WARNING: ml_analysis_init failed ({type(e).__name__}: {e}); "
+              "silver builds will fail until ml_analysis.video_analysis_jobs exists")
 
     tgt = create_engine(target_url, pool_pre_ping=True)
 

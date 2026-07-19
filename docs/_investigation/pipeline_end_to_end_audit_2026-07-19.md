@@ -338,6 +338,26 @@ thumbnail_crops · warmups
 
 **Sizing (`fh_overhead` ≈ serves).** `fh_overhead` is 31.7% of all swings — implausible for genuine overheads, entirely consistent with serves (≈⅓ of shots in singles). This supports the owner's rule that a forehand overhead behind the baseline is a serve, and means serve detection rests on a single swing type plus a geometric test.
 
+## NEW P2 — prod silver mixes code vintages, and has no provenance to tell them apart
+
+Found while validating the local dev environment (2026-07-19). Rebuilding silver locally from the *same* bronze rows:
+
+| task | ingested | local rebuild vs prod |
+|---|---|---|
+| `079d2c62` | 2026-06-16 | **identical** — every column, every row (94/94) |
+| `0336b82b` | 2026-04-28 | **13 columns differ**: `game_number` (13.0% of rows), `game_winner_player_id` (13.6%), `exclude_d`, `shot_ix_in_point`, `shot_outcome_d`, `point_winner_player_id`, `rally_length*`, `serve_try_ix_in_point`, … |
+
+The build is **deterministic** — rebuilding the same task twice locally yields byte-identical output (verified via `diff_silver --save` / `--vs`). So the divergence is not randomness: **production silver for older matches was derived by older code and never rebuilt.** `build_silver_v2`'s pass-3 logic has changed since April (the exclusion re-anchor, game numbering), and those matches still carry the old derivations.
+
+Two consequences:
+
+1. **Dashboards today render a mix of code vintages.** Two matches side by side in one customer's history can have had `exclude_d`, `game_number` and `point_winner_player_id` computed by materially different rules. Cross-match aggregates — `gold.player_performance`'s rolling-5 scorecard especially — average across that mix.
+2. **`silver.point_detail` has no build provenance.** There is no `built_at`, no code version, no timestamp column of any kind, so you cannot tell which rows are stale, or audit the blast radius of a past change after the fact. Every silver-affecting fix from here on inherits this blind spot.
+
+**Recommended alongside any batch-3/4 fix:** add `built_at TIMESTAMPTZ DEFAULT now()` and a `builder_version` text column to `silver.point_detail`, and rebuild historical silver once the derivation fixes land — otherwise the corrected logic applies only to matches ingested after the deploy, silently widening the vintage spread rather than closing it.
+
+**Method note:** because prod is a mix of vintages, `--against-prod` is *not* a valid gate for the fixes. The correct gate is local-before vs local-after (`diff_silver --save` / `--vs`), which isolates exactly what a change moves.
+
 ## Revised priority (post-retraction)
 
 1. **P1 — the serve service-box test** (`:945`). Now the top item. Unaffected by the retraction: it is a *y*-axis and box-membership defect, and the x bounds it needs are the existing, correct `1.37 / 9.60`. The centre service line is **5.485** — which is already `MID_X_DEFAULT`, so the fix is to use that fixed value rather than the drifting `AVG`.
