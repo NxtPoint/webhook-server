@@ -1,0 +1,30 @@
+# Local throwaway Postgres for pipeline work.
+#
+#   docker compose -f devenv/docker-compose.yml up -d
+#
+# Port 55433 deliberately avoids 55432 (the CourtFlow/NextPoint local DB that
+# this box's DATABASE_URL already points at) so the two can never be confused.
+#
+# This database is DISPOSABLE. `docker compose down -v` wipes it; re-seed with
+#   python -m devenv.seed_local --source-url <readonly-prod-url>
+
+services:
+  tf-devdb:
+    image: postgres:16
+    container_name: tf-devdb
+    environment:
+      POSTGRES_USER: tf
+      POSTGRES_PASSWORD: tf
+      POSTGRES_DB: tf_dev
+    ports:
+      - "55433:5432"
+    volumes:
+      - tf-devdb-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tf -d tf_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tf-devdb-data:
