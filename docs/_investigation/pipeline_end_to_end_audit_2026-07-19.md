@@ -433,3 +433,66 @@ Two consequences:
 2. **P1 — service-line constants** `6.40 / 17.37` → **5.485 / 18.285**. A pure y-axis error, untouched by the frame question, and it still mis-defines `shot_phase_d`.
 3. **P1 — hollow-ingest billing; NULL-as-zero rendering; deleted matches on dashboards; the `ball_position` GENERATED DDL** (reproduced fatal on a fresh DB). All independent of geometry and safe to fix now.
 4. **P2 — the docs-derived items above**, each only after its verifying query.
+
+---
+
+# JSON COVERAGE + DATA NUGGETS — test case `052786b4` (2026-07-22)
+
+Downloaded the full 11.6 MB raw SportAI JSON and ran `devenv/coverage_check.py`
+against live bronze. **Verified result: 322 leaf paths → 67 PROMOTED, 105
+PRESERVED, 150 DROPPED — and the only two truly-dropped top-level blocks are
+`meta` and `debug_data`** (plus `warmups`, empty here). Everything else is
+captured (typed columns or `data` blobs).
+
+## Where the 11.6 MB lives
+`players` 10.16 MB (pose keypoints) · `debug_data` 1.14 MB · `highlights` 0.96 MB
+· `player_positions` 0.58 MB · `ball_positions` 0.29 MB · rest < 0.05 MB each.
+
+## What's DROPPED (not ingested anywhere)
+
+**`meta` (19 fields) — the important loss.** Contains `fps: 25`, resolution
+1920×1080, **`duration: 612.0`** (the video is 10.2 min; SportAI just found no
+activity after 6.6 min), codec, bitrate, total_frames, start_timestamp,
+`n_players`/`n_rallies`/`n_floor_bounces` (self-check counts), `sport_type_original`
+(`tennis_unknown` → reclassified). Dropped only because ingest reads key
+`metadata` where SportAI sends `meta`. **fps especially matters** — bronze has no
+fps, the root of the "two frame spaces" hazard.
+
+**`debug_data` (131 fields, 1.14 MB) — SportAI's internal reasoning, entirely
+discarded.** Per-swing it exposes SportAI's OWN confidence for every decision we
+currently re-derive: `serve_conf`/`serve_nn`/`serve_dyn1/3` (is-it-a-serve),
+`conf_ball_in`/`conf_ball_out`/`conf_ball_hit` (in/out), `far` (near/far),
+`nballs` (multi-ball/neighbouring court), `discarded`, `rally_start`/`rally_end`,
+plus `sconf_*`/`vconf_*` sub-scores and `court_keypoints` (calibration).
+
+## What's PRESERVED but UNUSED (stored in a blob, silver never reads it)
+
+- **`highlights` (20 items, 965 KB)** — auto-detected `longest_rally` /
+  `fastest_rally` with duration, ball_speed, `dynamic_score`, players_speed. A
+  ready-made highlights reel.
+- **`team_sessions` (17)** — `team_front` (near) / `team_back` (far) player IDs
+  with time windows. **SportAI's own near/far assignment** — ground truth for the
+  A/B identity we solve with de-ghosting heuristics.
+- **player metrics** — `covered_distance` (362 m), `fastest_sprint` (16.8 km/h),
+  `activity_score`, `swing_type_distribution` (fh 42% / fh_overhead 30% / 2h_bh
+  12% / other 16%), `location_heatmap`. A whole fitness/style dashboard.
+- **per-swing `confidence` / `confidence_swing_type` / `confidence_volley`** —
+  PROMOTED to bronze columns but silver never filters on them.
+
+## Phase-2 opportunities (ranked)
+
+1. **Quality + serve/outcome accuracy** — ingest `debug_data` per-swing
+   confidences (`serve_conf`, `conf_ball_in/out`, `far`) and `meta` (fps,
+   resolution). These are SportAI's own answers to the exact questions we
+   struggle to derive geometrically.
+2. **Player identity** — use `team_sessions.team_front/back` as near/far truth.
+3. **New features** — highlights reel; player fitness/style panel.
+4. **Frame-space correctness** — store `meta.video_info.fps`.
+
+## Rock-solid foundation shipped
+
+- `raw_archive/` — every ingest now stores the whole payload to
+  `s3://<bucket>/raw-json/<task>.json.gz` and alarms (log + ops email) on any new
+  top-level key. Source of truth is never lost again; schema drift can't pass
+  silently.
+- `devenv/coverage_check.py` — on-demand raw-vs-bronze coverage + drift report.
