@@ -443,7 +443,10 @@ def pass2_bounce(conn: Connection, task_id: str, cfg: dict) -> int:
             OR (w.ball_hit_location_y < :half_y AND b.court_y > :half_y)
             OR (w.ball_hit_location_y > :half_y AND b.court_y < :half_y)
           )
-        ORDER BY (type = 'floor') DESC, timestamp
+        -- Prefer SportAI's delivered bounce (source IS NULL) over a recovered
+        -- debug_candidate; among either, prefer floor, then earliest. So a
+        -- candidate is only ever used when no delivered bounce matches the shot.
+        ORDER BY (source IS NULL) DESC, (type = 'floor') DESC, timestamp
         LIMIT 1
       ) b ON TRUE
     )

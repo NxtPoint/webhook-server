@@ -604,6 +604,84 @@ def _insert_ball_bounces(conn, task_id: str, items: list) -> int:
     """), rows)
     return len(rows)
 
+# Candidate-bounce recovery from debug_data.ball_bounces. SportAI's delivered
+# `ball_bounces` is a filtered subset; the debug set carries confidences and ~2x
+# the floor candidates. Measured on task 052786b4: adding conf>=0.6 + plausible
+# candidates lifts per-shot floor recall 61%->71% with no heatmap garbage
+# (~42% of candidates carry pixel/impossible coords and are rejected here).
+BOUNCE_CANDIDATES_ENABLED = (os.getenv("BOUNCE_CANDIDATES_ENABLED", "0").strip() == "1")
+BOUNCE_CAND_MIN_CONF = float(os.getenv("BOUNCE_CAND_MIN_CONF", "0.6"))
+# Plausible court envelope (metres) — matches build_silver_v2 pass-6
+# bounce_plausible_d, so the two agree on what a believable bounce is.
+_BC_X = (-1.5, 12.5)
+_BC_Y = (-3.0, 27.0)
+
+
+def _insert_ball_bounce_candidates(conn, task_id: str, payload: Dict[str, Any],
+                                   delivered: list) -> int:
+    """Insert EXTRA floor bounces from debug_data.ball_bounces.
+
+    Filtered to: type='floor', confidence>=BOUNCE_CAND_MIN_CONF, a plausible
+    in-court position (rejects the pixel/sentinel coords), and NOT within 0.15s
+    of a delivered bounce (the delivered set is an exact subset of the
+    candidates, so this avoids duplicates). Marked source='debug_candidate'.
+    """
+    if not BOUNCE_CANDIDATES_ENABLED:
+        return 0
+    dbg = _as_dict(payload.get("debug_data"))
+    cands = _as_list(dbg.get("ball_bounces"))
+    if not cands:
+        return 0
+    delivered_ts = sorted(
+        _as_float(b.get("timestamp")) for b in delivered
+        if isinstance(b, dict) and _as_float(b.get("timestamp")) is not None
+    )
+
+    def _near_delivered(t: float) -> bool:
+        import bisect
+        i = bisect.bisect_left(delivered_ts, t)
+        for j in (i - 1, i):
+            if 0 <= j < len(delivered_ts) and abs(delivered_ts[j] - t) < 0.15:
+                return True
+        return False
+
+    rows = []
+    for b in cands:
+        if not isinstance(b, dict) or b.get("type") != "floor":
+            continue
+        conf = _as_float(b.get("confidence"))
+        cp = b.get("court_pos")
+        t = _as_float(b.get("timestamp"))
+        if conf is None or conf < BOUNCE_CAND_MIN_CONF or t is None:
+            continue
+        if not (isinstance(cp, list) and len(cp) == 2):
+            continue
+        x, y = _as_float(cp[0]), _as_float(cp[1])
+        if x is None or y is None:
+            continue
+        if not (_BC_X[0] <= x <= _BC_X[1] and _BC_Y[0] <= y <= _BC_Y[1]):
+            continue  # pixel/sentinel/impossible — reject
+        if _near_delivered(t):
+            continue  # already have this bounce from the delivered set
+        rows.append({
+            "tid": task_id,
+            "type": "floor",
+            "player_id": _as_int(b.get("player_id")),
+            "ts": t,
+            "court_pos": json.dumps(cp),
+            "conf": conf,
+        })
+    if not rows:
+        return 0
+    conn.execute(sql_text("""
+        INSERT INTO bronze.ball_bounce
+            (task_id, type, player_id, timestamp, court_pos, source, confidence)
+        VALUES
+            (:tid, :type, :player_id, :ts, CAST(:court_pos AS JSONB), 'debug_candidate', :conf)
+    """), rows)
+    return len(rows)
+
+
 def _insert_rallies(conn, task_id: str, payload: dict) -> int:
     candidates = [
         payload.get("rallies"),
@@ -873,6 +951,7 @@ def ingest_bronze_strict(
     counts["rally"]              = _insert_rallies(conn, task_id, payload)
     counts["ball_position"]      = _insert_ball_positions(conn, task_id, ball_positions)
     counts["ball_bounce"]        = _insert_ball_bounces(conn, task_id, ball_bounces)
+    counts["ball_bounce_cand"]   = _insert_ball_bounce_candidates(conn, task_id, payload, ball_bounces)
     counts["player_position"]    = _insert_player_positions(conn, task_id, player_positions_flat)
     counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
     counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)

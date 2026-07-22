@@ -278,7 +278,13 @@ def _add_typed_columns(conn):
           ADD COLUMN IF NOT EXISTS player_id INT,
           ADD COLUMN IF NOT EXISTS "timestamp" DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS court_pos JSONB,
-          ADD COLUMN IF NOT EXISTS image_pos JSONB;
+          ADD COLUMN IF NOT EXISTS image_pos JSONB,
+          -- source: NULL/'delivered' = SportAI's final ball_bounces list;
+          -- 'debug_candidate' = an extra bounce recovered from
+          -- debug_data.ball_bounces (filtered by confidence + plausibility).
+          -- confidence: carried from the candidate set (delivered rows are NULL).
+          ADD COLUMN IF NOT EXISTS source TEXT,
+          ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION;
     """))
     # Derived scalars from array JSON:
     conn.execute(sql_text("""
