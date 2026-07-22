@@ -763,28 +763,48 @@ def _upsert_team_session(conn, task_id: str, obj) -> int:
       - top-level list of player dicts
     """
     if obj is None: return 0
-    d = obj if isinstance(obj, dict) else {}
 
     player_ids = []
 
-    # Pattern: {players: [{player_id: X}, ...]}
-    players_list = d.get("players") or d.get("player_list") or d.get("members")
-    if isinstance(players_list, list):
-        for p in players_list:
-            if isinstance(p, dict):
-                pid = p.get("player_id") or p.get("id")
-                if pid is not None:
-                    player_ids.append(str(pid))
-            elif isinstance(p, (int, str)):
-                player_ids.append(str(p))
+    # PRIMARY: SportAI sends team_sessions as a LIST of session objects, each with
+    # team_front (players close to the camera = NEAR) and team_back (FAR). This is
+    # the same structure for singles (1 id each) and doubles (2 each) — "team" is
+    # SportAI's generic name for a court side. player_a_id = NEAR, player_b_id = FAR.
+    # (Prior code assumed a dict and left both columns NULL for every match.)
+    if isinstance(obj, list):
+        from collections import Counter
+        front, back = Counter(), Counter()
+        for s in obj:
+            if not isinstance(s, dict):
+                continue
+            for p in (s.get("team_front") or []):
+                if p is not None: front[str(p)] += 1
+            for p in (s.get("team_back") or []):
+                if p is not None: back[str(p)] += 1
+        near = front.most_common(1)[0][0] if front else None
+        far = back.most_common(1)[0][0] if back else None
+        if near is not None: player_ids.append(near)
+        if far is not None: player_ids.append(far)
 
-    # Pattern: {player_ids: [id1, id2]}
+    d = obj if isinstance(obj, dict) else {}
+
+    # Fallbacks for other/legacy shapes (dict form).
+    if not player_ids:
+        players_list = d.get("players") or d.get("player_list") or d.get("members")
+        if isinstance(players_list, list):
+            for p in players_list:
+                if isinstance(p, dict):
+                    pid = p.get("player_id") or p.get("id")
+                    if pid is not None:
+                        player_ids.append(str(pid))
+                elif isinstance(p, (int, str)):
+                    player_ids.append(str(p))
+
     if not player_ids:
         pid_list = d.get("player_ids") or d.get("playerIds")
         if isinstance(pid_list, list):
             player_ids = [str(x) for x in pid_list if x is not None]
 
-    # Pattern: {player_1: X, player_2: Y} or {player_a_id: X, player_b_id: Y}
     if not player_ids:
         for ka, kb in [("player_1", "player_2"), ("player_a_id", "player_b_id"),
                         ("player_a", "player_b"), ("player1_id", "player2_id")]:
