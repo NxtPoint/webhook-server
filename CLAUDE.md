@@ -28,6 +28,7 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Environment variables (any service)** → `docs/business/env-vars.md`.
 - **Technique pipeline** → `docs/business/features.md` (Technique section) + `technique/README.md`.
 - **Support bot** → `docs/business/features.md` (Support Bot section) + `support_bot/README.md`.
+- **SportAI analytics pipeline audit + data coverage (2026-07)** → `docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md` (the deep audit: JSON→bronze→silver→gold→dashboard, validated against owner video; ranked open P1 defects; the full JSON coverage map + unused-data nuggets). Live state + next steps → `.claude/next_session_pickup.md`. **Validate any silver-derivation change in `devenv/`** (disposable local Postgres seeded from a read-only prod replica; `devenv/README.md`) with a before/after diff on the owner ground-truth match `052786b4` — never ship derived-logic on a hunch (two such hunches were refuted by video this sprint).
 - **Retiring the dormant Wix scaffolding** → `docs/DE-WIX-DECOMMISSION.md`. As of 2026-07 the live product is 100% Render (Clerk auth + PayPal payments) and **there were never any Wix customers** — but ~48 files still reference Wix and the columns are load-bearing schema (`account.external_wix_id`, `credit_ledger.external_wix_id` inside the billing grant-idempotency UNIQUE index, a CHECK allowing `wix_subscription`/`wix_payg`). It is inert at runtime and harmless to leave. **Status: PLANNED, not started — don't opportunistically "clean up" Wix references.**
 
 ## Things not to do (load-bearing)
@@ -331,6 +332,10 @@ Always-on (de-gated 2026-06-17 — `register()` registers unconditionally; each 
 **Ignorable root directories** (present on disk, not part of runtime):
 - `diag_081e089c/`, `data/` — local investigation snapshots / scratch dumps (often gitignored).
 - `marketing_crm/outreach/` — the package is code, but its **contents are gitignored** (`.gitignore:66`) because it holds prospect CSVs. A permanently-dirty `?? marketing_crm/outreach/` in `git status` is expected, not work-in-progress.
+- `devenv/` — **dev-only, never deployed.** Disposable local Postgres (docker, port 55433) seeded from a read-only prod replica, plus `seed_local.py` / `diff_silver.py` / `coverage_check.py`. The safe place to validate any silver-derivation change (see the SportAI audit pointer above). Credential lives in gitignored `devenv/.env.local`.
+- `raw_archive/` — ingest-side helper (wired into `ingest_worker_app._do_ingest`): archives every SportAI payload to `s3://<bucket>/raw-json/<task>.json.gz` and raises a **SCHEMA DRIFT** alarm (log + ops email) on any new top-level key. `RAW_ARCHIVE_ENABLED` (default on). The source-of-truth keeper — SportAI's re-fetch URL expires in 1 hour, so this is the only durable copy.
+
+**SportAI-ingest env flags (2026-07):** `VIDEO_QUALITY_CHECK_ENABLED` (pre-analysis `/api/videos/check` gate, default on), `RAW_ARCHIVE_ENABLED` (raw-JSON archive + drift alarm, default on), `BOUNCE_CANDIDATES_ENABLED` (recover extra floor bounces from `debug_data.ball_bounces`; **on** for the ingest worker), `SILVER_SERVE_SOURCE` (`geometric` default / `sa` / `auto` — the SA/auto path is video-validated but not enabled). Full context: the audit doc + `.claude/next_session_pickup.md`.
 - `static/`, `templates/` — Flask defaults; actual SPAs live under `frontend/`, inspection templates inlined in `ui_app.py`.
 
 `frontend/` contains all SPA HTML; served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`.

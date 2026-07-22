@@ -1,62 +1,52 @@
-# Next-session pickup — 2026-06-16 — ★ DOC + LEGACY-CODE BASELINE CLEANUP DONE. Bronze DEV complete; training is the only remaining (incremental) phase.
+# Next-session pickup — 2026-07-22 — SportAI pipeline audit + data-coverage sprint
 
-## ⚡ Executive summary (read first — 60 seconds)
+> **Two parallel threads in this repo.** This pickup covers the **SportAI (`tennis_singles`) business-analytics pipeline**, the focus of the last few sessions. The **T5 ML pipeline** thread is *parked at "bronze DEV complete, training is the incremental remainder"* — its handover is `.claude/handover_t5.md` and the T5 memories, unchanged by this sprint.
 
-**Today's date:** 2026-06-16
-**Phase:** **Bronze deterministic DEV is DONE.** Every remaining gap is training/data. This session was the **doc + legacy-code baseline cleanup** (Tomo asked for it after DEV-complete was declared) — now finished.
-**Bench:** `ea1e500c=12/26, 880dff02=23/24` — GREEN (verified before + after the cleanup; this session was docs/memory only, no code touched).
-**What shipped this session:** full doc-tier realignment to DEV-COMPLETE (CLAUDE.md, north_star lean-rewrite with history archived, handover_t5, env_vars, sop, docs_hygiene, training docs), investigation-doc resolved-banners, cleanup-inventory status update, 4 shipped-phase kickoffs archived, 6 memory entries refreshed.
-**What's blocked:** nothing on DEV. Training needs (a) more sharp-far full-res uploads (DATA, Tomo) and (b) a GPU train run.
-**Next session's job:** **TRAINING** — the final, incremental phase. `submit_train_job.py --fact {serve|hit|bounce|swing}` (job-def rev 3); measure with `recon_line` against the reference pair. Bounce recall is highest-leverage (gates bounce + volley).
+## ⚡ Executive summary (read first)
 
-If that's enough, stop reading. Depth below.
+A deep audit of the **SportAI analytics pipeline** — JSON → bronze → silver → gold → dashboard. Full findings + method: **`docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md`** (single source of truth for this work; read it before touching silver/gold).
 
----
+**Headline: the pipeline's core is correct** — validated serve/point/game structure against the owner's own video (task `052786b4`: 18 points, 2 games 1-1, 26 serves, 1 double fault — reproduced exactly). The audit found real but *narrow* defects on a sound core, plus a lot of SportAI data we ingest but don't use.
 
-## What the cleanup did (this session — all on origin/main)
+**Bench is GREEN** (`ea1e500c=12/26, 880dff02=23/24`) — run `.venv/Scripts/python -m ml_pipeline.diag.bench` before any `serve_detector`/`build_silver_v2` change.
 
-Five read-only audit agents (one per doc-tier) + serialized writers. Bench stayed green throughout; no code changed (the prior sprint had already cleared all provably-dead Render-side code).
+## What shipped this sprint (all on origin/main, safe/flag-gated)
 
-1. `9832201` — **archived 4 shipped-phase kickoffs** (identity / swing-classifier / court-calibration kickoffs + adr01 label audit) → `.claude/_archive/`.
-2. `eb05fd9` — **Tier-1 truth docs.** north_star collapsed from 475 lines (10 stacked banners + superseded strategy/scorecard blocks) to a lean current version; **full pre-cleanup file archived verbatim** at `docs/_archive/north_star_2026-06-16_pre-dev-complete-cleanup.md`. RULES (incl RULE 6) kept verbatim. CLAUDE.md: DEV-COMPLETE status line, swing-classifier PROVEN, far-pose-retired note, `recon_line` in diag lists, dropped `tracknet_v3.pt`, rule #11 update.
-3. `da18d19` — **Tier-2 ops docs.** handover_t5 NEXT SESSION + TEST HARNESS rewritten to training-next; env_vars gained `SERVE_FAR_POSE_ENABLED` / `T5_BOUNCE_FROM_MODEL` / `SWING_CLASSIFIER_ENABLED`; sop bench baseline fixed; docs_hygiene dangling strategy/research refs repointed; training docs job-def rev 3 + recon_line.
-4. `244dabc` — **investigation docs + cleanup inventory.** Resolved/superseded banners on 3 investigation docs; `t5_cleanup_inventory.md` status → Render-side cleanup COMPLETE.
-5. **Memory** (local, not git): refreshed `project_far_player_stroke_research` (swing PROVEN), `project_t5_may27_serve_dev_ceiling` (far-pose architectural fix, not training), `feedback_bronze_first_t5_reconciliation` (flag default ON), `project_t5_may07_phantom_bounces` (warm-up exclusion shipped), `project_dual_submit_pipeline_state`, + new MEMORY.md DEV-COMPLETE bullet. Canonical reconciliation memory = `feedback_reconciliation_and_exclusion_methodology` (RULE 6).
+1. **Video quality gate revived** (`upload_app.py`) — SportAI `/api/videos/check` now gates submission; a definitively-bad video is rejected (clean 400, no credit spent) *before* analysis. Fails open on infra errors. `VIDEO_QUALITY_CHECK_ENABLED` (default on). Honest limit: catches low res/fps, NOT poor camera angle.
+2. **Raw-JSON archive + schema-drift alarm** (`raw_archive/`) — every ingest stores the whole payload to `s3://<bucket>/raw-json/<task>.json.gz`; a new top-level SportAI key logs **SCHEMA DRIFT** + ops email. `RAW_ARCHIVE_ENABLED` (default on). *Fixes the source-of-truth loss: past matches' JSON was unrecoverable (not stored + 1-hour URL expiry).*
+3. **Bounce-recall via debug candidates** (`ingest_bronze.py`, `build_silver_v2.py` pass-2) — recovers extra floor bounces from `debug_data.ball_bounces` (conf≥0.6 + plausible + non-dup), delivered-preferred. **`BOUNCE_CANDIDATES_ENABLED=1` — ENABLED on the ingest worker** (⚠ also set it in the Render dashboard — render.yaml value changes may not auto-apply). Validated +2-3 clean plottable shots on recent matches; safe no-op on pre-2026-06-22 matches (they lack bounce confidence).
+4. **`bounce_plausible_d`** silver column (pass-6) — flags impossible bounces so heatmaps can omit them. Populated; **not yet consumed by the frontend** (to-do).
+5. **team_session near/far fix** (`ingest_bronze.py`) — `player_a_id`(near)/`player_b_id`(far) were NULL for every match (extractor assumed a dict; SportAI sends a list). Now populated with SportAI's ghost-free identity. Capture only; unused so far.
+6. **Env-gated serve source** (`SILVER_SERVE_SOURCE`) — `auto` (SA flag + geometric fallback) is built and **video-validated 26/26 on 052786b4** but **NOT enabled** (prod = `geometric`, which has 1 phantom serve on that match but correct 18 points). Owner deferred enabling.
+7. **devenv/** — disposable local Postgres + real-bronze seed + silver diff harness + JSON coverage/drift checker. See `devenv/README.md`.
 
-## The reference pair (use for every recon)
-SA truth `079d2c62-b871-4364-b0ad-5da0fc268848` ↔ T5 `375198f5-1adf-4c6f-9862-be8466f0c192`
-(video `1781589562_match.mp4`; SA ≈ 24 serves / 68 floor bounces / 87 active swings).
-Run: `python -m ml_pipeline.diag.recon_line 375198f5-... --sa 079d2c62-...`
+## Local dev environment (how everything was validated)
 
-## Honest recon scorecard (the DEV-done line — unchanged this session)
-| element | state | verdict |
-|---|---|---|
-| serve count | 28 vs SA 24 | ✅ DEV done (far recall = train) |
-| volley agree | 80% | bounce-recall-gated (TRAIN) |
-| swing_type agree | 57% | TRAIN (classifier accuracy) |
-| ball_speed | wired; matched median T5 ~83 vs SA ~90 | ✅ DEV done; per-shot ±40 = TRAIN |
-| identity A/B | clean (0% pollution) | ✅ done |
-| stroke WHEN/WHO recall | 40% line-level (35/87) | ❌ TRAIN (the big one) |
-| bounce recall | 28 vs 68 floor | ❌ TRAIN (sharp-far retrain) |
-| far player position | ~absent | ❌ TRAIN / coverage |
+- Docker Postgres `localhost:55433` (NOT :55432 = CourtFlow). `docker compose -f devenv/docker-compose.yml up -d`.
+- Read-only prod role `tf_readonly` in **`devenv/.env.local`** (gitignored). **Drop the role when finished** (`DROP OWNED BY tf_readonly; DROP ROLE tf_readonly;`).
+- `SEED_SOURCE_URL=$(cat devenv/.env.local) python -m devenv.seed_local --task <uuid>` → `python -m devenv.diff_silver --task <uuid> --save/--vs`.
+- **Seeded reference matches:** `052786b4` (owner ground truth, 18pts), `079d2c62` (SA pair, messy 4-ghost), `0336b82b` (pathological). Raw JSONs for the first two in the session scratchpad + `s3://…/raw-json/`.
 
-**No code fix remains for any ❌.**
+## Open defects to fix (from the audit — ranked)
 
-## Env flags that make prod correct (don't lose these)
-- `SERVE_FAR_POSE_ENABLED=0` (render.yaml) — far-pose retired. Code default ON keeps CI bench green. Rollback=1.
-- `T5_STROKE_DRIVEN_SILVER=1` (default on) — hit-driven silver. Rollback=0 → bounce-driven path (`_t5_pass1_load_bounce_driven`, **HELD** until stroke-driven re-proven on a fresh real upload).
-- `T5_BOUNCE_FROM_MODEL`, `SERVE_MODEL_ENABLED`, `SWING_CLASSIFIER_ENABLED`, `BOUNCE_CNN_THRESHOLD=0.70` — all default-on/set; see `docs/env_vars.md`. (`T5_SERVE_FROM_EVENTS` was DELETED 2026-06-07.)
+- **P1 serve service-box test** (`build_silver_v2.py:945`) — only test is "within 1.6m of the net"; no service-box check → a long double fault can score as an ace. Fix = real box test (centre line 5.485 = `MID_X_DEFAULT`; service lines y=5.485/18.285). **Highest-value open item.**
+- **P1 first-serve % inflated** — `'Double'` on both serve rows of a DF point removes the 1st from the denominator (52.9% vs true 50.0%). Fix = separate `double_fault_d` flag.
+- **P1 service-line constants** `6.40/17.37`→`5.485/18.285`; `shot_phase_d` zones mis-defined.
+- **P1 hollow ingest bills the customer** — zero-row ingest marked `completed`, credit consumed. Add a zero-count guard.
+- **P1** NULL→0% rendering (`match_analysis.html` `pctW`); deleted matches on dashboards (`vw_player` lacks `deleted_at`); Serve Strategy double-count.
+- Retracted after measurement: the coordinate-frame "P0" (code right — doubles frame [0,10.97]); ball_speed IS km/h; smash-as-serve can't fire.
 
-## NEXT SESSION — TRAINING (the final phase) — `.claude/training_environment.md`
-GPU Batch one-off jobs: `python -m ml_pipeline.training.submit_train_job --fact {serve|hit|bounce|swing}` (job-def rev 3). Bounce recall is highest-leverage (gates bounce + volley). Re-bench swing on GPU. Deploying retrained detection weights = rule-#8 detection-image rebuild. Gated on Tomo's sharp-far full-res uploads (DATA). Measure every retrain with `recon_line` + the per-fact benches (`bench_hit`/`bench_bounce`/`bench_identity`/`bench_swing_type`, map in `.claude/training_harness_status.md`).
+## NEXT STEPS (owner-directed, in order)
 
-## HELD / deferred (deliberate)
-- **Bounce-driven silver rollback NOT retired** — `_t5_pass1_load_bounce_driven` stays until stroke-driven is proven on a fresh REAL upload.
-- **Batch-side disk-only v1 weights** (`bounce_detector_v1*.pt`, `swing_classifier_v1.pt`) — DEFER to a daylight Docker-rebuild cycle (rule #8, low value); see `docs/_investigation/t5_cleanup_inventory.md`.
-- **Bench Option B** (regenerate fixtures WITH serve_candidates so far-pose-OFF is bench-guarded, then flip code default) — durable follow-up, not done; not blocking.
+1. **RALLY RECON** — the next focus, the analogue of tonight's serve recon. Validate against the owner's video on `052786b4`: **once a serve is in, ring-fence the rally = return → the point-ending shot (winner by hitter OR error by receiver).** Confirm point-ending-shot detection is correct. Also worth re-checking: did the serve validation surface anything reusable for rally (the `far` flag, `debug_data` per-swing signals).
+2. **P1 serve service-box + first-serve-% fixes** — they rewrite historical numbers; validate before/after in devenv on `052786b4`, then rebuild historical silver.
+3. Wire `bounce_plausible_d` into the heatmaps.
+4. Athletics/fitness panel (easy win — data already in bronze.player).
 
-## Key docs
-`docs/north_star.md` (lean — banner + RULES + scorecard + ladder) · `docs/_archive/north_star_2026-06-16_pre-dev-complete-cleanup.md` (full build history) · `.claude/audit_bronze_build_2026-06-16.md` (the audit + 3 verdict rounds) · `.claude/handover_t5.md` (ops) · `.claude/training_environment.md` + `.claude/training_harness_status.md` (how to train) · memory `feedback_reconciliation_and_exclusion_methodology` (RULE 6).
+## Data nuggets (Phase 2, mostly unused)
 
----
-**END OF PICKUP**
+Coverage on the 11.6MB JSON: only `meta` + `debug_data` truly dropped; ~105 fields preserved-but-unused. Best untapped: `debug_data` per-swing signals (`far` = 100%-accurate near/far, serve_conf, nballs, 313-366 bounce candidates); `meta.video_info.fps` (dropped over a `meta`-vs-`metadata` key typo — the two-frame-spaces root); `highlights` (reel); player fitness; `team_sessions` near/far identity (now captured).
+
+## Method that worked (keep doing this)
+
+Measure-first, against ground truth. **Two proposals this sprint were refuted by the owner's video** (the coordinate-frame P0; the serve timing-gap phantom rule) — both caught *before* shipping because we validated in devenv. Never ship derived-logic changes without a before/after against `052786b4`.
