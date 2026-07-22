@@ -104,6 +104,16 @@ SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
 SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
 SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
 
+# Pre-analysis video quality gate. When enabled, a SportAI /api/videos/check
+# that DEFINITIVELY fails (video_ok / fps_check / resolution_check = false)
+# rejects the upload before analysis is submitted or a credit is consumed. It
+# fails OPEN if the check API itself errors — our uptime must not depend on it.
+# Note (measured 2026-07-22): this catches broken files (low res/fps); it does
+# NOT catch a poor camera ANGLE (a low-angle match passes all three checks), so
+# it is a necessary layer, not a complete quality guarantee. Kill switch:
+# VIDEO_QUALITY_CHECK_ENABLED=0.
+VIDEO_QUALITY_CHECK_ENABLED = (os.getenv("VIDEO_QUALITY_CHECK_ENABLED", "1").strip() != "0")
+
 # ---------- Technique API config ----------
 TECHNIQUE_API_BASE = (os.getenv("TECHNIQUE_API_BASE") or "").strip().rstrip("/")
 TECHNIQUE_API_TOKEN = (os.getenv("TECHNIQUE_API_TOKEN") or "").strip()
@@ -1034,6 +1044,15 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
 
+    # Pre-analysis quality gate. Reject a definitively-bad video BEFORE we submit
+    # for analysis or consume a credit. Fails open if the check API errors.
+    if VIDEO_QUALITY_CHECK_ENABLED:
+        chk = _sportai_check_result(video_url)
+        if chk["status"] == "fail":
+            app.logger.info("VIDEO CHECK failed video_url=%s reasons=%s", video_url, chk["reasons"])
+            raise VideoQualityError(chk["reasons"], chk.get("raw"))
+        app.logger.info("VIDEO CHECK %s video_url=%s", chk["status"], video_url)
+
     headers = {
         "Authorization": f"Bearer {SPORTAI_TOKEN}",
         "Content-Type": "application/json",
@@ -1673,6 +1692,68 @@ def _sportai_result_url(task_id: str) -> str | None:
                 continue
 
     return None
+
+class VideoQualityError(RuntimeError):
+    """Raised when SportAI's pre-analysis check definitively fails a video.
+
+    Carries the human-readable reasons so the submit endpoint can return a
+    clean 400 (bad input) rather than a 502 (our failure).
+    """
+    def __init__(self, reasons: list[str], raw: dict | None = None):
+        self.reasons = reasons
+        self.raw = raw or {}
+        super().__init__("; ".join(reasons) or "video failed quality check")
+
+
+# The three boolean checks SportAI returns per video, with friendly labels.
+_VIDEO_CHECK_FLAGS = {
+    "video_ok":         "the video could not be read/decoded",
+    "fps_check":        "the frame rate is too low",
+    "resolution_check": "the resolution is too low",
+}
+
+
+def _parse_video_check(resp: dict) -> dict:
+    """Pure parser for SportAI's /api/videos/check response.
+
+    Real shape (confirmed 2026-07-22):
+        {"data": {"<url>": {"video_ok": true, "fps_check": true,
+                            "resolution_check": true, "estimated_compute_time": N}}}
+
+    Returns {"status": "pass"|"fail"|"error", "reasons": [...], "raw": {...}}.
+    'error' means the response wasn't in a shape we understand — the caller
+    fails OPEN on that (don't let a check-format change block real uploads).
+    We send exactly one url, so we read the single entry under `data`.
+    """
+    data = (resp or {}).get("data")
+    if not isinstance(data, dict) or not data:
+        return {"status": "error", "reasons": ["unrecognised check response"], "raw": resp or {}}
+
+    # one url in, one entry out — take the first
+    entry = next(iter(data.values()), None)
+    if not isinstance(entry, dict):
+        return {"status": "error", "reasons": ["unrecognised check entry"], "raw": resp or {}}
+
+    reasons = [msg for flag, msg in _VIDEO_CHECK_FLAGS.items() if entry.get(flag) is False]
+    # If none of the three flags are present at all, we can't judge — fail open.
+    if not any(flag in entry for flag in _VIDEO_CHECK_FLAGS):
+        return {"status": "error", "reasons": ["no check flags in response"], "raw": resp or {}}
+
+    return {"status": "fail" if reasons else "pass", "reasons": reasons, "raw": entry}
+
+
+def _sportai_check_result(video_url: str) -> dict:
+    """Run the SportAI check and parse it, never raising on infra errors.
+
+    Returns the _parse_video_check dict; on any network/HTTP error returns
+    status='error' so callers fail open.
+    """
+    try:
+        return _parse_video_check(_sportai_check(video_url))
+    except Exception as e:  # network, HTTP, JSON — infrastructure, not a bad video
+        app.logger.warning("VIDEO CHECK unavailable (failing open): %s", e)
+        return {"status": "error", "reasons": [f"check unavailable: {e}"], "raw": {}}
+
 
 def _sportai_check(video_url: str) -> dict:
     if not SPORTAI_TOKEN:
@@ -3407,14 +3488,10 @@ def api_check_video():
         return ("", 204)
 
     def _passed(obj):
-        if isinstance(obj, dict):
-            if "ok" in obj:
-                return bool(obj["ok"])
-            if str(obj.get("status", "")).lower() in ("ok", "success", "passed", "ready"):
-                return True
-            if obj.get("errors"):
-                return False
-        return True
+        # Reads SportAI's real response shape. 'error' (unknown shape / check
+        # unavailable) is treated as passed here, matching the fail-open policy
+        # used at submit time. Definitive fails return False.
+        return _parse_video_check(obj).get("status") != "fail"
 
     try:
         # ---------- JSON path (Wix) ----------
@@ -3910,6 +3987,16 @@ def api_submit_s3_task():
             "s3_verified": True,
             "s3_meta": obj_meta
         })
+    except VideoQualityError as ve:
+        # Bad video, not our failure — 400 with a clear, user-facing reason.
+        return jsonify({
+            "ok": False,
+            "error": "VIDEO_QUALITY_CHECK_FAILED",
+            "reasons": ve.reasons,
+            "message": ("This video didn't pass the quality check ("
+                        + ", ".join(ve.reasons) + "). Please re-upload a clearer "
+                        "recording — a higher, wider camera angle works best."),
+        }), 400
     except Exception as e:
         label = "Technique" if is_technique else ("T5" if is_t5 else "SportAI")
         return jsonify({"ok": False, "error": f"{label} submit failed: {e}"}), 502
