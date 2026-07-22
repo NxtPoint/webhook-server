@@ -192,6 +192,13 @@ services:
       - key: INGEST_REPLACE_EXISTING
         value: "1"
 
+      # Recover extra floor bounces from debug_data.ball_bounces (conf>=0.6 +
+      # plausible + non-dup). Validated: +2-3 clean plottable shots on recent
+      # matches; safely no-ops on pre-2026-06-22 matches that lack bounce
+      # confidence. Rollback: set to 0.
+      - key: BOUNCE_CANDIDATES_ENABLED
+        value: "1"
+
   # =========================================
   # 4) Video trim worker service
   # =========================================
