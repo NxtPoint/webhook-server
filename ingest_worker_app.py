@@ -214,6 +214,18 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         app.logger.info("INGEST STEP task_id=%s step=download_result_done", task_id)
 
         # -------------------------
+        # STEP 1b: ARCHIVE RAW + SCHEMA-DRIFT CHECK (best-effort, never fatal)
+        # Keep the source of truth (the re-fetch URL expires in an hour) and
+        # shout if SportAI added a top-level key we don't handle.
+        # -------------------------
+        try:
+            from raw_archive import archive_raw, detect_drift
+            archive_raw(task_id, payload)
+            detect_drift(task_id, payload)
+        except Exception as _arch_e:
+            app.logger.warning("RAW ARCHIVE/drift step failed task_id=%s: %s", task_id, _arch_e)
+
+        # -------------------------
         # STEP 2: BRONZE INGEST
         # -------------------------
         if _abort_if_deleted(task_id, "pre_bronze"):
