@@ -868,3 +868,152 @@ Checked every bronze table on `052786b4`, not just the two sampled in the recon:
 "NetError") means *the player was standing near the net* — a court zone derived
 from hit position between the service lines — **not** that the ball struck the
 net. Net contact is not recorded anywhere in bronze today.
+
+---
+
+# NEW MATCH `c8b77210` + `debug_data` UNLOCKED (2026-07-23)
+
+Owner uploaded a fresh match (**Tomo v Jimbo Ma, 2026-07-23**, 612s, 18 points)
+to test whether the sprint's ingest changes survive a real SportAI run. It
+immediately surfaced a production outage, and then paid for itself three times.
+
+## The outage — a schema change went into the init function that does not run
+
+The silver build failed outright:
+
+```
+ProgrammingError: column "source" does not exist
+  ORDER BY (source IS NULL) DESC, (type = 'floor') DESC, timestamp
+```
+
+`build_silver_v2` pass 2 orders on `ball_bounce.source` to prefer a delivered
+bounce over a recovered candidate. The 2026-07-22 candidate work added `source`
++ `confidence` to **`db_init.bronze_init()`** — but **both** services boot bronze
+schema through `ingest_bronze._run_bronze_init` → `_ensure_schema`
+(`upload_app.py:2005`, `ingest_worker_app.py:238`). `db_init.bronze_init` is not
+on that path, so the columns never reached production.
+
+**Every SportAI match ingested after 2026-07-22 would have failed the same way.**
+This match was simply the first one.
+
+Two further facts, both worth keeping:
+
+- `_run_bronze_init` runs **inside the ingest transaction**, not at boot. So the
+  ALTER only executes when an ingest runs — a silver-only rebuild could never
+  have unblocked it. A full re-ingest was mandatory, not optional.
+- This is exactly the hazard CLAUDE.md flags about schema spread across several
+  `_init`/`_ensure_*` functions: the change went into the one that *reads*
+  correctly but does not *execute*.
+
+Fixed by adding both columns to `_ensure_schema`. Re-ingest via
+`POST /ops/ingest-task {"task_id":…, "mode":"worker"}` — **mode must be
+`worker`**: `BOUNCE_CANDIDATES_ENABLED` is scoped to the ingest-worker service,
+so `sync` runs on the main API and silently skips candidate recovery.
+
+Post-fix the match is healthy: 100 silver rows, 18 points, 2 games, 27 serves,
+1 ace, 16 excluded, no ingest error.
+
+## `BOUNCE_CANDIDATES_ENABLED` has been a silent no-op in production
+
+Prod `ball_bounce` for the previous match: 168 rows, **all delivered, zero
+candidates**. Measured on the new match's own `debug_data`:
+
+| debug candidates | 366 |
+|---|---|
+| `type='floor'` | 251 |
+| + `confidence >= 0.6` | 214 |
+| **+ plausible coords** | **198** |
+| **actually inserted** | **0** |
+
+The filter is not the problem — 198 bounces would have passed. `render.yaml` has
+declared `value: "1"` on the ingest-worker since 2026-07-22 and the value never
+reached the running service (the env-var precedence trap in
+`feedback_render_env_var_precedence`).
+
+**Fixed by flipping the code default to ON** rather than depending on env-var
+propagation. Rollback unchanged: `BOUNCE_CANDIDATES_ENABLED=0`.
+
+## `debug_data` captured for the first time — and it is small and clean
+
+The ingest looked for `debug_events`/`events_debug`; SportAI sends `debug_data`.
+Neither legacy name has ever appeared in a payload, so `bronze.debug_event` was
+empty for every match ever ingested. Now captured (whole, unparsed — the
+per-swing layout had never been seen, and guessing it would have baked a wrong
+shape into the live ingest path).
+
+Real structure — **4 top-level keys**, not the "131 fields" the coverage pass
+implied (that count was nested):
+
+| key | shape |
+|---|---|
+| `ball_bounces` | array, **366** |
+| `swings` | array, **114** — exactly parallel to `bronze.player_swing` |
+| `court_keypoints` | calibration |
+| `video_info` | dict |
+
+### `video_info` — the fps we lost to a key-name typo
+
+```
+fps 25.0 · total_frames 15300 · duration 612.0 · 1920x1080 · codec h264
+```
+
+This is the `meta.video_info.fps` that the `meta`-vs-`metadata` bug dropped —
+the root of the recurring two-frame-spaces hazard
+(`feedback_t5_two_frame_spaces`). It is now in bronze and should be promoted to
+a column.
+
+**Hygiene:** `video_info.video_source` is a **presigned S3 URL to the customer's
+raw video with a 7-day expiry**, now persisted in `bronze.debug_event`. Harmless
+today but it should be stripped on ingest — do not persist signed URLs.
+
+### The 58 per-swing debug fields
+
+`conf_ball_in` · `conf_ball_out` · `conf_ball_hit` · `conf_ball_pos` ·
+`conf_rbounce` · `far` · `is_in_rally` · `rally_start`/`rally_end` · `discarded` ·
+`nballs` · `serve_conf`/`serve_nn`/`serve_dyn1`/`serve_dyn3` ·
+`intercepting_player_id` · `ball_trajectory` · `sconf_*` · `vconf_*` · `weights`
+
+Populated on this match: `conf_ball_in` 114/114, `conf_ball_out` 114/114,
+`far` 114/114, `discarded=true` on 5.
+
+## R6 via `conf_ball_in`/`conf_ball_out` is DEAD — measured, not assumed
+
+This was the cheap route recommended earlier for fixing "a missing bounce is
+scored as an error". It does not work:
+
+| | n | |
+|---|---|---|
+| swings | 114 | |
+| `in > out` | 4 | |
+| `out > in` | 8 | |
+| **tied (no signal)** | **102** | 99 both-zero, 3 both-one |
+
+**89% of swings carry no signal at all.** Margin `abs(in-out)`: 102 at exactly 0,
+4 below 0.2, and only 3 above 0.8. They are not a complementary probability pair
+— both-zero and both-one both occur. SportAI evidently only populates them when
+it actively adjudicates a line call.
+
+`ball_impact_type` is **NULL in `debug_data` too** (0/114), confirming that net
+contact is not recorded anywhere in SportAI's output — the `shot_phase_d='Net'`
+label remains a *player position* zone, not ball-net contact.
+
+**So R6 has no cheap fix.** The remaining route is `ball_position` (image-space,
+populated in prod) projected to court coordinates via a homography fitted from
+the 168 paired `image_x/y` ↔ `court_x/y` bounce points. That is a real project
+carrying the T5 calibration-degeneracy risk, and it should be scoped
+deliberately rather than bolted on.
+
+**Consequence for the rally work:** `SILVER_RALLY_CONTIGUITY` stays OFF. It was
+gated on the R6 fix, and the R6 fix just got materially more expensive.
+
+## Genuinely new, unused signals now reachable
+
+Ranked by value against known open problems:
+
+1. **`video_info.fps`** — closes the two-frame-spaces hazard. Promote to a column.
+2. **per-swing `far`** — SportAI's own near/far truth, 100% coverage. Directly
+   relevant to the far-attribution problem that gates the T5 work.
+3. **`discarded`** — SportAI's own "ignore this swing" flag (5 here), never used.
+4. **`ball_bounces` (366)** — now flowing via the default-on candidate recovery.
+5. `serve_conf` / `sconf_*` — SportAI's own serve confidence, against which the
+   geometric serve gate could finally be measured rather than argued.

@@ -1,59 +1,58 @@
-# Next-session pickup — 2026-07-22 — SportAI pipeline audit + data-coverage sprint
+# Next-session pickup — 2026-07-23 — rally recon + `debug_data` unlocked
 
-> **Two parallel threads in this repo.** This pickup covers the **SportAI (`tennis_singles`) business-analytics pipeline**, the focus of the last few sessions. The **T5 ML pipeline** thread is *parked at "bronze DEV complete, training is the incremental remainder"* — its handover is `.claude/handover_t5.md` and the T5 memories, unchanged by this sprint.
+> **Two parallel threads in this repo.** This pickup covers the **SportAI (`tennis_singles`) business-analytics pipeline**. The **T5 ML pipeline** thread is *parked at "bronze DEV complete, training is the incremental remainder"* — its handover is `.claude/handover_t5.md` and the T5 memories, untouched by this sprint.
 
 ## ⚡ Executive summary (read first)
 
-A deep audit of the **SportAI analytics pipeline** — JSON → bronze → silver → gold → dashboard. Full findings + method: **`docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md`** (single source of truth for this work; read it before touching silver/gold).
+Continuation of the SportAI audit. Full findings: **`docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md`** — single source of truth, now ~1020 lines. Today added three sections: **RALLY RECON**, **RALLY RING-FENCE (exclude_d vs is_in_rally)**, **NEW MATCH c8b77210 + debug_data UNLOCKED**.
 
-**Headline: the pipeline's core is correct** — validated serve/point/game structure against the owner's own video (task `052786b4`: 18 points, 2 games 1-1, 26 serves, 1 double fault — reproduced exactly). The audit found real but *narrow* defects on a sound core, plus a lot of SportAI data we ingest but don't use.
+**Bench GREEN** (`ea1e500c=12/26, 880dff02=23/24`) — run `.venv/Scripts/python -m ml_pipeline.diag.bench` before any `serve_detector`/`build_silver_v2` change.
 
-**Bench is GREEN** (`ea1e500c=12/26, 880dff02=23/24`) — run `.venv/Scripts/python -m ml_pipeline.diag.bench` before any `serve_detector`/`build_silver_v2` change.
+**Headline: a production outage was found and fixed, and `debug_data` is finally reachable.** Every SportAI match ingested after 2026-07-22 would have failed its silver build (`column "source" does not exist`) — a schema change went into `db_init.bronze_init()`, which is *not* the init function either service runs. Fixed. Separately, `BOUNCE_CANDIDATES_ENABLED` had been a **silent no-op in production** since it was "enabled"; now default-ON in code.
 
-## What shipped this sprint (all on origin/main, safe/flag-gated)
+## Reference matches
 
-1. **Video quality gate revived** (`upload_app.py`) — SportAI `/api/videos/check` now gates submission; a definitively-bad video is rejected (clean 400, no credit spent) *before* analysis. Fails open on infra errors. `VIDEO_QUALITY_CHECK_ENABLED` (default on). Honest limit: catches low res/fps, NOT poor camera angle.
-2. **Raw-JSON archive + schema-drift alarm** (`raw_archive/`) — every ingest stores the whole payload to `s3://<bucket>/raw-json/<task>.json.gz`; a new top-level SportAI key logs **SCHEMA DRIFT** + ops email. `RAW_ARCHIVE_ENABLED` (default on). *Fixes the source-of-truth loss: past matches' JSON was unrecoverable (not stored + 1-hour URL expiry).*
-3. **Bounce-recall via debug candidates** (`ingest_bronze.py`, `build_silver_v2.py` pass-2) — recovers extra floor bounces from `debug_data.ball_bounces` (conf≥0.6 + plausible + non-dup), delivered-preferred. **`BOUNCE_CANDIDATES_ENABLED=1` — ENABLED on the ingest worker** (⚠ also set it in the Render dashboard — render.yaml value changes may not auto-apply). Validated +2-3 clean plottable shots on recent matches; safe no-op on pre-2026-06-22 matches (they lack bounce confidence).
-4. **`bounce_plausible_d`** silver column (pass-6) — flags impossible bounces so heatmaps can omit them. Populated; **not yet consumed by the frontend** (to-do).
-5. **team_session near/far fix** (`ingest_bronze.py`) — `player_a_id`(near)/`player_b_id`(far) were NULL for every match (extractor assumed a dict; SportAI sends a list). Now populated with SportAI's ghost-free identity. Capture only; unused so far.
-6. **Env-gated serve source** (`SILVER_SERVE_SOURCE`) — `auto` (SA flag + geometric fallback) is built and **video-validated 26/26 on 052786b4** but **NOT enabled** (prod = `geometric`, which has 1 phantom serve on that match but correct 18 points). Owner deferred enabling.
-7. **devenv/** — disposable local Postgres + real-bronze seed + silver diff harness + JSON coverage/drift checker. See `devenv/README.md`.
+| task | who | note |
+|---|---|---|
+| `052786b4` | Tomo v Jimbo Ma, 2026-07-19 | **owner-adjudicated on video** — the ground-truth reference. Protect from the orphan sweep. |
+| `c8b77210` | Tomo v Jimbo Ma, 2026-07-23 | new; the only match with `debug_data` captured |
+| `079d2c62` | Tomo v Jimbo Ma, 2026-06-16 | SA pair, messy 4-ghost |
+| `0336b82b` | Erin v Jolanda Gericke, 2026-04-28 | real customer, badly tracked — every SportAI signal collapses on it |
 
-## Local dev environment (how everything was validated)
+## What shipped today (all on origin/main)
 
-- Docker Postgres `localhost:55433` (NOT :55432 = CourtFlow). `docker compose -f devenv/docker-compose.yml up -d`.
-- ⚠ **This box's shell profile exports `DATABASE_URL` = `…:55432/courtflow_dev`.** Any script that does `os.getenv("DATABASE_URL")` as a *fallback* silently talks to CourtFlow, not devenv — it fails loudly here only because that DB has no `silver` schema. Always pin the devenv URL explicitly (`seed_local.py` hard-refuses `:55432`, but ad-hoc scripts don't).
-- Read-only prod role `tf_readonly` in **`devenv/.env.local`** (gitignored). **Drop the role when finished** (`DROP OWNED BY tf_readonly; DROP ROLE tf_readonly;`).
-- `SEED_SOURCE_URL=$(cat devenv/.env.local) python -m devenv.seed_local --task <uuid>` → `python -m devenv.diff_silver --task <uuid> --save/--vs`.
-- **Seeded reference matches:** `052786b4` (owner ground truth, 18pts), `079d2c62` (SA pair, messy 4-ghost), `0336b82b` (pathological). Raw JSONs for the first two in the session scratchpad + `s3://…/raw-json/`.
+1. **`fix(bronze)` — `ball_bounce.source`/`confidence` added to `ingest_bronze._ensure_schema`** (`e7c71e7`). The live path. Unblocked the outage.
+2. **`fix(ingest)` — `debug_data` captured** (`0132eb0`). Whole, unparsed, into `bronze.debug_event`. First time ever populated.
+3. **`fix(silver)` — rally `gap_break` contiguity, DEFAULT OFF** (`259c779`), flag `SILVER_RALLY_CONTIGUITY`.
+4. **bounce candidates default-ON** — code default flipped; `render.yaml`'s declared `"1"` never reached the service.
+5. Three audit sections + two self-corrections recorded.
 
-## Open defects to fix (from the audit — ranked)
+## Open, in priority order
 
-- **P1 serve service-box test** (`build_silver_v2.py:945`) — only test is "within 1.6m of the net"; no service-box check → a long double fault can score as an ace. Fix = real box test (centre line 5.485 = `MID_X_DEFAULT`; service lines y=5.485/18.285). **Highest-value open item.**
-- **P1 first-serve % inflated** — `'Double'` on both serve rows of a DF point removes the 1st from the denominator (52.9% vs true 50.0%). Fix = separate `double_fault_d` flag.
-- **P1 service-line constants** `6.40/17.37`→`5.485/18.285`; `shot_phase_d` zones mis-defined.
-- **P1 hollow ingest bills the customer** — zero-row ingest marked `completed`, credit consumed. Add a zero-count guard.
-- **P1** NULL→0% rendering (`match_analysis.html` `pctW`); deleted matches on dashboards (`vw_player` lacks `deleted_at`); Serve Strategy double-count.
-- Retracted after measurement: the coordinate-frame "P0" (code right — doubles frame [0,10.97]); ball_speed IS km/h; smash-as-serve can't fire.
+1. **Promote `video_info.fps` to a bronze column.** `debug_data.video_info` has `fps 25.0 / total_frames 15300 / duration 612.0`. This is the fps lost to the `meta`-vs-`metadata` typo — the root of the recurring two-frame-spaces hazard. Cheapest high-value win available.
+2. **Strip `video_info.video_source` on ingest** — it is a presigned S3 URL to the customer's raw video (7-day expiry) now persisted in `bronze.debug_event`. Do not persist signed URLs.
+3. **Verify the bounce-candidate flip actually lands** — re-ingest any match and confirm `source='debug_candidate'` rows appear (198 expected on `c8b77210`). This has failed silently once already; do not assume.
+4. **R6 (a missing bounce is scored as an error) — needs a new plan.** The cheap route is dead: `conf_ball_in`/`conf_ball_out` carry **no signal on 102 of 114 swings (89%)**. Remaining route is `ball_position` (image-space, populated in prod) projected via a homography fitted from the 168 paired `image_x/y`↔`court_x/y` bounce points — a real project with the T5 calibration-degeneracy risk. Scope it deliberately.
+5. **`SILVER_RALLY_CONTIGUITY` stays OFF** until R6 is fixed. It is winner-neutral alone (fixes pt 17, breaks pt 15 — 2/3 either way); only rally length/membership is a strict gain. Ace guard also still owed (an undetected return becomes a fabricated ace) — but note **1 ace in 148 points** across three matches, so there is no live problem and no sample to design against.
+6. **P1 serve service-box + first-serve-% fixes** — rewrite historical numbers; validate before/after in devenv on `052786b4`.
+7. Per-match quality gate — `0336b82b` reports **0 winners in 112 points**, 6% in-rally, 28% ball-speed coverage, and nothing surfaces that its analytics are unreliable. `session_confidences` is the natural anchor.
+8. Wire `bounce_plausible_d` into the heatmaps; athletics/fitness panel.
 
-## NEXT STEPS (owner-directed, in order)
+## Newly reachable signals (`debug_data`, per-swing, 114/114 unless noted)
 
-1. ~~**RALLY RECON**~~ — **MEASUREMENT DONE 2026-07-23.** Full findings appended to the audit doc (§"RALLY RECON", 6 findings R1-R6 + a simulation + one self-retraction). Headlines: the rally filter is **disarmed on the entire SportAI production path** (`has_bounce_data` needs `ml_analysis.*`, which only T5 populates — R1), and even armed its 20s floor can't close a rally (R2); intra-rally gaps are cleanly bimodal with an **empty 5–6s bin across 442 gaps / 3 matches** (R3); and a **missing bounce is scored as an error**, producing **0 winners in 112 points** on the badly-tracked match (R6). **Two things still owed:**
-   - ~~(a) Video adjudication~~ — **DONE 2026-07-23** (audit §"ADJUDICATED"). Owner ruled on pts 11/15/17 of `052786b4` (= **Tomo vs Jimbo Ma, 2026-07-19**). **The 6s rule's timing is right 3/3** — it truncates each point at exactly the moment the owner says it ended. Point 11 independently corroborates the bounce coordinates (owner saw "out wide"; bounce `x=0.83` is outside the singles sideline and derives `Error` unprompted). **Point 17 is a live wrong point winner today** (ships 21, truth 154).
-   - **(b) Ship the SPLIT fix — and note the rule is winner-NEUTRAL alone.** Measured: point-winner accuracy on the 3 contested points is **2/3 shipped → 2/3 with the gap rule** — it fixes pt 17 and *breaks* pt 15, where the point-ending shot has a NULL bounce and R6 fabricates an `Error`. So: **the gap rule ships WITH the R6 fix or not at all** (for winners); standalone it is safe only for rally *length/continuity* (R3/R4/R5). Fix the outcome fact by inheriting SportAI's own `debug_data.conf_ball_in/out` (RULE 1) with a third `Unknown` state instead of defaulting to `Error`. **Also guard ace inflation:** truncated pt 17 satisfies `ace_d` but the owner says 21 swung and missed — an undetected return becomes a fabricated ace (2 aces reported on a 1-ace match).
-1b. **RALLY RING-FENCE FIX — SHIPPED DEFAULT OFF (`SILVER_RALLY_CONTIGUITY=1` to enable).** Audit §"RALLY RING-FENCE — exclude_d vs is_in_rally". The 5s gap rule **already existed** (`gap_break`); its 2026-06-04 re-anchor is a global MAX rather than a contiguous chain, so any dense cluster after a long gap re-anchors onto its own end. Fixed with: contiguous chain + lone-shot guard + a coverage-gated `is_in_rally` escape (preserves exactly what the re-anchor protected). **Flag OFF reproduces the current view exactly**; flag ON drops precisely the 5 video-confirmed rows on `052786b4`, `max_rally_length` 16→14, point counts unchanged on all 3 matches, 22/22 newly-excluded rows independently agree with `is_in_rally`, bench green.
-   - **Enable it together with the R6 fix, not before** — alone it fixes pt 17's winner and breaks pt 15's (2/3 either way); only rally length/membership is a strict gain.
-   - **Two corrections to the recon are recorded in the audit:** R3's "empty 5–6s band" was an artifact of measuring post-`exclude_d` rows (re-measured: 16 gaps in that bin), and `is_in_rally` had already been tried as a pass-1 gate and removed on purpose (it rejected 480/515 swings on `0336b82b`).
-   - **Still owed:** the ace guard (an undetected return becomes a fabricated ace).
-2. **P1 serve service-box + first-serve-% fixes** — they rewrite historical numbers; validate before/after in devenv on `052786b4`, then rebuild historical silver.
-3. Wire `bounce_plausible_d` into the heatmaps.
-4. Athletics/fitness panel (easy win — data already in bronze.player).
+`far` (SportAI's own near/far truth — relevant to the far-attribution problem gating T5) · `discarded` (its own ignore-flag, 5 here) · `serve_conf`/`sconf_*`/`serve_nn` (measure the geometric serve gate instead of arguing about it) · `is_in_rally`/`rally_start`/`rally_end` · `nballs` · `intercepting_player_id` · `ball_trajectory`.
 
-## Data nuggets (Phase 2, mostly unused)
+## Method notes worth keeping
 
-Coverage on the 11.6MB JSON: only `meta` + `debug_data` truly dropped; ~105 fields preserved-but-unused. Best untapped: `debug_data` per-swing signals (`far` = 100%-accurate near/far, serve_conf, nballs, 313-366 bounce candidates); `meta.video_info.fps` (dropped over a `meta`-vs-`metadata` key typo — the two-frame-spaces root); `highlights` (reel); player fitness; `team_sessions` near/far identity (now captured).
+- **Measure post-filter, not pre-filter.** The recon's "empty 5–6s gap band" was an artifact of measuring rows *after* `exclude_d` had already removed them. Re-measured: 16 gaps in that bin.
+- **Check whether the column is populated, not just whether rows exist.** `ball_position` reads all-NULL in devenv (GENERATED from a `data` blob the ingest strips) and is 100% populated in prod. Nearly reported the opposite.
+- **devenv ≠ prod schema.** `bronze.ball_bounce` and `ball_position` both diverge. Verify schema-dependent findings against the prod read-only role.
+- **This box's shell profile exports `DATABASE_URL` = `…:55432/courtflow_dev`.** Any script falling back to it silently hits CourtFlow. Pin the devenv URL explicitly.
+- Four proposals were stopped by measurement this sprint: the coordinate-frame P0, the serve timing-gap rule, the ace guard, and `conf_ball_in/out` for R6.
 
-## Method that worked (keep doing this)
+## Local dev environment
 
-Measure-first, against ground truth. **Two proposals this sprint were refuted by the owner's video** (the coordinate-frame P0; the serve timing-gap phantom rule) — both caught *before* shipping because we validated in devenv. Never ship derived-logic changes without a before/after against `052786b4`.
+- Docker Postgres `localhost:55433` (NOT `:55432` = CourtFlow). `docker compose -f devenv/docker-compose.yml up -d`.
+- Read-only prod role `tf_readonly` in gitignored **`devenv/.env.local`**. **Still live — drop when the R6 work is done** (`DROP OWNED BY tf_readonly; DROP ROLE tf_readonly;`).
+- Rebuild: `DATABASE_URL='postgresql+psycopg://tf:tf@localhost:55433/tf_dev' .venv/Scripts/python -c "import build_silver_v2 as b; print(b.build_silver_v2('<task>', replace=True))"`
+- Re-ingest in prod: `POST /ops/ingest-task {"task_id":"…","mode":"worker"}` with `X-Ops-Key: $OPS_KEY` from the main-API Render shell. **`mode` must be `worker`** — `sync` runs on the main API, which lacks the bounce-candidate scope.

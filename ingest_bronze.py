@@ -623,7 +623,14 @@ def _insert_ball_bounces(conn, task_id: str, items: list) -> int:
 # the floor candidates. Measured on task 052786b4: adding conf>=0.6 + plausible
 # candidates lifts per-shot floor recall 61%->71% with no heatmap garbage
 # (~42% of candidates carry pixel/impossible coords and are rejected here).
-BOUNCE_CANDIDATES_ENABLED = (os.getenv("BOUNCE_CANDIDATES_ENABLED", "0").strip() == "1")
+# DEFAULT ON since 2026-07-23. render.yaml has declared `value: "1"` on the
+# ingest-worker since 2026-07-22, but the value never reached the running
+# service, so this was a silent no-op in production for every match. Measured on
+# task c8b77210 the day it was found: 366 debug candidates, 251 floor, 214 at
+# conf>=0.6, **198 passing the full filter** — and 0 inserted. Defaulting ON
+# makes the code match the declared intent instead of depending on env-var
+# propagation. Rollback is unchanged: set BOUNCE_CANDIDATES_ENABLED=0.
+BOUNCE_CANDIDATES_ENABLED = (os.getenv("BOUNCE_CANDIDATES_ENABLED", "1").strip() == "1")
 BOUNCE_CAND_MIN_CONF = float(os.getenv("BOUNCE_CAND_MIN_CONF", "0.6"))
 # Plausible court envelope (metres) — matches build_silver_v2 pass-6
 # bounce_plausible_d, so the two agree on what a believable bounce is.
