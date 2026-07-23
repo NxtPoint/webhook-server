@@ -459,7 +459,8 @@ def pass2_bounce(conn: Connection, task_id: str, cfg: dict) -> int:
     sql = f"""
     WITH p AS (
       SELECT id, task_id, ball_hit_s, ball_hit_location_y,
-             COALESCE(serve, FALSE) AS serve
+             COALESCE(serve, FALSE) AS serve,
+             COALESCE(volley, FALSE) AS volley
       FROM {SILVER_SCHEMA}.{TABLE}
       WHERE task_id = :tid
     ),
@@ -493,6 +494,15 @@ def pass2_bounce(conn: Connection, task_id: str, cfg: dict) -> int:
             OR (w.ball_hit_location_y < :half_y AND b.court_y > :half_y)
             OR (w.ball_hit_location_y > :half_y AND b.court_y < :half_y)
           )
+          -- A type='swing' bounce is a racket CONTACT point, not a landing —
+          -- verified: all delivered swing bounces align <0.05s with a
+          -- player_swing hit. For a non-volley shot it is the OPPONENT's next
+          -- contact (measured 20-30m away), so using it as court_x/court_y
+          -- silently poisons every heatmap / depth / zone. Only accept it when
+          -- the shot is a volley, where contact IS ~the relevant location.
+          -- A non-volley shot with no floor bounce keeps court_x/y NULL — an
+          -- honest "no landing recorded" rather than a wrong coordinate.
+          AND (b.type <> 'swing' OR w.volley IS TRUE)
         -- Prefer SportAI's delivered bounce (source IS NULL) over a recovered
         -- debug_candidate; among either, prefer floor, then earliest. So a
         -- candidate is only ever used when no delivered bounce matches the shot.

@@ -48,6 +48,28 @@ is_in_rally knows, plus more. Use exclude_d.**
 bounce coordinate** — a netted shot has no floor bounce, and the tracker drops
 some. **A netted winner is a real point-ending shot with `court_x IS NULL`.**
 
+**The floor-bounce coverage ceiling is physics, not a data gap (measured on
+`c8b77210`, 2026-07-23).** Of the 9 bounceless real rally shots, 8 are Errors and
+1 is In — and 0 of the 9 have a recoverable opponent-side floor bounce in-window
+(every nearby candidate is on the hitter's own side — the ball descending, not a
+landing — and is correctly rejected by the cross-net guard). Recovered
+`debug_candidate` bounces only ever *add* coverage (pass-2 prefers delivered),
+never replace a value. So `court_x IS NULL` on a kept shot is overwhelmingly a
+real netted/out ball with no landing — not something to "fix".
+
+**`type='swing'` bounces are contact, not landings — never accepted for
+non-volleys (fixed 2026-07-23).** Every delivered `type='swing'` bounce aligns
+<0.05s with a `player_swing` contact, i.e. it *is* a racket-contact point. For a
+non-volley shot with no floor bounce, pass-2 used to fall back to a swing bounce —
+which is the *opponent's* next contact, 20-30m from the true landing — and stamp
+it as `court_x/court_y`. That poisoned every heatmap/depth/zone for ~5 shots per
+match. `pass2_bounce` now accepts `type='swing'` only when `volley IS TRUE`;
+otherwise the shot keeps `court_x/y` NULL (honest). Point winners are unaffected
+(all such shots are mid-rally `In`). **Known residual (Phase 3):**
+`rally_location_bounce` still falls back to the *hit* zone when `court_x IS NULL`
+(`build_silver_v2.py:1739`) — the same "hit dressed as bounce" pattern at A-D
+resolution; decide in the correctness pass whether to NULL it instead.
+
 > If a winners/errors or rally-count chart filters on `court_x IS NOT NULL`, it
 > silently deletes exactly those shots — the most decisive ones. Only filter on
 > `court_x IS NOT NULL` for a chart that physically needs a landing coordinate
