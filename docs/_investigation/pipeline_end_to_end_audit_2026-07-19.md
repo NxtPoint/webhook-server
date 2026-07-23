@@ -1017,3 +1017,99 @@ Ranked by value against known open problems:
 4. **`ball_bounces` (366)** — now flowing via the default-on candidate recovery.
 5. `serve_conf` / `sconf_*` — SportAI's own serve confidence, against which the
    geometric serve gate could finally be measured rather than argued.
+
+---
+
+# 18/18 — RALLY RECONCILED AGAINST VIDEO IN PRODUCTION (2026-07-23)
+
+Closing result of the rally sprint. **Every point winner on `c8b77210` now matches
+the owner's video, verified against production, not the sandbox.**
+
+```
+PROD c8b77210 vs video: 18/18 point winners correct
+points=18  games=2  serves=27  aces=1  avg_rally=4.86  max_rally=13
+bronze.ball_bounce: 299 rows, of which 131 source='debug_candidate'
+```
+
+## What it was before
+
+Legacy logic on the same match — re-anchoring `gap_break`, no candidate bounces:
+
+| | result |
+|---|---|
+| legacy (start of session) | **15/18** — wrong on points 11, 15, 16 |
+| after this session | **18/18** |
+
+## The three fixes, and which point each one bought
+
+1. **Rally contiguity** (`SILVER_RALLY_CONTIGUITY`, now default ON) — fixed
+   **points 11 and 15**. The rally now ends at the first >5s break instead of
+   re-anchoring onto any dense cluster that follows it.
+2. **Removing the `is_in_rally` escape** — fixed **point 16 on `052786b4`**. The
+   escape re-admitted a shot 6.7s after the point ended and flipped the winner.
+   It was shipped without its INCLUDE direction being validated.
+3. **Bounce-candidate recovery** (`BOUNCE_CANDIDATES_ENABLED`, now default ON) —
+   fixed **point 16 on `c8b77210`**, and this is the important one (below).
+
+## Point 16 is the cleanest R6 proof we will ever get
+
+Same footage, two SportAI runs, the same point-ending volley at `t=562.6`:
+
+| run | bounce | outcome | winner |
+|---|---|---|---|
+| `052786b4` | **(6.82, 14.81)** | Winner | far ✓ |
+| `c8b77210` (before) | **(NULL, NULL)** | Error | near ✗ |
+
+A missing bounce turned a winner into an error and handed the point to the wrong
+player — R6, isolated with a controlled A/B on identical video.
+
+And the bounce was never missing from the *payload*. It sat in
+`debug_data.ball_bounces` at `t=562.84`, `type=floor`, `conf=0.60`,
+`court_pos=(6.82, 14.81)` — the exact coordinate the other run delivered —
+passing every filter. It never reached bronze because `BOUNCE_CANDIDATES_ENABLED`
+was declared `"1"` in `render.yaml` and the value never reached the service.
+
+Recovery on this match: 366 candidates → 115 not floor, 37 below confidence, 16
+implausible, 67 duplicates of delivered → **131 inserted**. One of them decided a
+point.
+
+## Correction — R6 is materially reduced, and by something we already had
+
+The earlier finding *"R6 has no cheap fix"* (after `conf_ball_in`/`conf_ball_out`
+came back empty on 89% of swings) was **too pessimistic**. It was true of that
+signal, and false as a general statement. The answer was not a new signal: it was
+the bounce recovery already written, already enabled in config, and silently not
+running.
+
+R6 is not *solved* — a bounce that no candidate covers still fabricates an error,
+and the NULL→Error rule is still unable to distinguish "netted" from "not
+tracked". But its blast radius on a well-tracked match is now materially smaller,
+and the ball_position/homography project is no longer the only route.
+
+## What 18/18 does and does not mean
+
+**Does:**
+- Point winners, and therefore game winners, are correct on this match.
+- The result is now *reproducible*: the legacy rule returned different winners on
+  the same footage depending on which SportAI run you looked at (3 of 4
+  adjudicated points flipped). Contiguity does not.
+
+**Does not:**
+- **One match, 18 points.** Two distinct matches exist in the whole seeded set
+  (this one, analysed three times, plus `0336b82b`). This is not a general
+  accuracy claim.
+- **Only point winners were reconciled.** Rally length, stroke type, zones,
+  aggression, depth and serve placement were not checked against video.
+- `0336b82b` (a real customer match) still reports **0 winners in 112 points**,
+  6% in-rally coverage and 28% ball-speed coverage, with nothing surfacing that
+  its analytics are unreliable. Nothing in this session addressed that.
+
+## Corrections logged during the reconciliation
+
+- Two owner adjudications were revised on re-watch: point 6 (21 won it, not the
+  far player) and point 15 (far player won it). Findings scored against the
+  earlier reads were wrong and are superseded by the 18/18 table.
+- The claim "`ball_position` is empty" was a **devenv schema artifact** — prod has
+  it 100% populated. Verify schema-dependent findings against prod.
+- "131 fields in `debug_data`" was a nested count; the real shape is 4 top-level
+  keys (`ball_bounces`, `swings`, `court_keypoints`, `video_info`).
