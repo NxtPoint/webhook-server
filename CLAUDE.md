@@ -28,7 +28,8 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Environment variables (any service)** → `docs/business/env-vars.md`.
 - **Technique pipeline** → `docs/business/features.md` (Technique section) + `technique/README.md`.
 - **Support bot** → `docs/business/features.md` (Support Bot section) + `support_bot/README.md`.
-- **SportAI analytics pipeline audit + data coverage (2026-07)** → `docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md` (the deep audit: JSON→bronze→silver→gold→dashboard, validated against owner video; ranked open P1 defects; the full JSON coverage map + unused-data nuggets). Live state + next steps → `.claude/next_session_pickup.md`. **Validate any silver-derivation change in `devenv/`** (disposable local Postgres seeded from a read-only prod replica; `devenv/README.md`) with a before/after diff on the owner ground-truth match `052786b4` — never ship derived-logic on a hunch (two such hunches were refuted by video this sprint).
+- **SportAI analytics pipeline — canonical logic + filter contract** → **`docs/_investigation/silver_gold_filter_contract.md`** (bronze → 16 verbatim → derived → **the event spine** → gold filters; the `exclude_d` membership rule; the derived-column dictionary; the service-box investigation). **Read this before any silver-derivation change or new dashboard.** The **silver-correctness sprint (2026-07-23) is complete** — validated 18/18 point winners on video against reference match **`c8b77210`** (Tomo v Jimbo Ma).
+- **SportAI pipeline audit + closeout status** → `docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md` — the deep audit (JSON→bronze→silver→gold→dashboard) with a **★ CLOSEOUT STATUS table at the top**: the silver-derivation P1s are closed; open items are in billing/frontend/gold (deuce/ad midline, hollow-ingest billing, NULL-as-0% rendering, serve-strategy double-count, soft-delete on `vw_player`). Live state + next steps → `.claude/next_session_pickup.md`. **Validate any silver-derivation change in `devenv/`** (disposable local Postgres seeded from a read-only prod replica; `devenv/README.md`) with a before/after diff + 18/18 check on `c8b77210` and `bench` green — never ship derived-logic on a hunch (several were refuted by measurement this sprint).
 - **Retiring the dormant Wix scaffolding** → `docs/DE-WIX-DECOMMISSION.md`. As of 2026-07 the live product is 100% Render (Clerk auth + PayPal payments) and **there were never any Wix customers** — but ~48 files still reference Wix and the columns are load-bearing schema (`account.external_wix_id`, `credit_ledger.external_wix_id` inside the billing grant-idempotency UNIQUE index, a CHECK allowing `wix_subscription`/`wix_payg`). It is inert at runtime and harmless to leave. **Status: PLANNED, not started — don't opportunistically "clean up" Wix references.**
 
 ## Things not to do (load-bearing)
@@ -130,7 +131,7 @@ bronze.*  →  silver.*  →  gold.*  →  API  →  Dashboards + LLM Coach
 **Bronze** (`bronze.*`): raw SportAI JSON ingested verbatim. `db_init.py` owns schema. Key tables: `raw_result`, `submission_context`, `player_swing`, `rally`, `ball_position`, `ball_bounce`, `player_position`.
 
 **Silver** (`silver.*`): single source of truth for match-level analytics.
-- `silver.point_detail` — one row per shot. Derived: serve zones (`serve_side_d`, `serve_bucket_d`), rally locations (A-D), aggression (Attack/Neutral/Defence), depth (Deep/Middle/Short), stroke (Forehand/Backhand/Serve/Volley/Slice/Overhead/Other), outcome (Winner/Error/In), serve try (1st/2nd/Double), ace/DF detection, normalised coordinates. Built by `build_silver_v2.py` (5-pass SQL). `model` column distinguishes `'sportai'` vs `'t5'` so both pipelines coexist.
+- `silver.point_detail` — one row per shot event. Derived: serve zones (`serve_side_d`, `serve_bucket_d`), rally locations (A-D), aggression (Attack/Neutral/Defence), depth (Deep/Middle/Short), stroke (Forehand/Backhand/Serve/Volley/Slice/Overhead/Other), outcome (Winner/Error/In), serve try (`serve_try_ix_in_point` 1st/2nd + `double_fault_d` flag — **NOT** a 'Double' relabel, so the 1st-serve-% denominator is correct), ace detection, normalised coordinates, `exclude_d` (the membership filter). Built by `build_silver_v2.py` (6-pass SQL). `model` column distinguishes `'sportai'` vs `'t5'`. **The spine = `exclude_d IS NOT TRUE`; see the filter contract doc.**
 - `silver.practice_detail` — practice equivalent. Built by `ml_pipeline/build_silver_practice.py` (3-pass).
 
 **Gold** (`gold.*`): presentation layer. Thin views — one per chart or one per widget — that aggregate silver into exactly the shape the frontend needs. Same views feed dashboards and LLM coach. Full catalogue: `docs/business/features.md` (Dashboards section).
@@ -139,14 +140,17 @@ bronze.*  →  silver.*  →  gold.*  →  API  →  Dashboards + LLM Coach
 
 ### Silver V2 (`build_silver_v2.py`)
 
-Current prod implementation. 5-pass SQL pipeline:
-1. Insert from `player_swing` (core fields)
-2. Update from `ball_bounce` (bounce coordinates)
-3. Serve detection + point/game structure + exclusions
-4. Zone classification + coordinate normalization
+Current prod implementation. 6-pass SQL pipeline:
+1. Insert from `player_swing` — the **16 verbatim bronze columns** (12 here + 4 in pass 2). No derivation.
+2. Update from `ball_bounce` (bounce coordinates). Pass-2 accepts `type='swing'` bounces **only for volleys** — a swing bounce is a racket contact, not a landing (2026-07-23).
+3. Serve detection + point/game structure + exclusions (`exclude_d`, `double_fault_d`)
+4. Zone classification + coordinate normalization (the `_norm` columns)
 5. Analytics (serve buckets, stroke, rally_length, aggression, depth)
+6. `bounce_plausible_d` (service-box + court-envelope plausibility)
 
-Court geometry constants live in `SPORT_CONFIG` at the top. T5 silver builders (`ml_pipeline/build_silver_match_t5.py` and `build_silver_practice.py`) call passes 3-5 directly to share the derivation logic.
+**53 columns total: 16 verbatim + 3 keys/model + 34 derived.** Court geometry constants live in `SPORT_CONFIG` at the top (`service_line_m` = 6.40 is a distance *from the net*; absolutes are `half_y ± 6.40` = 5.485/18.285). T5 silver builders (`ml_pipeline/build_silver_match_t5.py` and `build_silver_practice.py`) call passes 3-5 directly to share the derivation logic.
+
+**★ Canonical logic + filter contract → `docs/_investigation/silver_gold_filter_contract.md`.** The single source of truth for how the pipeline derives and filters: bronze → 16 verbatim → derived → **the event spine** → gold. Load-bearing rules: (1) **`exclude_d IS NOT TRUE` is the ONE membership filter** — the spine, sliced into serves (`serve_d`) and rally (`shot_ix_in_point NOT NULL`); `is_in_rally` and `court_x IS NOT NULL` are **not** membership filters; (2) a coordinate present means a real measurement (missing → honest NULL, never a proxy); (3) bronze owns facts, silver inherits them verbatim and derives — a wrong number is a bronze-accuracy problem first. Read it before any silver-derivation change or new chart.
 
 ### Service topology
 
@@ -340,7 +344,9 @@ Always-on (de-gated 2026-06-17 — `register()` registers unconditionally; each 
 - `devenv/` — **dev-only, never deployed.** Disposable local Postgres (docker, port 55433) seeded from a read-only prod replica, plus `seed_local.py` / `diff_silver.py` / `coverage_check.py`. The safe place to validate any silver-derivation change (see the SportAI audit pointer above). Credential lives in gitignored `devenv/.env.local`.
 - `raw_archive/` — ingest-side helper (wired into `ingest_worker_app._do_ingest`): archives every SportAI payload to `s3://<bucket>/raw-json/<task>.json.gz` and raises a **SCHEMA DRIFT** alarm (log + ops email) on any new top-level key. `RAW_ARCHIVE_ENABLED` (default on). The source-of-truth keeper — SportAI's re-fetch URL expires in 1 hour, so this is the only durable copy.
 
-**SportAI-ingest env flags (2026-07):** `VIDEO_QUALITY_CHECK_ENABLED` (pre-analysis `/api/videos/check` gate, default on), `RAW_ARCHIVE_ENABLED` (raw-JSON archive + drift alarm, default on), `BOUNCE_CANDIDATES_ENABLED` (recover extra floor bounces from `debug_data.ball_bounces`; **on** for the ingest worker), `SILVER_SERVE_SOURCE` (`geometric` default / `sa` / `auto` — the SA/auto path is video-validated but not enabled). Full context: the audit doc + `.claude/next_session_pickup.md`.
+**SportAI-ingest + silver env flags (2026-07):** `VIDEO_QUALITY_CHECK_ENABLED` (pre-analysis `/api/videos/check` gate, default on), `RAW_ARCHIVE_ENABLED` (raw-JSON archive + drift alarm, default on), `BOUNCE_CANDIDATES_ENABLED` (recover extra floor bounces from `debug_data.ball_bounces`; **code default ON** since 2026-07-23 — the `render.yaml` value never reached the worker, so it was a silent no-op), `SILVER_RALLY_CONTIGUITY` (**default ON** — rally ends at the first >5s break, not the legacy re-anchor; makes point winners reproducible), `SILVER_RALLY_IIR_MIN_COVERAGE` (=1.01 → the `is_in_rally` gap-break escape is OFF), `SILVER_SERVE_SOURCE` (`geometric` default / `sa` / `auto` — SA/auto path video-validated but not enabled). All have env rollbacks. Full context: the filter-contract doc + `.claude/next_session_pickup.md`.
+
+**`debug_data` is now captured (2026-07-23).** The ingest looked for `debug_events`/`events_debug`; SportAI sends `debug_data`, so `bronze.debug_event` was empty for every match ever ingested. Now stored whole (with the presigned `video_source` URL stripped). It carries `video_info` (fps/frames/duration — promoted to `bronze.session` columns, closing the two-frame-spaces gap) and per-swing signals promoted to `bronze.player_swing` as `dbg_*` columns (`dbg_far` = SportAI's own near/far truth, `dbg_discarded`, `dbg_serve_conf`, `dbg_conf_ball_in/out/hit`, `dbg_nballs`). `conf_ball_in/out` is 89% empty — NOT a viable in/out source (measured).
 - `static/`, `templates/` — Flask defaults; actual SPAs live under `frontend/`, inspection templates inlined in `ui_app.py`.
 
 `frontend/` contains all SPA HTML; served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`.

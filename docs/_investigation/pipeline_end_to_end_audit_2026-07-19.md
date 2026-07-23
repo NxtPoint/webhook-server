@@ -8,6 +8,38 @@ Severity key: **P1** = produces a visibly wrong number for a user today · **P2*
 
 ---
 
+## ★ CLOSEOUT STATUS (updated 2026-07-23) — read this first
+
+The **silver-derivation correctness cluster is closed**, validated on the
+reference match `c8b77210` (Tomo v Jimbo Ma, video-adjudicated 18/18 point
+winners). The remaining open items are in **billing / frontend / gold
+aggregation** — different subsystems, not yet touched. Canonical logic reference:
+**`docs/_investigation/silver_gold_filter_contract.md`**.
+
+| # | P1 finding | status |
+|---|---|---|
+| 1 | serve service-box test | **INVESTIGATED → deliberately deferred**. Measured: a strict box test would fault 3/10 near serves (incl. the owner-confirmed ace) — near-side serve-bounce accuracy is a *bronze* ceiling. Contract doc §"Service line / service box". |
+| 1b | service-line constants `6.40/17.37` → `5.485/18.285` | **FIXED** — `shot_phase_d` now derives absolutes from `half_y ± service_line_m`. |
+| 2 | first-serve % inflated (DF denominator) | **FIXED** — `double_fault_d` flag; `serve_try` stays 1st/2nd; 52.9% → 50.0%. |
+| — | rally ring-fence (`gap_break` re-anchor) | **FIXED** — contiguity, `SILVER_RALLY_CONTIGUITY` default ON; reproducible winners. |
+| — | swing-contact bounces as landings; `rally_location_bounce` hit-fallback | **FIXED** — honest NULL; verified in the derived-column dictionary. |
+| 3 | **deuce/ad decided by drifting `AVG(x)` not the fixed 5.485 centre mark** | **OPEN** (silver; `build_silver_v2.py:653`). In-wheelhouse, low-risk — top open silver item. |
+| 4 | court geometry "wrong axis origin" (P0) | **RETRACTED** — the code was right (doubles frame `[0,10.97]`, video-confirmed). |
+| 5 | **hollow ingest bills the customer** (zero-row → `completed` → billed) | **OPEN** (upload/billing). |
+| 6 | **"not measured" rendered as `0%`** across Match Analytics | **OPEN** (frontend). |
+| 7 | **Serve Strategy totals double-count** (gold group vs frontend re-key + sum) | **OPEN** (gold + frontend). |
+| 8 | **soft-deleted matches never leave `vw_player`** (no `deleted_at`) | **OPEN** (gold; `gold_init.py:48-49`). |
+| P2 | serve-speed KPIs over a partial sample; `_validate_rally_count` false alarms | **OPEN / documented** — surface coverage, or drop the misleading validator. |
+
+**What tonight's sprint delivered** (all on `main`, all validated on `c8b77210`,
+bench green, 18/18 preserved): bounce honesty, 4 dead columns dropped, every
+derived column re-derivation-verified, the event-spine model + `double_fault_d`,
+`exclude_d` explicit across gold, and the service-line investigation. Detailed
+receipts: the "RALLY RECON", "RALLY RING-FENCE", "18/18 — RALLY RECONCILED", and
+"Service line / service box" sections below + the filter-contract doc.
+
+---
+
 ## P1 — The serve is never checked against the service box
 
 `build_silver_v2.py:945`

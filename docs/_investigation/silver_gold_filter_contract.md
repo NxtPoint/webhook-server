@@ -1,10 +1,55 @@
-# Silver → Gold filter contract
+# The SportAI pipeline — bronze → silver → gold → dashboards (canonical logic)
 
-**Status:** canonical. **Written:** 2026-07-23, measured on `c8b77210` (Tomo v
-Jimbo Ma) + the other seeded matches. **Why it exists:** every dashboard reads a
-`gold.*` view, every gold view filters `silver.point_detail`, and if two views
-filter differently their numbers will never reconcile. This is the single rule
-for that filter.
+**Status:** canonical. **Written / measured:** 2026-07-23 on the reference match
+`c8b77210` (Tomo v Jimbo Ma, video-adjudicated 18/18 point winners). **This is
+the single source of truth for how the SportAI analytics pipeline derives and
+filters data.** Every dashboard reads a `gold.*` view; every gold view filters
+`silver.point_detail`; if two views filter differently their numbers never
+reconcile. Read this before changing any silver derivation or building a chart.
+
+## The pipeline in one screen
+
+```
+bronze.*                     silver.point_detail                 gold.* views          dashboards
+(raw SportAI, verbatim)      (one row per shot event)            (thin, per-chart)     (pure render)
+
+player_swing  ─┐  16 columns inherited VERBATIM (no changes):
+ball_bounce   ─┤    from player_swing (12): player_id, valid, serve, swing_type,
+               │      volley, is_in_rally, ball_player_distance, ball_speed,
+               │      ball_impact_type, ball_hit_s, ball_hit_location_x/y
+               │    from ball_bounce (4):    type, timestamp, court_x, court_y
+               │
+               └─→ + 34 DERIVED columns (built by build_silver_v2.py, 6 passes):
+                      point/game structure · serve_d / serve_side_d / serve_try /
+                      double_fault_d · shot_ix_in_point · shot_outcome_d · ace_d ·
+                      exclude_d · serve_location / serve_bucket_d · rally_location ·
+                      depth_d · aggression_d · stroke_d · the _norm coordinates
+                                    │
+                                    ▼
+                      THE SPINE = exclude_d IS NOT TRUE   (the real events)
+                        serves : serve_d = TRUE           (all attempts, incl. faults)
+                        rally  : shot_ix_in_point NOT NULL (the rally sequence)
+                                    │
+                                    ▼
+                      gold views filter the spine (rung 1 below), aggregate,
+                      and expose exactly one shape per chart. Dashboards render.
+```
+
+**The load-bearing rules** (each detailed below):
+1. **Bronze owns the facts; silver inherits them verbatim and derives on top.**
+   A wrong number is a bronze-accuracy problem first — don't paper over it with a
+   silver heuristic (see §"Service line / service box" for the canonical example).
+2. **`exclude_d IS NOT TRUE` is the ONE membership filter** — the spine. Every
+   gold view starts there. `is_in_rally` and `court_x IS NOT NULL` are NOT
+   membership filters (see below).
+3. **A coordinate present means a real measurement.** Missing bounce → NULL, never
+   a proxy (swing contact, hit location) dressed as a landing.
+4. **Validate every derivation change in `devenv/` on `c8b77210`** with an 18/18
+   check + `bench` green before shipping.
+
+---
+
+## Filter contract — the one membership rule
 
 ---
 
@@ -174,8 +219,8 @@ export.
 
 Every derived column below was **independently re-derived from its source columns
 and compared to the stored value on `c8b77210`** — all match (0 mismatches),
-i.e. the builder implements each rule correctly. Silver is now **52 columns**
-(16 verbatim + 3 keys/model + 33 derived) after the Phase-2 drop of `shot_q`,
+i.e. the builder implements each rule correctly. Silver is now **53 columns**
+(16 verbatim + 3 keys/model + 34 derived) after the Phase-2 drop of `shot_q`,
 `shot_key_q`, `invert_hit`, `invert_bounce`.
 
 | column | source(s) | rule | status |
