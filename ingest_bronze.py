@@ -941,7 +941,12 @@ def ingest_bronze_strict(
     team_sessions   = payload.get("team_sessions")
     bounce_heatmap  = payload.get("bounce_heatmap")
     unmatched       = payload.get("unmatched") or payload.get("unmatched_fields")
+    # SportAI sends `debug_data`; neither `debug_events` nor `events_debug` has
+    # ever existed in a payload, so bronze.debug_event was permanently empty
+    # (audit 2026-07-19 — same class as the `meta` vs `metadata` key-name bug).
+    # Legacy names kept first so a future payload using them still works.
     debug_events    = payload.get("debug_events") or payload.get("events_debug")
+    debug_data      = payload.get("debug_data")
 
     swing_rows = []
     for p in players:
@@ -974,6 +979,7 @@ def ingest_bronze_strict(
     counts["ball_bounce_cand"]   = _insert_ball_bounce_candidates(conn, task_id, payload, ball_bounces)
     counts["player_position"]    = _insert_player_positions(conn, task_id, player_positions_flat)
     counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
+    counts["debug_data"]         = _insert_debug_data(conn, task_id, debug_data)
     counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)
     counts["session_confidences"]= _upsert_session_confidences(conn, task_id, confidences)
     counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
@@ -989,6 +995,35 @@ def ingest_bronze_strict(
         SELECT session_uid FROM bronze.session WHERE task_id=:tid LIMIT 1
     """), {"tid": task_id}).scalar()
     return {"task_id": task_id, "session_id": sid, "counts": counts}
+
+def _insert_debug_data(conn, task_id: str, dbg) -> int:
+    """Store SportAI's `debug_data` verbatim as ONE row in bronze.debug_event.
+
+    `debug_data` is a DICT of ~131 fields (~1.1 MB), not an event array — it
+    carries SportAI's own confidence for every decision we currently re-derive
+    geometrically: `conf_ball_in`/`conf_ball_out`/`conf_ball_hit` (the in/out
+    answer that audit finding R6 needs), `serve_conf`, `far` (near/far),
+    `nballs`, `discarded`, `rally_start`/`rally_end`, `court_keypoints`.
+
+    Deliberately stored WHOLE rather than parsed into per-swing columns: the
+    per-swing layout has not been measured against a real payload yet, and
+    guessing it here would bake a wrong shape into the live ingest path.
+    Capture now (this is the only durable copy in the DB — SportAI's re-fetch
+    URL expires in an hour), measure the structure from a landed row, then
+    promote the specific fields. RULE 1 — bronze owns the fact.
+
+    `_insert_ball_bounce_candidates` already reads `debug_data.ball_bounces`
+    straight off the payload, so this is capture, not a new dependency.
+    """
+    d = _as_dict(dbg)
+    if not d:
+        return 0
+    conn.execute(sql_text("""
+        INSERT INTO bronze.debug_event (task_id, data)
+        VALUES (:tid, CAST(:j AS JSONB))
+    """), [{"tid": task_id, "j": json.dumps(d)}])
+    return 1
+
 
 def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
     if not arr: return 0
