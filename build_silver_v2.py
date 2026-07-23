@@ -53,7 +53,6 @@
 #   - Rally length bucket: Short (1-4), Medium (5-8), Long (9+)
 #   - Aggression: Aggressive/Neutral/Defensive from volley and shot_phase
 #   - Depth: Deep/Middle/Short from bounce y-coordinate relative to service lines
-#   - Shot quality (shot_q): composite score, shot_key_q = point_key + shot_q
 #
 # Court geometry constants are in SPORT_CONFIG dict (currently tennis_singles only).
 # Quality gate: skips ingest if tracking_confidence < 0.5 (from bronze.session_confidences).
@@ -208,8 +207,6 @@ ALL_COLS = OrderedDict({
     "serve_location":        "integer",
     "rally_location_hit":    "text",
     "rally_location_bounce": "text",
-    "invert_hit":            "boolean",
-    "invert_bounce":         "boolean",
     "ball_hit_x_norm":       "double precision",
     "ball_hit_y_norm":       "double precision",
     "ball_bounce_x_norm":    "double precision",
@@ -220,8 +217,6 @@ ALL_COLS = OrderedDict({
     "rally_length_point":    "integer",
     "rally_length_bucket_d": "text",
     "stroke_d":              "text",
-    "shot_q":                "integer",
-    "shot_key_q":            "text",
     "aggression_d":          "text",
     "depth_d":               "text",
     # Is the stored bounce coordinate CONSISTENT with what actually happened?
@@ -274,6 +269,15 @@ def ensure_schema(conn: Connection):
     for col, typ in ALL_COLS.items():
         if col.lower() not in existing:
             _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
+
+    # Drop columns retired 2026-07-23 (Phase 2 cleanup) — idempotent. All four
+    # were write-only with 0 consumers anywhere (grep-verified across the repo):
+    #   shot_q / shot_key_q   — external PowerBI join keys, unused
+    #   invert_hit / invert_bounce — informational flags; the inversion is applied
+    #                                inline via ball_hit_location_y, never read.
+    for dead in ("shot_q", "shot_key_q", "invert_hit", "invert_bounce"):
+        if dead in existing:
+            _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} DROP COLUMN IF EXISTS {dead};")
 
     # Backfill model column for existing rows
     if "model" not in existing:
@@ -1762,15 +1766,8 @@ def pass4_zones_and_normalize(conn: Connection, task_id: str, cfg: dict) -> int:
                  WHEN p.court_x < :z4 THEN 'B' ELSE 'A' END
         END,
 
-      -- Invert flags (consistent boundary: < for far side)
-      invert_hit = CASE
-        WHEN p.ball_hit_location_y IS NOT NULL AND p.ball_hit_location_y < :half_y THEN TRUE
-        ELSE FALSE END,
-
-      invert_bounce = CASE
-        WHEN p.ball_hit_location_y IS NOT NULL AND p.ball_hit_location_y > :half_y THEN TRUE
-        ELSE FALSE END,
-
+      -- (invert_hit / invert_bounce dropped 2026-07-23 — write-only flags, 0
+      --  consumers. The inversion is applied inline below via ball_hit_location_y.)
       -- Normalized hit coordinates
       ball_hit_x_norm = CASE
         WHEN p.ball_hit_location_x IS NULL THEN NULL
@@ -1822,7 +1819,6 @@ def pass4_zones_and_normalize(conn: Connection, task_id: str, cfg: dict) -> int:
 #   - Aggression: Aggressive (volleys, net approaches), Defensive (deep baseline),
 #     Neutral (everything else). Derived from shot_phase and volley flag.
 #   - Depth: Deep/Middle/Short based on bounce y relative to service lines.
-#   - Shot quality (shot_q): 1-3 composite, shot_key_q = point_key concatenated.
 # ============================================================
 
 def pass5_analytics(conn: Connection, task_id: str, cfg: dict) -> int:
@@ -1833,12 +1829,9 @@ def pass5_analytics(conn: Connection, task_id: str, cfg: dict) -> int:
         MAX(CASE WHEN p.shot_ix_in_point IS NULL THEN NULL
                  WHEN p.shot_ix_in_point = 1 THEN 0
                  ELSE p.shot_ix_in_point - 1 END)
-          OVER (PARTITION BY p.task_id, p.point_key) AS rally_length_point,
-        -- Global shot sequence
-        ROW_NUMBER() OVER (
-          PARTITION BY p.task_id
-          ORDER BY p.ball_hit_s, p.player_id, p.shot_ix_in_point, p.timestamp, p.id
-        ) AS shot_q
+          OVER (PARTITION BY p.task_id, p.point_key) AS rally_length_point
+        -- (shot_q / shot_key_q dropped 2026-07-23 — external PowerBI join keys
+        --  with 0 consumers anywhere.)
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     )
@@ -1890,10 +1883,7 @@ def pass5_analytics(conn: Connection, task_id: str, cfg: dict) -> int:
         WHEN p.ball_bounce_y_norm > 20 THEN 'Deep'
         WHEN p.ball_bounce_y_norm > 18 AND p.ball_bounce_y_norm <= 20 THEN 'Middle'
         WHEN p.ball_bounce_y_norm <= 18 THEN 'Short'
-        ELSE NULL END,
-
-      shot_q = rl.shot_q,
-      shot_key_q = p.task_id::text || '|' || rl.shot_q::text
+        ELSE NULL END
 
     FROM rl
     WHERE p.task_id = :tid AND p.id = rl.id;
