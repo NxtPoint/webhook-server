@@ -65,10 +65,9 @@ which is the *opponent's* next contact, 20-30m from the true landing — and sta
 it as `court_x/court_y`. That poisoned every heatmap/depth/zone for ~5 shots per
 match. `pass2_bounce` now accepts `type='swing'` only when `volley IS TRUE`;
 otherwise the shot keeps `court_x/y` NULL (honest). Point winners are unaffected
-(all such shots are mid-rally `In`). **Known residual (Phase 3):**
-`rally_location_bounce` still falls back to the *hit* zone when `court_x IS NULL`
-(`build_silver_v2.py:1739`) — the same "hit dressed as bounce" pattern at A-D
-resolution; decide in the correctness pass whether to NULL it instead.
+(all such shots are mid-rally `In`). The related `rally_location_bounce`
+hit-fallback was **resolved in Phase 3** (see the derived-column dictionary
+below) — it is now honestly NULL when the bounce is missing.
 
 > If a winners/errors or rally-count chart filters on `court_x IS NOT NULL`, it
 > silently deletes exactly those shots — the most decisive ones. Only filter on
@@ -172,3 +171,51 @@ video, and it is what the owner marks up. But for population questions —
 source of truth; a spreadsheet is one match, one moment, and one person's column
 selection. Every count in this document was measured against the DB, not the
 export.
+
+---
+
+## Derived-column dictionary (Phase 3 verification, 2026-07-23)
+
+Every derived column below was **independently re-derived from its source columns
+and compared to the stored value on `c8b77210`** — all match (0 mismatches),
+i.e. the builder implements each rule correctly. Silver is now **52 columns**
+(16 verbatim + 3 keys/model + 33 derived) after the Phase-2 drop of `shot_q`,
+`shot_key_q`, `invert_hit`, `invert_bounce`.
+
+| column | source(s) | rule | status |
+|---|---|---|---|
+| `ball_hit_x_norm` | `ball_hit_location_x/y` | far hitter (hy<11.885) → `10.97 − hx`; else `hx` | re-derived ✓ |
+| `ball_hit_y_norm` | `ball_hit_location_y` | far hitter → `23.77 − hy`; else `hy` | re-derived ✓ |
+| `ball_bounce_x_norm` | `court_x`, `ball_hit_location_y` | near hitter (hy>11.885) → `10.97 − cx`; else `cx` | re-derived ✓ |
+| `ball_bounce_y_norm` | `court_y`, `ball_hit_location_y` | near hitter → `23.77 − cy`; else `cy` | re-derived ✓ |
+| `serve_bucket_d` | `serve_location` | 1,8→wide · 2,3,6,7→body · 4,5→T | re-derived ✓ |
+| `depth_d` | `ball_bounce_y_norm` | serve→NULL · >20 Deep · >18 Middle · ≤18 Short | re-derived ✓ |
+| `aggression_d` | `ball_hit_y_norm` | serve→NULL · ≤24 Attack · <26 Neutral · ≥26 Defence | re-derived ✓ |
+| `stroke_d` | `serve_d`/`volley`/`swing_type` | Serve→Volley→Overhead→Forehand→Backhand→Slice→Other | re-derived ✓ |
+| `rally_length` | `shot_ix_in_point` | ix=1→0 · else ix−1 | re-derived ✓ |
+
+**Semantic check on the norms (not just formula match):** both players' hits map
+to the same canonical half (avg `hit_y_norm` ≈ 24.8 for far and near hitters
+alike) and both players' bounces to the opponent half (avg `bounce_y_norm` ≈
+19.2). So serve, rally and return events overlay on one shared orientation — the
+inversion is correct, not just internally consistent.
+
+### `rally_location_bounce` — hit-fallback removed (2026-07-23)
+
+It previously fell back to the **hit** zone when `court_x` was NULL, so ~25% of
+rally shots (13/53 on `c8b77210`) carried a HIT zone under a column named for the
+BOUNCE zone — contaminating every placement heatmap. Removed: a shot with no
+bounce is now honestly NULL (53→40 set, 0 via fallback). Same principle as the
+Phase-1 swing fix; point winners unaffected (18/18).
+
+### Not re-derived here (owned elsewhere / known-open)
+
+- `serve_location` (1–8), `serve_side_d`, `server_end_d`, `serve_d` — the serve
+  geometry. The audit has **open P1 items** on the service-line constants
+  (`6.40/17.37` should be `5.485/18.285`) and the service-box test; verify those
+  as part of that fix, not here.
+- `shot_outcome_d`, `ace_d`, `service_winner_d`, `point_winner_player_id` — the
+  outcome chain. Validated indirectly and decisively by the **18/18 point-winner
+  reconciliation against video**, which is stronger than a formula re-derivation.
+- `point_number`, `game_number`, `shot_ix_in_point` — point/game structure,
+  validated by the 18-point / 2-game reconciliation.

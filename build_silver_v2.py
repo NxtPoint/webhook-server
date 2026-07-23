@@ -1736,24 +1736,16 @@ def pass4_zones_and_normalize(conn: Connection, task_id: str, cfg: dict) -> int:
                  WHEN p.ball_hit_location_x < :z4 THEN 'B' ELSE 'A' END
         END,
 
-      -- Rally location (bounce): A-D based on bounce side; fallback to hit location
+      -- Rally location (bounce): A-D from the BOUNCE coordinate only.
+      -- The hit-location fallback was removed 2026-07-23: it labelled 25% of
+      -- rally shots (13/53 on c8b77210) with the HIT zone while the column name
+      -- promises the BOUNCE zone, contaminating every placement heatmap — the
+      -- same "hit dressed as bounce" pattern the Phase-1 swing fix removed.
+      -- A shot with no bounce coordinate is honestly NULL here.
       rally_location_bounce =
         CASE
           WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
-          WHEN p.court_x IS NULL THEN
-            -- Fallback: use hit-based classification
-            CASE
-              WHEN p.ball_hit_location_x IS NULL OR p.ball_hit_location_y IS NULL THEN NULL
-              WHEN p.ball_hit_location_y < :half_y THEN
-                CASE WHEN p.ball_hit_location_x < :z2 THEN 'A'
-                     WHEN p.ball_hit_location_x < :z3 THEN 'B'
-                     WHEN p.ball_hit_location_x < :z4 THEN 'C' ELSE 'D' END
-              ELSE
-                CASE WHEN p.ball_hit_location_x < :z2 THEN 'D'
-                     WHEN p.ball_hit_location_x < :z3 THEN 'C'
-                     WHEN p.ball_hit_location_x < :z4 THEN 'B' ELSE 'A' END
-            END
-          WHEN p.court_y IS NULL THEN NULL
+          WHEN p.court_x IS NULL OR p.court_y IS NULL THEN NULL
           WHEN p.court_y < :half_y THEN
             CASE WHEN p.court_x < :sx_left THEN 'A'
                  WHEN p.court_x < :z2 THEN 'A'
