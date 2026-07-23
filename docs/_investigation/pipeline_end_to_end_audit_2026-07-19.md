@@ -659,6 +659,56 @@ Everything above is measurement; these need the owner's footage to settle.
 If 11/15/17 truncate as predicted, `max_rally_length` on this match drops 16 -> 14
 and the longest-rally tile changes.
 
+## ADJUDICATED — owner video, 2026-07-23
+
+Owner's ruling on the three contested points (`052786b4` = Tomo vs Jimbo Ma,
+2026-07-19):
+
+- **pt 11** — ends ~388.7s, **154 hit it out wide** → 21 wins
+- **pt 15** — ends ~522.3s → 21 wins
+- **pt 17** — **21 misses the return** → **154 wins** (the shipped pipeline says
+  21 — a live, wrong point winner)
+
+### Timing: the 6s rule is right 3/3
+
+It truncates each point at exactly the moment the owner says it ended —
+388.7s, 522.3s, 584.9s. R3's threshold is validated on every contested case.
+
+### Winners: 2/3 shipped → 2/3 with the rule. It is winner-NEUTRAL.
+
+| point | truth | shipped now | with 6s gap rule |
+|---|---|---|---|
+| 11 | 21 | 21 ✓ | 21 ✓ — ends on 154's shot, bounce `x=0.83` is **outside the singles sideline [1.37, 9.60]** |
+| 15 | 21 | 21 ✓ *(by accident)* | **154 ✗** — new last shot has a **NULL bounce** → fabricated `Error` (R6) |
+| 17 | 154 | **21 ✗** | 154 ✓ — serve bounces in at (9.58, 16.93) |
+
+Three things follow, and they are the point of this whole exercise:
+
+1. **Point 11 is independent corroboration of the coordinates.** The owner saw
+   "out wide"; the pipeline's own bounce `x=0.83` sits outside the singles
+   sideline and derives `Error` without being told. Two independent sources
+   agreeing — the bounce coordinate is trustworthy *when it exists*.
+2. **Point 15 is R6 caught doing real damage.** Truncation timing is correct, but
+   the point-ending shot has no recorded bounce, so `NULL → Error` hands the point
+   to the wrong player. Note the shipped pipeline gets this point *right by
+   accident* — only because the phantom shots at 542/547s end with 154 erring.
+3. **The gap rule alone buys nothing on point winners.** It fixes point 17 and
+   breaks point 15: 2/3 either way. Shipping it standalone would churn two points
+   and look like a wash. **Ship it with the R6 fix or not at all** — with NULL
+   bounce no longer fabricating an error, point 15 lands correctly and all three
+   are right.
+
+For rally *length* the rule is safe and correct standalone, as already stated.
+
+### New consequence — ace inflation (point 17)
+
+Truncated to the serve alone, point 17 satisfies `ace_d` (serve is last shot +
+`Winner` + no return). But the owner says 21 **swung and missed** — a return that
+was never detected at all. So the gap rule would make the winner right and the
+**ace count wrong**, reporting 2 aces on a match with 1. Any ace rule that infers
+"no return" from "no detected return" inherits every stroke-recall miss. Guard
+this before the split fix ships.
+
 ## Reproduce
 
 ```bash
