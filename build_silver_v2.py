@@ -146,8 +146,12 @@ SPORT_CONFIG: Dict[str, Dict[str, float]] = {
         "singles_right_x":      9.60,
         "singles_width":        8.23,
         "half_y":              11.885,
-        "service_line_m":       6.40,
-        "far_service_line_m":  17.37,
+        "service_line_m":       6.40,   # distance from the net; absolute service
+                                        # lines are half_y ∓ 6.40 = 5.485 / 18.285
+        # far_service_line_m removed 2026-07-23: it held 17.37 (= court_len - 6.40),
+        # a wrong "absolute" that treated the service line as 6.40 from the FAR
+        # baseline instead of from the net. shot_phase_d now derives the absolute
+        # lines from service_line_m. (T5's config has its own copy — out of scope.)
         # A5 widen — was 0.30m but T5's calibration extrapolation places
         # real-baseline hitters at 0.38-1.01m inside court on MATCHI wide-
         # angle, so 8 of 11 missing serves were legitimate but failed the
@@ -632,8 +636,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     SX_RIGHT        = cfg["singles_right_x"]
     S_WIDTH         = cfg["singles_width"]
     HALF_Y          = cfg["half_y"]
-    SVC_LINE        = cfg["service_line_m"]
-    FAR_SVC_LINE    = cfg["far_service_line_m"]
+    SVC_LINE        = cfg["service_line_m"]   # distance from net; absolutes derived at bind
 
     MID_X_DEFAULT   = SX_LEFT + S_WIDTH / 2.0
     HALF_W          = S_WIDTH / 2.0
@@ -1635,7 +1638,11 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         "sx_left": float(SX_LEFT), "sx_right": float(SX_RIGHT),
         "mid": float(mid_x),
         "half_y": float(HALF_Y),
-        "svc": float(SVC_LINE), "far_svc": float(FAR_SVC_LINE),
+        # Absolute service-line y for shot_phase_d. service_line_m (6.40) is the
+        # distance FROM THE NET, so the absolute lines are half_y ∓ 6.40 =
+        # 5.485 / 18.285 — NOT the raw 6.40 / 17.37 the old code passed as
+        # absolutes (audit P1: the Net-phase band was ~0.9m too narrow each side).
+        "svc": float(HALF_Y - SVC_LINE), "far_svc": float(HALF_Y + SVC_LINE),
         "b1": float(B1), "b2": float(B2), "b3": float(B3),
         "serve_src": _resolve_serve_source(conn, task_id, EPS, COURT_LEN),
     }

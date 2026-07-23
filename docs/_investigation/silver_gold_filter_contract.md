@@ -261,3 +261,49 @@ first-serve-% denominator (audit P1). Fixed 2026-07-23:
 Measured on `c8b77210`: `first_serves_total` 17 → **18**, first-serve %
 **52.9% → 50.0%** (the owner's known truth), double-fault count unchanged at 1,
 18/18 point winners preserved, gold reconciles, bench green.
+
+---
+
+## Service line / service box (investigated 2026-07-23)
+
+The audit listed two serve-geometry P1s. Measurement on `c8b77210` splits them
+into one safe fix (done) and one that must NOT be done.
+
+### FIXED — `shot_phase_d` service-line constants
+
+`shot_phase_d` classified the "Net" zone by absolute hit-y in `(6.40, 17.37)`.
+Those are wrong: `service_line_m` = 6.40 is the distance **from the net**, so the
+absolute service lines are `half_y ∓ 6.40` = **5.485 / 18.285**, and 17.37 (=
+`court_len − 6.40`) treated the line as 6.40 from the far *baseline*. The Net band
+was ~0.9m too narrow each side. Now derived correctly from `half_y ± service_line_m`;
+`far_service_line_m` removed. Outcome-neutral (phase feeds only the rally-phase
+breakdown, not winners); 0 shots changed phase on `c8b77210` but the constant is
+now correct for matches whose hits fall in those bands. 18/18 preserved, bench green.
+
+### NOT DONE, deliberately — a strict service-box test on serve OUTCOME
+
+The audit suggested scoring a serve out when its bounce falls outside the service
+box (net → service line, correct side), to stop a long serve scoring as an ace.
+**Measured, this would make the data worse and break the owner-verified 18/18.**
+
+Near-serve bounce coordinates are not accurate enough for a strict box test:
+
+| near serves | in correct box | notes |
+|---|---|---|
+| 7 / 10 | inside `[5.485, 11.885]` | |
+| 3 / 10 | **past the service line** | pt6 (−2.22m), pt9 (−1.46m), **pt10 (−0.62m)** |
+
+All three are owner-confirmed **IN** on video — and **pt9 is the ace**. A strict
+box test would fault all three and turn the ace into a double fault. Far-serve
+bounces are accurate (7/7 in box); the error is a near-side serve-bounce
+y-precision problem — a **bronze accuracy ceiling, not a silver-logic gap**.
+
+The current crude test (`ABS(court_y − half_y) ≤ 1.60` + gross out-of-bounds) is
+accidentally protective *because* it is loose: on `c8b77210` it flags only the
+real double fault (pt5) and lets the mislocated-but-genuine serves through. A
+tighter test cannot be trusted until serve-bounce accuracy improves upstream.
+
+**Decision:** keep the loose serve-outcome test. Revisit only if/when near-side
+serve-bounce precision improves (bronze). This is the same bronze-first lesson as
+the rest of the sprint — don't chase with a silver heuristic what bronze can't
+support.
