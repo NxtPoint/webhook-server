@@ -101,6 +101,10 @@
   .sec > h2{font-size:14px;margin:0 0 10px;font-weight:600;display:flex;align-items:center;gap:8px}
   .sec > h2 .count{font-size:12px;color:var(--muted);font-weight:500}
   .muted{color:var(--muted)}
+  /* Full task_id, monospace. user-select:all so a single click selects the whole
+     UUID — it gets pasted straight into SQL / the /ops/ingest-task payload. */
+  .tid{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
+       white-space:nowrap;user-select:all;-webkit-user-select:all;cursor:text}
 
   /* ---- States ---------------------------------------------------------- */
   .err{background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;padding:12px 16px;
@@ -851,7 +855,7 @@ async function loadOps(){
   });
   tbl(document.getElementById('opsTable'),
       ['Task','Email','Sport','Status','Trim','Started','Finished','Error'], d.matches,
-      r=>`<tr><td>${esc((r.task_id||'').slice(0,8))}</td><td>${esc(r.email||'—')}</td><td>${esc(r.sport_type||'—')}</td>
+      r=>`<tr><td class="tid" title="${esc(r.task_id||'')}">${esc(r.task_id||'—')}</td><td>${esc(r.email||'—')}</td><td>${esc(r.sport_type||'—')}</td>
           <td>${pill(r.derived_status)}</td><td>${esc(r.trim_status||'—')}</td>
           <td>${when(r.ingest_started_at)}</td><td>${when(r.ingest_finished_at)}</td>
           <td class="muted">${esc(r.ingest_error? r.ingest_error.slice(0,60):'')}</td></tr>`,

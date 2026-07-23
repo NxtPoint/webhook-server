@@ -200,6 +200,17 @@ def _run_bronze_init_conn(conn):
         );
     """))
 
+    # video_info promoted out of debug_data (2026-07-23) — see _ensure_session.
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.session
+          ADD COLUMN IF NOT EXISTS video_fps          DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS video_total_frames INT,
+          ADD COLUMN IF NOT EXISTS video_duration_s   DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS video_width        INT,
+          ADD COLUMN IF NOT EXISTS video_height       INT,
+          ADD COLUMN IF NOT EXISTS video_codec        TEXT
+    """))
+
     # arrays
     for t in ["player","player_swing","rally","ball_position","ball_bounce",
               "unmatched_field","debug_event","player_position"]:
@@ -298,6 +309,19 @@ def _run_bronze_init_conn(conn):
           ADD COLUMN IF NOT EXISTS swing_type TEXT,
           ADD COLUMN IF NOT EXISTS volley BOOLEAN,
           ADD COLUMN IF NOT EXISTS is_in_rally BOOLEAN,
+          -- Promoted from debug_data.swings (2026-07-23). SportAI's own answer
+          -- to questions we otherwise re-derive geometrically. Joined on
+          -- (ball_hit.timestamp, player_id) — the arrays are 1:1 with the
+          -- delivered swings (114:114 measured on c8b77210). dbg_ prefix makes
+          -- the provenance obvious: these are SportAI's internals, not our
+          -- derivations, and they are NULL for every pre-2026-07-23 ingest.
+          ADD COLUMN IF NOT EXISTS dbg_far BOOLEAN,
+          ADD COLUMN IF NOT EXISTS dbg_discarded BOOLEAN,
+          ADD COLUMN IF NOT EXISTS dbg_serve_conf DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS dbg_conf_ball_in DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS dbg_conf_ball_out DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS dbg_conf_ball_hit DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS dbg_nballs INT,
           -- scalar timing columns used in INSERT
           ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS start_frame INT,
@@ -382,13 +406,35 @@ def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: in
 def _ensure_session(conn, task_id: str, payload: Dict[str, Any]):
     meta_patch = {"ingest_at": datetime.now(timezone.utc).isoformat(),
                   "keys": list(payload.keys())[:50]}
+
+    # video_info, promoted to real columns (2026-07-23). SportAI sends it inside
+    # `debug_data`, NOT as the top-level `meta` the ingest historically looked
+    # for — which is why bronze has never had fps and why the "two frame spaces"
+    # bug (bronze sampled at 25fps vs native-fps source timestamps) keeps
+    # recurring with nothing in the DB to convert between them.
+    vi = _as_dict(_as_dict(payload.get("debug_data")).get("video_info"))
     conn.execute(sql_text("""
-        INSERT INTO bronze.session (task_id, session_uid, meta)
-        VALUES (:tid, :uid, CAST(:meta AS JSONB))
+        INSERT INTO bronze.session (task_id, session_uid, meta,
+                                    video_fps, video_total_frames, video_duration_s,
+                                    video_width, video_height, video_codec)
+        VALUES (:tid, :uid, CAST(:meta AS JSONB),
+                :fps, :frames, :dur, :w, :h, :codec)
         ON CONFLICT (task_id) DO UPDATE SET
-          session_uid = COALESCE(bronze.session.session_uid, :uid),
-          meta        = COALESCE(bronze.session.meta, '{}'::jsonb) || CAST(:meta AS JSONB)
-    """), {"tid": task_id, "uid": _compute_session_uid(task_id, payload), "meta": json.dumps(meta_patch)})
+          session_uid        = COALESCE(bronze.session.session_uid, :uid),
+          meta               = COALESCE(bronze.session.meta, '{}'::jsonb) || CAST(:meta AS JSONB),
+          video_fps          = COALESCE(EXCLUDED.video_fps,          bronze.session.video_fps),
+          video_total_frames = COALESCE(EXCLUDED.video_total_frames, bronze.session.video_total_frames),
+          video_duration_s   = COALESCE(EXCLUDED.video_duration_s,   bronze.session.video_duration_s),
+          video_width        = COALESCE(EXCLUDED.video_width,        bronze.session.video_width),
+          video_height       = COALESCE(EXCLUDED.video_height,       bronze.session.video_height),
+          video_codec        = COALESCE(EXCLUDED.video_codec,        bronze.session.video_codec)
+    """), {"tid": task_id, "uid": _compute_session_uid(task_id, payload),
+           "meta": json.dumps(meta_patch),
+           "fps": _as_float(vi.get("fps")) or _as_float(vi.get("avg_frame_rate")),
+           "frames": _as_int(vi.get("total_frames")),
+           "dur": _as_float(vi.get("duration")),
+           "w": _as_int(vi.get("width")), "h": _as_int(vi.get("height")),
+           "codec": vi.get("codec")})
 
 def _insert_players(conn, task_id: str, players: list) -> int:
     if not players: return 0
@@ -1001,6 +1047,8 @@ def ingest_bronze_strict(
     counts["player_position"]    = _insert_player_positions(conn, task_id, player_positions_flat)
     counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
     counts["debug_data"]         = _insert_debug_data(conn, task_id, debug_data)
+    # must run AFTER player_swing insert — it UPDATEs those rows in place
+    counts["debug_swing_fields"] = _apply_debug_swing_fields(conn, task_id, debug_data)
     counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)
     counts["session_confidences"]= _upsert_session_confidences(conn, task_id, confidences)
     counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
@@ -1016,6 +1064,59 @@ def ingest_bronze_strict(
         SELECT session_uid FROM bronze.session WHERE task_id=:tid LIMIT 1
     """), {"tid": task_id}).scalar()
     return {"task_id": task_id, "session_id": sid, "counts": counts}
+
+def _apply_debug_swing_fields(conn, task_id: str, dbg) -> int:
+    """Promote per-swing debug_data signals onto bronze.player_swing.
+
+    Joined on (ball_hit.timestamp, player_id) — debug_data.swings is 1:1 with the
+    delivered swings (114:114 measured on c8b77210), but joining on the key
+    rather than on array position means a future length mismatch degrades to
+    "some rows unfilled" instead of silently shifting every value by one.
+
+    Promoted (dbg_ prefix = SportAI's own internals, not our derivations):
+      far            SportAI's near/far truth — the far-attribution problem
+      discarded      its own "ignore this swing" flag
+      serve_conf     lets the geometric serve gate finally be MEASURED
+      conf_ball_in/out/hit   its in/out call (sparse: ~89% carry no signal, but
+                     cheap to carry so coverage can be tracked over time)
+      nballs         multi-ball / neighbouring-court indicator
+    """
+    swings = _as_list(_as_dict(dbg).get("swings"))
+    if not swings:
+        return 0
+    rows = []
+    for s in swings:
+        if not isinstance(s, dict):
+            continue
+        ts = _as_float(_as_dict(s.get("ball_hit")).get("timestamp"))
+        pid = _as_int(s.get("player_id"))
+        if ts is None or pid is None:
+            continue
+        rows.append({
+            "tid": task_id, "ts": ts, "pid": pid,
+            "far": s.get("far"), "disc": s.get("discarded"),
+            "sconf": _as_float(s.get("serve_conf")),
+            "cin": _as_float(s.get("conf_ball_in")),
+            "cout": _as_float(s.get("conf_ball_out")),
+            "chit": _as_float(s.get("conf_ball_hit")),
+            "nb": _as_int(s.get("nballs")),
+        })
+    if not rows:
+        return 0
+    conn.execute(sql_text("""
+        UPDATE bronze.player_swing SET
+          dbg_far            = :far,
+          dbg_discarded      = :disc,
+          dbg_serve_conf     = :sconf,
+          dbg_conf_ball_in   = :cin,
+          dbg_conf_ball_out  = :cout,
+          dbg_conf_ball_hit  = :chit,
+          dbg_nballs         = :nb
+        WHERE task_id = :tid AND player_id = :pid
+          AND ball_hit_s IS NOT NULL AND abs(ball_hit_s - :ts) < 0.01
+    """), rows)
+    return len(rows)
+
 
 def _insert_debug_data(conn, task_id: str, dbg) -> int:
     """Store SportAI's `debug_data` verbatim as ONE row in bronze.debug_event.
@@ -1039,6 +1140,13 @@ def _insert_debug_data(conn, task_id: str, dbg) -> int:
     d = _as_dict(dbg)
     if not d:
         return 0
+    # Strip the presigned source URL before persisting. video_info.video_source
+    # is a signed S3 link to the customer's raw video with a 7-day expiry —
+    # a live credential, and there is no reason to keep one in the database.
+    vi = d.get("video_info")
+    if isinstance(vi, dict) and "video_source" in vi:
+        d = dict(d)
+        d["video_info"] = {k: v for k, v in vi.items() if k != "video_source"}
     conn.execute(sql_text("""
         INSERT INTO bronze.debug_event (task_id, data)
         VALUES (:tid, CAST(:j AS JSONB))
