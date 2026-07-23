@@ -248,7 +248,21 @@ def _run_bronze_init_conn(conn):
           ADD COLUMN IF NOT EXISTS player_id INT,
           ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS court_pos JSONB,
-          ADD COLUMN IF NOT EXISTS image_pos JSONB
+          ADD COLUMN IF NOT EXISTS image_pos JSONB,
+          -- source: NULL/'delivered' = SportAI's final ball_bounces list;
+          -- 'debug_candidate' = an extra bounce recovered from
+          -- debug_data.ball_bounces. confidence: carried from the candidate
+          -- set (delivered rows are NULL).
+          --
+          -- These two were added to db_init.bronze_init() by the 2026-07-22
+          -- candidate-recovery work, but BOTH services boot bronze schema via
+          -- ingest_bronze._run_bronze_init -> _ensure_schema (upload_app:2005,
+          -- ingest_worker_app:238), NOT via db_init.bronze_init — so they never
+          -- reached production. build_silver_v2 pass 2 orders on `source`,
+          -- which then failed with `column "source" does not exist` on the
+          -- first match ingested after that change (c8b77210, 2026-07-23).
+          ADD COLUMN IF NOT EXISTS source TEXT,
+          ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION
     """))
 
     conn.execute(sql_text("""
