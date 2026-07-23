@@ -219,3 +219,49 @@ Phase-1 swing fix; point winners unaffected (18/18).
   reconciliation against video**, which is stronger than a formula re-derivation.
 - `point_number`, `game_number`, `shot_ix_in_point` — point/game structure,
   validated by the 18-point / 2-game reconciliation.
+
+---
+
+## The event spine (Phase 4, 2026-07-23)
+
+**The spine already exists — it is `exclude_d IS NOT TRUE`.** There is no separate
+"event index" column and there should not be. A serve attempt and a rally shot
+are different event *types* with different attributes, so they are modelled as
+two clean sub-populations under the one membership filter, not forced into a
+single sequence. Decided with the owner (Option A: two-filter, no new column).
+
+```
+SPINE  =  exclude_d IS NOT TRUE                    (80 true events on c8b77210)
+  serves :  serve_d = TRUE                          (27: 9 faulted + 18 in-serve)
+            - every 1st / 2nd attempt is its own row
+            - distinguished by serve_try_ix_in_point ('1st' / '2nd')
+            - double faults flagged by double_fault_d (NOT by relabelling serve_try)
+            - full serve_location / serve_bucket_d / serve_side_d on every attempt
+  rally  :  shot_ix_in_point IS NOT NULL AND NOT serve_d   (53)
+            - the rally sequence, indexed from the in-serve
+            - rally_length = shot_ix_in_point − 1
+```
+
+**`shot_ix_in_point` is the RALLY spine, not the event spine.** It is NULL on
+faulted serves by design — it counts from the serve that *started the rally*.
+Do not extend it to index serves: `rally_length` is `shot_ix − 1`, so indexing
+faulted serves would inflate every rally-length statistic. If you need a
+chronological point replay, order the spine rows by `ball_hit_s` within a point —
+no index column required.
+
+### `double_fault_d` — the serve-attempt fix that came out of the spine work
+
+The builder used to overwrite `serve_try_ix_in_point` to `'Double'` on **both**
+serve rows of a double-fault point. That removed the 1st serve from the
+first-serve-% denominator (audit P1). Fixed 2026-07-23:
+
+- `serve_try_ix_in_point` now stays `'1st'` / `'2nd'` on DF points.
+- a new point-level boolean `double_fault_d` (EXISTS-stamped like `ace_d`)
+  carries the double fault.
+- gold counts DFs via `double_fault_d`, and the first-serve denominator via
+  `serve_try = '1st'` — which now correctly includes the DF point's 1st attempt
+  (it faulted → NULL outcome → not counted as "in", which is right).
+
+Measured on `c8b77210`: `first_serves_total` 17 → **18**, first-serve %
+**52.9% → 50.0%** (the owner's known truth), double-fault count unchanged at 1,
+18/18 point winners preserved, gold reconciles, bench green.

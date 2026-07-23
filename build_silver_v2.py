@@ -189,6 +189,7 @@ ALL_COLS = OrderedDict({
     "server_end_d":          "text",
     "serve_side_d":          "text",
     "serve_try_ix_in_point": "text",
+    "double_fault_d":        "boolean",
     "service_winner_d":      "boolean",
     "point_number":          "integer",
     "exclude_d":             "boolean",
@@ -1547,11 +1548,14 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
              AND NOT COALESCE(irf.in_rally_window, FALSE))
         ) AS exclude_d,
 
-        CASE
-          WHEN EXISTS (SELECT 1 FROM double_pts d WHERE d.task_id = so.task_id AND d.point_number = so.point_number)
-          THEN 'Double'
-          ELSE so.serve_try_ix_in_point
-        END AS serve_try_ix_in_point,
+        -- serve_try stays '1st'/'2nd' even on a double-fault point. The old
+        -- code overwrote BOTH serve rows of a DF point to 'Double', which
+        -- removed the 1st serve from the first-serve-% denominator (audit P1:
+        -- 52.9% vs true 50.0%). The DF is now carried by double_fault_d instead,
+        -- so first_serves_total counts the DF point's 1st attempt correctly (it
+        -- faulted → NULL outcome → not counted as "in", which is right).
+        so.serve_try_ix_in_point AS serve_try_ix_in_point,
+        EXISTS (SELECT 1 FROM double_pts d WHERE d.task_id = so.task_id AND d.point_number = so.point_number) AS double_fault_d,
 
         EXISTS (SELECT 1 FROM ace_pts a WHERE a.task_id = so.task_id AND a.point_number = so.point_number) AS ace_d,
         EXISTS (SELECT 1 FROM svc_winner_pts sv WHERE sv.task_id = so.task_id AND sv.point_number = so.point_number) AS service_winner_d,
@@ -1607,6 +1611,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       game_number = f.game_number,
       exclude_d = f.exclude_d,
       serve_try_ix_in_point = f.serve_try_ix_in_point,
+      double_fault_d = f.double_fault_d,
       ace_d = f.ace_d,
       service_winner_d = f.service_winner_d,
       shot_ix_in_point = f.shot_ix_in_point,
