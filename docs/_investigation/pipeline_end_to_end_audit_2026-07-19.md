@@ -718,3 +718,153 @@ docker compose -f devenv/docker-compose.yml up -d
 DATABASE_URL='postgresql+psycopg://tf:tf@localhost:55433/tf_dev' \
   .venv/Scripts/python -c "import build_silver_v2 as b; print(b.build_silver_v2('052786b4-dba8-4f2f-948c-8b9180c447f8', replace=True))"
 ```
+
+---
+
+# RALLY RING-FENCE — `exclude_d` vs `is_in_rally` (2026-07-23, same day)
+
+Follow-up to the rally recon. Question: how much of what `is_in_rally` offers is
+`exclude_d` already doing? Answer: **almost all of it, and better** — the gap
+rule I proposed already exists at 5s. Two corrections to the recon follow.
+
+## Correction 1 — R3's "empty 5–6s band" was an artifact of my own filter
+
+The R3 histogram was measured on `NOT exclude_d` rows, i.e. *after* the existing
+5s `gap_break` rule had already removed the long gaps. Re-measured including
+excluded rows (n=558):
+
+| gap | 4-5 | **5-6** | 6-8 | 8-10 | 10-15 | 15-20 | 20-30 |
+|---|---|---|---|---|---|---|---|
+| n | 11 | **16** | 34 | 15 | 24 | 2 | 1 |
+
+The band is **not** empty. The distribution is not cleanly bimodal, and the
+"physically motivated separation" claim does not survive. What survives is
+narrower and more useful: the three gaps the recon found are the ones that
+**escaped** an existing rule, not evidence that no rule exists.
+
+## Correction 2 — `is_in_rally` was already tried, and removed on purpose
+
+`pass1_load` carries the record inline: the `is_in_rally` gate was removed
+because it "rejected 480/515 valid swings" on `0336b82b`. That is the same 6%
+collapse measured in the recon. So the recon's "SportAI already tells us" was
+re-deriving a known, documented decision — and the file's own business-rules
+header still claimed the gate was active (fixed in this commit).
+
+## What `exclude_d` actually does
+
+`exclude_d = r1 OR gap_break OR r3` (pass 3):
+
+- **r1** — a non-serve shot *before* the point's last serve (the returned
+  first-serve-fault sequence).
+- **gap_break** — a post-serve shot beyond `last_connected_s`, where
+  `last_connected_s` was `MAX(ball_hit_s)` over post-serve shots within **5.0s**
+  of their predecessor.
+- **r3** — a non-serve shot with NULL hit coordinates.
+
+## The defect: the re-anchor is a global MAX, not a contiguous chain
+
+The 2026-06-04 re-anchor fixed a real bug (a single mid-rally *detection* gap
+cascaded to kill a whole rally — 19/21 shots lost). But it implements
+`last_connected_s` as a **global MAX** over every "connected" shot, while its own
+comment describes "the last shot of a LIVE rally". So **any dense cluster after a
+long gap re-anchors the chain onto its own end**:
+
+- **pt 11** — 399.5s is 10.8s after the rally, but 401.9s is 2.4s after *that*,
+  so 401.9 qualifies as "connected" and `last_connected_s` becomes 401.9. Nothing
+  is beyond it → nothing excluded.
+- **pt 15** — same shape: 542.4 (+20.0s) then 547.0 (+4.6s) → re-anchors to 547.0.
+- **pt 17** — different cause: a *lone* post-serve shot 13.8s later produces **no**
+  connected chain at all, `last_connected_s` is NULL, and the rule is deliberately
+  conservative on NULL → kept.
+
+This is `feedback_greedy_chain_rejection` one turn on: the re-anchor escape that
+fixed the freeze now admits between-point clusters.
+
+## Confusion matrix — the two signals agree where it matters
+
+In-point rows, `exclude_d` vs `is_in_rally`:
+
+| task | excl & not-IIR | excl & IIR | keep & not-IIR | keep & IIR |
+|---|---|---|---|---|
+| `0336b82b` | 35 | 1 | **445** | 34 |
+| `052786b4` | 7 | 6 | **5** | 79 |
+| `079d2c62` | 1 | 6 | **4** | 83 |
+
+The 5 "keep & not-IIR" rows on `052786b4` are **exactly** the 5 the owner's video
+says should be gone. The 6 "excl & IIR" are r1 rows — legitimately out of the
+*point*, but inside a *rally* (SportAI counts the fault rally), so that
+disagreement is a unit mismatch, not an error. `0336b82b`'s 445 is the collapse.
+
+`bronze.rally` tells the same story from a third angle: 27 windows on `052786b4`
+(**one per serve attempt**, not over-segmentation — which is also why the
+`silver_points=18 vs bronze_rallies=27` validator warning is a unit mismatch),
+and only those same 5 kept shots fall outside every window. On `0336b82b`: 8
+windows for a whole match, 445 of 479 kept shots outside. All three SportAI rally
+signals are the same underlying segmentation and collapse together.
+
+## The fix (shipped, DEFAULT OFF behind `SILVER_RALLY_CONTIGUITY`)
+
+Three surgical changes to `gap_break`, no new threshold and no new bronze field:
+
+1. `last_connected_s` = end of the **contiguous** chain from the last serve
+   (everything before the first >5s break) instead of a global MAX.
+2. **Lone-shot guard** — when there is no connected chain, a post-serve shot more
+   than 5s after the serve is gap-excluded instead of conservatively kept.
+3. **`is_in_rally` escape, coverage-gated at 50%** — preserves exactly what the
+   re-anchor protected: if SportAI still calls the shot in-rally *and* its flag is
+   trustworthy on this task, keep it. On `0336b82b` (6%) the escape disarms.
+
+Measured, all three seeded matches:
+
+| | flag OFF | flag ON |
+|---|---|---|
+| `052786b4` | 18 pts, avg 3.17, **max 16** | 18 pts, avg 2.94, **max 14** |
+| `079d2c62` | 18 pts, avg 3.39, max 14 | 18 pts, avg 3.33, max 14 |
+| `0336b82b` | 112 pts, avg 2.89, max 14 | 112 pts, avg 2.76, max 11 |
+
+- **Flag OFF reproduces the current view exactly** (052786b4 avg 3.17 / max 16).
+- Point counts unchanged on every match — no structural regression.
+- On `052786b4` exactly the 5 video-confirmed rows are dropped and nothing else;
+  points 11/15/17 now end at 388.7 / 522.3 / 584.9 — the owner's timings.
+- Every newly excluded row across all three matches (22 of them) independently
+  agrees with `is_in_rally`.
+- `0336b82b` moves 2.9% of rows — no catastrophe, unlike the hard IIR gate (94%).
+- Bench green (`build_silver_v2.py` is a CI trigger path).
+
+## Why it stays default OFF
+
+It is **not** a strict improvement on point winners. On `052786b4` it fixes
+point 17 (a live wrong winner: ships 21, truth 154) but breaks point 15, whose
+newly-final shot has a NULL bounce so R6 fabricates an `Error` and hands the
+point to 154. **2/3 either way** — the error moves rather than disappears.
+
+Rally *membership and length* are strictly better (3/3 correct, `max_rally_length`
+16 → 14 matching the video). So: enable it together with the R6 fix, after which
+all three points are correct. Enabling alone buys rally length and churns two
+point winners.
+
+**Ace guard still owed** — point 17 truncated to the serve satisfies `ace_d`, but
+the owner confirms the returner *did* return, into the net. An undetected return
+becomes a fabricated ace.
+
+## Other bronze signals — full sweep (17 tables)
+
+Checked every bronze table on `052786b4`, not just the two sampled in the recon:
+
+| signal | coverage | verdict |
+|---|---|---|
+| `player_swing.is_in_rally` | 78% / 88% / **6%** | used, coverage-gated (above) |
+| `player_swing.rally_start_s` / `rally_end_s` | 87/112 | same segmentation as above |
+| `bronze.rally` (start_ts/end_ts/len_s) | 27 windows | same segmentation, third view |
+| `player_swing.confidence` | **100%** | **unused — best untapped signal** |
+| `bronze.ball_position` | **5591 rows** | **unused — trajectory; the honest route to in/out and net contact (R6)** |
+| `bronze.player_position` | 6636 rows | unused |
+| `session_confidences` | 1 row | unused — the natural per-match quality gate |
+| `player_swing.ball_impact_type` | **0%** | **NULL everywhere — "net is recorded" is NOT true** |
+| `intercepting_player_id`, `ball_impact_location_x/y` | 0% | NULL everywhere |
+| `bronze.debug_event` | 0 rows | the known `debug_data` key-name bug |
+
+**Naming trap worth recording:** `shot_phase_d = 'Net'` (e.g. point 16's
+"NetError") means *the player was standing near the net* — a court zone derived
+from hit position between the service lines — **not** that the ball struck the
+net. Net contact is not recorded anywhere in bronze today.

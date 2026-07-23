@@ -9,7 +9,7 @@
 #   - CLI: python build_silver_v2.py --task-id <id> [--replace]
 #
 # Pass 1 (INSERT) — Load from bronze.player_swing:
-#   - Filters to valid=TRUE, is_in_rally=TRUE swings
+#   - Filters to valid=TRUE swings (the is_in_rally gate was REMOVED — see pass1_load)
 #   - De-ghosts player IDs: top 2 players by swing count kept, extras mapped to player 2
 #   - Optional warmup filter: excludes swings before start_time_s from submission_context
 #   - Idempotent via ON CONFLICT (task_id, id) DO NOTHING
@@ -90,6 +90,25 @@ if SERVE_SOURCE not in ("geometric", "sa", "sa_or_geom", "auto"):
 # motivated the geometric gate. Measured: healthy matches agree to within 4%
 # (26/27, 24/26); the pathological task 0336b82b sits at 9/155 = 5.8%.
 SERVE_SA_MIN_AGREEMENT = float(os.getenv("SILVER_SERVE_SA_MIN_AGREEMENT") or 0.50)
+
+# Rally contiguity (2026-07-23). Repairs the pass-3 gap_break re-anchor so a
+# rally ends at the first >5s break instead of re-anchoring onto any dense
+# cluster that follows it. Video-adjudicated on 052786b4 (Tomo v Jimbo Ma):
+# rally MEMBERSHIP becomes correct on all three contested points (11/15/17)
+# and max_rally_length drops 16 -> 14 to match the video.
+#
+# DEFAULT OFF, deliberately. It is not yet a strict improvement on POINT
+# WINNERS: it fixes point 17 (a live wrong winner) but breaks point 15, where
+# the newly-final shot has a NULL bounce and the outcome rule fabricates an
+# 'Error' (audit finding R6). Net 2/3 either way. Enable it together with the
+# R6 fix (inherit SportAI's debug_data.conf_ball_in/out instead of inferring
+# in/out from bounce presence), after which all three are correct.
+RALLY_CONTIGUITY = (os.getenv("SILVER_RALLY_CONTIGUITY") or "0").strip().lower() in ("1", "true", "yes")
+
+# Coverage floor for trusting SportAI's is_in_rally as the gap_break escape.
+# Measured: 78% (052786b4) / 88% (079d2c62) on well-tracked matches vs 6% on
+# the pathological 0336b82b, where the flag would reject 480/515 valid swings.
+RALLY_IIR_MIN_COVERAGE = float(os.getenv("SILVER_RALLY_IIR_MIN_COVERAGE") or 0.50)
 
 SPORT_CONFIG: Dict[str, Dict[str, float]] = {
     "tennis_singles": {
@@ -326,7 +345,9 @@ def _resolve_two_players(conn: Connection, task_id: str) -> dict:
 #
 # Business rules:
 #   - Only valid=TRUE swings are loaded (SportAI quality flag)
-#   - Only is_in_rally=TRUE swings (excludes warm-up swings outside play)
+#   - is_in_rally is LOADED but NOT gated on (the gate was removed — it rejected
+#     480/515 valid swings on task 0336b82b; see the inline note in the SQL).
+#     It is consumed later, coverage-gated, as the pass-3 gap_break escape.
 #   - Player de-ghosting: SportAI sometimes emits 3+ player IDs; we keep top 2
 #     by swing count and map any extras to player 2 (deterministic)
 #   - Optional start_time_s filter excludes swings before the match start
@@ -542,6 +563,24 @@ def _resolve_serve_source(conn: Connection, task_id: str, eps: float, court_len:
 def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     pf = _resolve_two_players(conn, task_id)
     p1, p2 = pf["p1"], pf["p2"]
+
+    # gap_break: legacy (re-anchoring) vs contiguous + lone-shot guard +
+    # coverage-gated is_in_rally escape. See RALLY_CONTIGUITY at module top.
+    if RALLY_CONTIGUITY:
+        gap_break_expr = f"""(
+          NOT e.serve_d AND e.last_serve_s IS NOT NULL AND e.ball_hit_s > e.last_serve_s
+          AND (
+            (lc.lc_contig IS NOT NULL AND e.ball_hit_s > lc.lc_contig)
+            OR (lc.lc_contig IS NULL AND e.ball_hit_s - e.last_serve_s > 5.0)
+          )
+          AND NOT (COALESCE(cov.frac, 0) >= {RALLY_IIR_MIN_COVERAGE}
+                   AND COALESCE(pd.is_in_rally, FALSE))
+        )"""
+    else:
+        gap_break_expr = """(
+          NOT e.serve_d AND e.last_serve_s IS NOT NULL AND e.ball_hit_s > e.last_serve_s
+          AND lc.lc_legacy IS NOT NULL AND e.ball_hit_s > lc.lc_legacy
+        )"""
 
     COURT_LEN       = cfg["court_length_m"]
     EPS             = cfg["eps_baseline_m"]
@@ -813,28 +852,78 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     -- in one point, far-skewed). A resumed dense rally now RE-ANCHORS: only the
     -- genuine trailing tail BEYOND last_connected_s is gap-excluded; live rally
     -- shots up to it are kept. See feedback_greedy_chain_rejection.
-    last_connected_per_point AS (
+    -- CONTIGUITY FIX (2026-07-23): the first post-serve gap > 5s per point.
+    -- The 2026-06-04 re-anchor made last_connected_s a GLOBAL MAX over every
+    -- "connected" post-serve shot, which is not what the comment above claims.
+    -- Any dense cluster AFTER a long gap re-anchors the chain to its own end,
+    -- so genuine between-point activity is admitted whenever it contains two
+    -- shots < 5s apart. Measured on 052786b4 (owner-adjudicated on video):
+    -- point 11 re-anchored to 401.9s and point 15 to 547.0s, keeping 4 shots
+    -- the video confirms happened after the point was over.
+    first_break_per_point AS (
       SELECT task_id, point_number,
-        MAX(ball_hit_s) FILTER (
+        MIN(ball_hit_s) FILTER (
           WHERE prev_s IS NOT NULL AND last_serve_s IS NOT NULL
-            AND ball_hit_s > last_serve_s AND (ball_hit_s - prev_s) <= 5.0
-        ) AS last_connected_s
+            AND ball_hit_s > last_serve_s AND (ball_hit_s - prev_s) > 5.0
+        ) AS first_break_s
       FROM excl_base
       GROUP BY task_id, point_number
+    ),
+
+    -- Both forms are computed; SILVER_RALLY_CONTIGUITY selects which one the
+    -- gap_break expression below reads, so the flag is a pure switch.
+    --   lc_legacy = 2026-06-04 global MAX over "connected" shots (re-anchors)
+    --   lc_contig = end of the contiguous chain from the last serve
+    last_connected_per_point AS (
+      SELECT e.task_id, e.point_number,
+        MAX(e.ball_hit_s) FILTER (
+          WHERE e.prev_s IS NOT NULL AND e.last_serve_s IS NOT NULL
+            AND e.ball_hit_s > e.last_serve_s AND (e.ball_hit_s - e.prev_s) <= 5.0
+        ) AS lc_legacy,
+        MAX(e.ball_hit_s) FILTER (
+          WHERE e.last_serve_s IS NOT NULL AND e.ball_hit_s > e.last_serve_s
+            AND (fb.first_break_s IS NULL OR e.ball_hit_s < fb.first_break_s)
+        ) AS lc_contig
+      FROM excl_base e
+      LEFT JOIN first_break_per_point fb
+        ON fb.task_id = e.task_id AND fb.point_number = e.point_number
+      GROUP BY e.task_id, e.point_number
+    ),
+
+    -- Per-task coverage of SportAI's own is_in_rally flag. It is exact where
+    -- SportAI tracks well (78% / 88% of swings on the two good matches) and
+    -- collapses to 6% on a badly-tracked one — which is why the pass-1 gate on
+    -- it was removed (see pass1_load). Used ONLY to arm the escape below.
+    iir_cov AS (
+      SELECT (COUNT(*) FILTER (WHERE p.is_in_rally))::double precision
+             / NULLIF(COUNT(*), 0) AS frac
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
     ),
 
     excl_flags AS (
       SELECT e.id,
         (NOT e.serve_d AND e.last_serve_s IS NOT NULL AND e.ball_hit_s < e.last_serve_s) AS r1,
-        -- trailing-tail (non-cascading, re-anchored): a post-serve shot beyond the
-        -- last live-rally shot is genuine between-point activity. NULL last_connected_s
-        -- (no connected rally) -> comparison is NULL -> not gap-excluded (conservative).
-        (NOT e.serve_d AND e.last_serve_s IS NOT NULL AND e.ball_hit_s > e.last_serve_s
-         AND lc.last_connected_s IS NOT NULL AND e.ball_hit_s > lc.last_connected_s) AS gap_break,
+        -- trailing-tail: a post-serve shot beyond the contiguous live-rally
+        -- chain is between-point activity. Two additions to the 2026-06-04 form:
+        --   (a) lone-shot guard — when there is NO connected chain at all
+        --       (last_connected_s NULL) the old rule was conservative and kept
+        --       everything, so a single post-serve shot arriving 13.8s later
+        --       (052786b4 point 17) survived. Now gap-excluded on the same 5s.
+        --   (b) is_in_rally ESCAPE — preserves exactly what the re-anchor was
+        --       built to protect (a real rally resuming after a mid-rally
+        --       DETECTION gap, measured 19/21 shots lost). If SportAI still
+        --       calls the shot in-rally AND its flag is trustworthy on this
+        --       task (>=50% coverage), keep it. On a task where the flag has
+        --       collapsed the escape disarms and the geometry rule stands alone.
+        {gap_break_expr} AS gap_break,
         (NOT e.serve_d AND e.x IS NULL AND e.y IS NULL) AS r3
       FROM excl_base e
       LEFT JOIN last_connected_per_point lc
         ON lc.task_id = e.task_id AND lc.point_number = e.point_number
+      LEFT JOIN {SILVER_SCHEMA}.{TABLE} pd
+        ON pd.task_id = e.task_id AND pd.id = e.id
+      CROSS JOIN iir_cov cov
     ),
 
     excl_chain AS (
