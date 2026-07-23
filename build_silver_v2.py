@@ -97,13 +97,28 @@ SERVE_SA_MIN_AGREEMENT = float(os.getenv("SILVER_SERVE_SA_MIN_AGREEMENT") or 0.5
 # rally MEMBERSHIP becomes correct on all three contested points (11/15/17)
 # and max_rally_length drops 16 -> 14 to match the video.
 #
-# DEFAULT OFF, deliberately. It is not yet a strict improvement on POINT
-# WINNERS: it fixes point 17 (a live wrong winner) but breaks point 15, where
-# the newly-final shot has a NULL bounce and the outcome rule fabricates an
-# 'Error' (audit finding R6). Net 2/3 either way. Enable it together with the
-# R6 fix (inherit SportAI's debug_data.conf_ball_in/out instead of inferring
-# in/out from bounce presence), after which all three are correct.
-RALLY_CONTIGUITY = (os.getenv("SILVER_RALLY_CONTIGUITY") or "0").strip().lower() in ("1", "true", "yes")
+# DEFAULT ON since 2026-07-23. It was briefly default-off on the grounds that it
+# was "winner-neutral" (2/3 either way on a single run). That measured the wrong
+# thing. We have THREE SportAI runs of the SAME footage (052786b4 / 079d2c62 /
+# c8b77210 — same match uploaded three times), which makes reproducibility
+# testable, and the result is decisive:
+#
+#   legacy re-anchor : 3 of 4 owner-adjudicated points return a DIFFERENT winner
+#                      depending on which run you look at. Stable AND correct 0/4.
+#   contiguity       : all 4 stable. Stable AND correct 2/4.
+#
+# The legacy rule depends on which phantom shots SportAI happened to emit that
+# day, so the same video scores differently on each analysis. Contiguity
+# truncates at the real end of the point and does not.
+#
+# Its two remaining failures are NOT ring-fence failures, tracked separately:
+#   pt  6 — SportAI puts the bounce 1.43m PAST the net; owner video says it was
+#           netted. A wrong bronze coordinate.
+#   pt 15 — the true final shot has no recorded bounce, so R6 fabricates an
+#           'Error'. Fixing R6 takes this to 3/4.
+#
+# Rollback: SILVER_RALLY_CONTIGUITY=0 restores the legacy re-anchor exactly.
+RALLY_CONTIGUITY = (os.getenv("SILVER_RALLY_CONTIGUITY") or "1").strip().lower() in ("1", "true", "yes")
 
 # Coverage floor for trusting SportAI's is_in_rally as the gap_break escape.
 # Measured: 78% (052786b4) / 88% (079d2c62) on well-tracked matches vs 6% on
