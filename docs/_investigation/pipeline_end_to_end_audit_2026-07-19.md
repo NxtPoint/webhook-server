@@ -496,3 +496,175 @@ plus `sconf_*`/`vconf_*` sub-scores and `court_keypoints` (calibration).
   top-level key. Source of truth is never lost again; schema drift can't pass
   silently.
 - `devenv/coverage_check.py` — on-demand raw-vs-bronze coverage + drift report.
+
+---
+
+# RALLY RECON — task `052786b4` + 2 seeded matches (2026-07-23)
+
+The analogue of the serve recon. Spec under test, in the owner's terms:
+**once a serve is in, the rally = return → the point-ending shot (winner by the
+hitter, or error by the other player).** Method: rebuild silver locally at HEAD,
+trace all 18 points shot-by-shot, then measure every candidate defect across all
+three seeded matches rather than eyeballing one.
+
+Rebuild reproduced prod exactly (100 rows, 18 points, the known false
+`RALLY VALIDATION WARNING`). Bench green (`ea1e500c` 12/26, `880dff02` 23/24).
+
+## R1 — the rally filter is DISARMED on the entire SportAI production path
+
+`build_silver_v2.py:1413-1415`:
+
+```sql
+exclude_d = ec.exclude_d
+  OR (has_bounce_data AND has_serves AND NOT in_rally_window)
+```
+
+`has_bounce_data = EXISTS (SELECT 1 FROM ball_bounces)`, and `ball_bounces` is
+derived from `ml_analysis.ball_detections` + `ml_analysis.video_analysis_jobs`
+(`:1276-1294`) — tables only the **T5 Batch** pipeline populates. A SportAI task
+has no Batch run, so both are empty, `has_bounce_data` is FALSE, and the whole
+between-point clause collapses to FALSE.
+
+Verified in devenv: `ml_analysis.video_analysis_jobs` = 0 rows,
+`ml_analysis.ball_detections` = 0 rows for all three seeded SportAI matches.
+
+**Consequence: on `tennis_singles` — the live product — nothing bounds a rally in
+time.** The only exclusions that fire are `excl_chain` (warm-up / pre-first-serve
+/ per-point). The filter was built and tuned for T5 and is inert where the
+customers are. This is not a tuning gap; it is a whole safety gate that never
+engages in production.
+
+## R2 — even when armed, it cannot close a rally
+
+`rally_end_s = GREATEST(last_bounce + 1s, rally_start + 20s)`, capped at
+`next_rally_start - 3s` (`:1339-1369`). The 20s floor is deliberate and
+documented — it was added because `last_bounce + 1s` under-counted T5 rows.
+
+But it makes the window a **between-point** fence, not a rally-end rule: any shot
+within 20s of the serve is in-rally by construction. Point 15's 20.0s intra-rally
+gap sits at +39.8s from its serve, inside a window that runs to `next_serve - 3s`
+= +50s. Arming the filter on SportAI data would not have caught a single defect
+below.
+
+## R3 — measured: intra-rally gaps are cleanly bimodal, with an empty band
+
+All 442 intra-point gaps across the three seeded matches:
+
+| gap | 0-1 | 1-2 | 2-3 | 3-4 | 4-5 | **5-6** | 6-8 | 8-10 | 10-15 | 15-20 | 20-30 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| n | 17 | 339 | 45 | 24 | 10 | **0** | 2 | 1 | 3 | 0 | 1 |
+
+Per match (median / p99 / max): `0336b82b` 1.53 / 4.70 / 9.27 · `052786b4`
+1.32 / 20.04 / 20.04 · `079d2c62` 1.32 / 10.76 / 10.76.
+
+99% of gaps are <=4.7s; **the 5–6s bin is empty in all three matches**, including
+the 324-gap pathological one. The separation is physical, not fitted: a ball
+crossing the court takes ~0.8–2.5s, so a 6s gap means the ball was not in play.
+Any threshold in (4.7, 9.3) is defensible; 6s sits in the empty band.
+
+## R4 — alternation violations (impossible in singles)
+
+Consecutive shots by the same player, `052786b4`: **5** — points 8 (ix6->7),
+11 (ix4->5), 15 (ix9->10 and ix16->17), 17 (ix1->2). Three coincide with an R3 gap;
+two do not, so this is two causes overlaid: **unbounded rallies** admitting
+post-point activity, and **missed stroke detections** leaving an apparent
+same-player pair. Point 17 is the sharpest: the server's own shot 13.8s after
+their serve is labelled `phase='Return'`.
+
+## R5 — `rally_length_point` excludes the serve, but is presented as "shots"
+
+`rally_length_point = max(shot_ix_in_point) - 1` (`:1705-1708`) — confirmed
+= `shots - 1` on **18/18** points (ace = 0, serve+return = 1, the 17-shot point 15
+= 16). Consumers label it in shots: `gold.match_rally_length` buckets
+`'Short (1-4)' / 'Medium (5-8)' / 'Long (9+)'` (`gold_init.py:644-646`),
+`avg_rally_length` / `max_rally_length` (`:208-209`), and "rally points" is
+defined as `rally_length_point >= 5` (`:205-207`, `:771-772`).
+
+Whether this is a bug is a **definition call the owner should make** — broadcast
+convention counts the serve as shot 1, which would make every bucket and the
+`>= 5` threshold off by one. Flagging, not fixing.
+
+## R6 — a missing bounce is scored as an error, and it erases winners
+
+`shot_outcome_d` (`:1029`): `WHEN court_x IS NULL OR court_y IS NULL THEN 'Error'`.
+On the point-ending shot, "no bounce recorded" therefore becomes "the player
+missed". Measured on the point-ending shot of every point:
+
+| task | points | last-shot bounce NULL | **Winner %** |
+|---|---|---|---|
+| `0336b82b` | 112 | 110 | **0.0%** (0 winners in 112 points) |
+| `052786b4` | 18 | 8 | 33.3% |
+| `079d2c62` | 18 | 10 | 22.2% |
+
+The rule is **often right** — a ball hit into the net has no in-court bounce, so
+NULL->Error scores it correctly, and the two well-tracked matches land at a
+plausible 22–33% winners. But it cannot distinguish "no bounce because the ball
+was netted" from "no bounce because tracking dropped it", so the winner/error
+split degrades with ball-tracking coverage **and is presented as fact either way**.
+On `0336b82b` it reports *zero winners in 112 points* — physically impossible, and
+nothing on the dashboard says the number is unreliable.
+
+Winners-vs-errors is a headline tennis metric. This is the same class as the
+serve-speed-coverage finding: an average over whatever subset happened to track.
+
+**Principled fix is upstream, per RULE 1:** `debug_data` already carries SportAI's
+own per-swing `conf_ball_in` / `conf_ball_out` / `conf_ball_hit` (see "JSON
+COVERAGE" above — 131 fields, entirely unused). Inherit the in/out fact rather
+than inferring it from bounce presence; keep a third `Unknown` state for when
+neither side is confident, instead of defaulting to `Error`.
+
+## What a max-gap rule would actually change — and why it must NOT ship yet
+
+Simulated at 6s (truncate each rally at its first gap > 6s, then re-apply the
+existing outcome + point-winner rules):
+
+- **7 points truncated of 148** (3 in `0336b82b`, 3 in `052786b4`, 1 in `079d2c62`).
+- `052786b4` point 15: 17 shots -> 15 · point 11: 5 -> 3 · point 17: 2 -> 1.
+- **5 point winners would flip.**
+
+But **4 of those 5 flips land on a shot whose bounce is NULL**, so the new
+"point-ending" shot is scored `Error` purely by R6 — a detection gap converted
+into a scored error, then into a point. The flips are artifacts, not adjudications.
+
+**Conclusion — split the fix, and do not couple them:**
+
+1. **Safe now:** bound the rally for *length and continuity* (R3/R4/R5 —
+   `rally_length_point`, buckets, avg/max, the `>= 5` rally-points gate).
+2. **Blocked on R6:** do not let a truncated rally re-decide the **point winner**
+   while NULL-bounce still fabricates an error. Fix the outcome fact first.
+
+This is the third proposal this sprint that measurement stopped from shipping on
+a hunch (after the coordinate-frame P0 and the serve timing-gap rule).
+
+## Retracted before it reached the report
+
+"Point-ending error attributed to the server" — flagged as a defect class (5 cases
+on `052786b4`), then discarded: a server hitting shot 3 into the net is ordinary
+tennis. Points 3, 7, 12 are legitimate. Only 15 and 17 are suspect, and only via
+R3/R4. The owner's phrase "error by the receiver" describes the *common* case,
+not an invariant — either player can end a point with an error.
+
+## Owed: video adjudication on `052786b4`
+
+Everything above is measurement; these need the owner's footage to settle.
+
+| point | t (s) | what the pipeline says | question for the video |
+|---|---|---|---|
+| **11** | 386.6–401.9 | 5 shots, 21 wins; 10.8s gap ix3->ix4, then two consecutive 21 shots | did the point end at ix3 (~388.7s)? who won it? |
+| **15** | 502.6–547.0 | 17 shots (longest of the match), 21 wins; 20.0s gap ix15->ix16 | did the rally end at ix15 (~522.3s)? are ix16/ix17 the next point or off-ball? |
+| **17** | 584.9–598.7 | serve + one shot, 21 wins; 13.8s gap, and the "return" is by the SERVER | was 21's return simply never detected? who won it? |
+| 8 | 294.2–296.8 | ix6, ix7 both pid=154, 2.6s apart | is a shot by 21 missing between them? |
+| 15 | 512.8–516.0 | ix9, ix10 both pid=154, 3.2s apart | same question |
+
+If 11/15/17 truncate as predicted, `max_rally_length` on this match drops 16 -> 14
+and the longest-rally tile changes.
+
+## Reproduce
+
+```bash
+docker compose -f devenv/docker-compose.yml up -d
+# NOTE: this box's shell profile exports DATABASE_URL=...:55432/courtflow_dev.
+# devenv is :55433/tf_dev — pin it explicitly or scripts hit the wrong database.
+DATABASE_URL='postgresql+psycopg://tf:tf@localhost:55433/tf_dev' \
+  .venv/Scripts/python -c "import build_silver_v2 as b; print(b.build_silver_v2('052786b4-dba8-4f2f-948c-8b9180c447f8', replace=True))"
+```

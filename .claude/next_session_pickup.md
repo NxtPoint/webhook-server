@@ -23,6 +23,7 @@ A deep audit of the **SportAI analytics pipeline** — JSON → bronze → silve
 ## Local dev environment (how everything was validated)
 
 - Docker Postgres `localhost:55433` (NOT :55432 = CourtFlow). `docker compose -f devenv/docker-compose.yml up -d`.
+- ⚠ **This box's shell profile exports `DATABASE_URL` = `…:55432/courtflow_dev`.** Any script that does `os.getenv("DATABASE_URL")` as a *fallback* silently talks to CourtFlow, not devenv — it fails loudly here only because that DB has no `silver` schema. Always pin the devenv URL explicitly (`seed_local.py` hard-refuses `:55432`, but ad-hoc scripts don't).
 - Read-only prod role `tf_readonly` in **`devenv/.env.local`** (gitignored). **Drop the role when finished** (`DROP OWNED BY tf_readonly; DROP ROLE tf_readonly;`).
 - `SEED_SOURCE_URL=$(cat devenv/.env.local) python -m devenv.seed_local --task <uuid>` → `python -m devenv.diff_silver --task <uuid> --save/--vs`.
 - **Seeded reference matches:** `052786b4` (owner ground truth, 18pts), `079d2c62` (SA pair, messy 4-ghost), `0336b82b` (pathological). Raw JSONs for the first two in the session scratchpad + `s3://…/raw-json/`.
@@ -38,7 +39,9 @@ A deep audit of the **SportAI analytics pipeline** — JSON → bronze → silve
 
 ## NEXT STEPS (owner-directed, in order)
 
-1. **RALLY RECON** — the next focus, the analogue of tonight's serve recon. Validate against the owner's video on `052786b4`: **once a serve is in, ring-fence the rally = return → the point-ending shot (winner by hitter OR error by receiver).** Confirm point-ending-shot detection is correct. Also worth re-checking: did the serve validation surface anything reusable for rally (the `far` flag, `debug_data` per-swing signals).
+1. ~~**RALLY RECON**~~ — **MEASUREMENT DONE 2026-07-23.** Full findings appended to the audit doc (§"RALLY RECON", 6 findings R1-R6 + a simulation + one self-retraction). Headlines: the rally filter is **disarmed on the entire SportAI production path** (`has_bounce_data` needs `ml_analysis.*`, which only T5 populates — R1), and even armed its 20s floor can't close a rally (R2); intra-rally gaps are cleanly bimodal with an **empty 5–6s bin across 442 gaps / 3 matches** (R3); and a **missing bounce is scored as an error**, producing **0 winners in 112 points** on the badly-tracked match (R6). **Two things still owed:**
+   - **(a) Video adjudication** on `052786b4` points **11, 15, 17** (+ alternation pairs on 8 and 15) — the table at the end of the audit §"Owed: video adjudication" is the check sheet. These decide whether the max-gap rule truncates correctly.
+   - **(b) Then ship the SPLIT fix.** Safe now: bound the rally for *length/continuity* only (R3/R4/R5). **Blocked:** do NOT let a truncated rally re-decide the **point winner** until R6 is fixed — 4 of the 5 simulated winner-flips are NULL-bounce artifacts, i.e. a detection gap laundered into a scored point. Fix the outcome fact first, ideally by inheriting SportAI's own `debug_data.conf_ball_in/out` (RULE 1) with a third `Unknown` state instead of defaulting to `Error`.
 2. **P1 serve service-box + first-serve-% fixes** — they rewrite historical numbers; validate before/after in devenv on `052786b4`, then rebuild historical silver.
 3. Wire `bounce_plausible_d` into the heatmaps.
 4. Athletics/fitness panel (easy win — data already in bronze.player).
