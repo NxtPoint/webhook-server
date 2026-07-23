@@ -52,6 +52,7 @@ players_per_task AS (
     SELECT DISTINCT pd.task_id, pd.player_id
     FROM silver.point_detail pd
     WHERE pd.player_id IS NOT NULL
+      AND pd.exclude_d IS NOT TRUE          -- Phase 5: explicit membership filter
 ),
 first_detected_server AS (
     SELECT DISTINCT ON (pd.task_id)
@@ -59,6 +60,7 @@ first_detected_server AS (
         pd.player_id AS first_server_player_id
     FROM silver.point_detail pd
     WHERE pd.serve_d = true AND pd.player_id IS NOT NULL
+      AND pd.exclude_d IS NOT TRUE          -- Phase 5: explicit (serves never excluded, so a no-op)
     ORDER BY pd.task_id, pd.point_number, pd.ball_hit_s, pd.id
 ),
 player_pairs_raw AS (
@@ -170,6 +172,12 @@ SELECT
     END AS serve_result_d
 FROM silver.point_detail p
 LEFT JOIN gold.vw_player pl ON pl.task_id = p.task_id
+-- Phase 5 (2026-07-23): vw_point is the flattened silver passthrough. It used to
+-- emit every row including the ~20% excluded noise (warm-up / between-point /
+-- phantom), so any consumer that forgot to filter counted noise. Now filtered to
+-- the event spine — consistent with every other gold view. exclude_d is still a
+-- column on the output for the rare case a consumer wants the excluded rows.
+WHERE p.exclude_d IS NOT TRUE
 """
 
 
@@ -543,6 +551,7 @@ WITH returns AS (
        AND srv.point_key = r.point_key
        AND srv.shot_ix_in_point = 1
     WHERE r.shot_ix_in_point = 2
+      AND r.exclude_d IS NOT TRUE          -- Phase 5: explicit (excluded ⟹ null shot_ix, so a no-op)
       AND r.exclude_d IS NOT TRUE
 )
 SELECT

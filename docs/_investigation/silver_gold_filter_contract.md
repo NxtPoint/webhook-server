@@ -110,33 +110,29 @@ The 9 kept serves with no `shot_ix` are **faulted first serves**: real serves
 
 ---
 
-## Current gold state — reconciles today, but on THREE implicit mechanisms
+## Gold state — `exclude_d` now explicit everywhere (Phase 5, 2026-07-23)
 
-Audit of every `gold.*` view that reads `silver.point_detail`:
+Every `gold.*` view that reads `silver.point_detail` now states the membership
+filter explicitly, so reconciliation no longer rests on implicit invariants:
 
-| view | filter used | safe? | why |
-|---|---|---|---|
-| `match_kpi` (points/games) | `exclude_d IS NOT TRUE` | ✓ | explicit |
-| `match_kpi` (serve breakdown) | `serve_d = true` | ✓ | serves never excluded |
-| `match_serve_breakdown` | `exclude_d IS NOT TRUE` | ✓ | explicit |
-| `match_return_breakdown` | `shot_ix_in_point = 2` | ✓ | excluded ⟹ null shot_ix |
-| `match_rally_breakdown` | `exclude_d IS NOT TRUE` | ✓ | explicit |
-| `match_rally_length` | `exclude_d IS NOT TRUE` | ✓ | explicit |
-| `match_shot_placement` | `exclude_d IS NOT TRUE` | ✓ | explicit |
-| `player_match_kpis` | `exclude_d IS NOT TRUE` | ✓ | explicit |
-| `vw_player` / `vw_point` | `player_id IS NOT NULL` | ⚠ | no exclude_d; safe only if consumed for roster/serve, NOT rally counts |
+| view | filter | notes |
+|---|---|---|
+| `match_kpi`, `match_serve_breakdown`, `match_rally_breakdown`, `match_rally_length`, `match_shot_placement`, `player_match_kpis` | `exclude_d IS NOT TRUE` | already explicit |
+| `match_return_breakdown` | `shot_ix_in_point = 2 AND exclude_d IS NOT TRUE` | filter added (no-op: excluded ⟹ null shot_ix) |
+| `vw_player` (roster + first-server CTEs) | `… AND exclude_d IS NOT TRUE` | filter added (no-op: same 2 players / serves never excluded) |
+| `vw_point` | `exclude_d IS NOT TRUE` | **filter added — the one intended change** |
 
-**The numbers reconcile today.** But they reconcile through three *different*
-mechanisms — explicit `exclude_d`, "serves are never excluded", and "excluded ⟹
-null shot_ix". That is fragile: a future edit that counts rally shots off
-`vw_point`, or an exclusion rule that one day fires on a serve, breaks a
-reconciliation that currently holds by luck of invariants.
+**`vw_point` was the only row-count change (100 → 80 on `c8b77210`).** It is the
+flattened silver passthrough and previously emitted the ~20% excluded noise
+(warm-up / between-point / phantom), so any consumer that forgot to filter
+counted noise. It has no in-repo consumers; `exclude_d` is still a column on its
+output for the rare case a consumer wants the excluded rows.
 
-**Recommendation (not yet done — a deliberate, reviewed change):** make rung 1
-explicit in every view that reads silver, even where an invariant currently
-covers it. One filter, stated everywhere, so reconciliation survives the next
-change to the exclusion rules. This is a ~9-view edit; validate each view's row
-counts before/after in devenv (they should not move).
+**Verified:** every aggregate KPI in `match_kpi` (points, games, aces, DFs,
+first-serve totals, winners, errors) and every other view's row count is
+**byte-identical** before/after; only `vw_point` moved (noise removed). 18/18
+point winners preserved, bench green. Reconciliation now survives future edits to
+the exclusion rules — the filter is stated, not inferred.
 
 ---
 
