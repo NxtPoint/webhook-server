@@ -121,9 +121,23 @@ SERVE_SA_MIN_AGREEMENT = float(os.getenv("SILVER_SERVE_SA_MIN_AGREEMENT") or 0.5
 RALLY_CONTIGUITY = (os.getenv("SILVER_RALLY_CONTIGUITY") or "1").strip().lower() in ("1", "true", "yes")
 
 # Coverage floor for trusting SportAI's is_in_rally as the gap_break escape.
-# Measured: 78% (052786b4) / 88% (079d2c62) on well-tracked matches vs 6% on
-# the pathological 0336b82b, where the flag would reject 480/515 valid swings.
-RALLY_IIR_MIN_COVERAGE = float(os.getenv("SILVER_RALLY_IIR_MIN_COVERAGE") or 0.50)
+# A value > 1.0 can never be met, so the escape is DISABLED by default.
+#
+# It was added as a hedge: keep a post-gap shot if SportAI still calls it
+# in-rally, protecting a real rally that resumes after a mid-rally DETECTION gap
+# (the measured 19/21-shot case the 2026-06-04 re-anchor was built for). That
+# case does not occur anywhere in the seeded data, and the hedge did active harm:
+#
+#   052786b4 pt 16 — the escape re-admitted a shot 6.7s after the point ended
+#                    (562.6 -> 569.3) and flipped the winner FAR -> NEAR. Owner
+#                    video says FAR. Disarming the escape restores FAR.
+#
+# It also never once changed a point in the correct direction: as an excluder it
+# altered 1 point in 166, and every exclusion contiguity makes already agrees
+# with is_in_rally (22/22). So the signal is real but fully redundant, while its
+# INCLUDE direction is unvalidated. Kept as a mechanism, off by default — set
+# below 1.0 to re-arm if the resumed-rally case ever shows up in real data.
+RALLY_IIR_MIN_COVERAGE = float(os.getenv("SILVER_RALLY_IIR_MIN_COVERAGE") or 1.01)
 
 SPORT_CONFIG: Dict[str, Dict[str, float]] = {
     "tennis_singles": {
