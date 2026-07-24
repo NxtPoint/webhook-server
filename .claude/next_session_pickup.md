@@ -27,6 +27,32 @@ footage only. **`0336b82b` = Erin v Jolanda Gericke — a genuinely different ma
 3. The goal is NOT 18/18 here — it's to find where the logic degrades on poor input, and decide what is a bronze-accuracy ceiling vs a silver bug. Expect the per-match quality-gate question (below) to become concrete.
 4. If a second *clean* match ever gets uploaded, that is the better generality test — `0336b82b` is deliberately the hard one.
 
+## Dashboard data layer — BUILT + validated (2026-07-23 eve), NOT wired
+
+`silver_analytics/` (`1b5d2d6`) builds three new grains from bronze SportAI data
+`build_silver_v2` never reads. Validated in devenv on `c8b77210`. **Does not touch
+`point_detail`.** Roadmap: `.claude/plans/twinkly-seeking-bentley.md`.
+
+- `silver.match_player_summary` — fitness (distance/sprint/activity, all SportAI
+  pre-computed), shot mix, movement summary, near/far.
+- `silver.player_movement_grid` — **pre-aggregated** 1m court occupancy grid
+  (~150 rows/player, not ~3000 raw) — the heatmap source, performance-safe.
+- `silver.match_quality` — ball/pose/swing/final confidence + reliability tier.
+
+**Two open design decisions for tomorrow:**
+1. **quality_tier thresholds need calibration.** `c8b77210` (our 18/18 match)
+   reads **`medium`** because SportAI's `ball_conf` is only 0.30 — even our best
+   match isn't "high". Calibrate the thresholds once `0336b82b` (the badly-tracked
+   match) is built; it should read `low`.
+2. **far-player heatmap orientation.** The grid stores raw `court_x/court_y`
+   (silver stays faithful). Inverting the far player onto a canonical "own half"
+   view is a gold/frontend job — decide the canonical frame when building.
+
+**Not wired into prod ingest** — `build_all(engine, task_id)` runs standalone.
+Wiring (ingest hook or ops endpoint) is a reviewed step for tomorrow; the tables
+must exist in prod before the dashboards can read them. Momentum curves need NO
+new table (gold view over `point_detail`).
+
 ## Reference matches
 
 | task | who | note |
