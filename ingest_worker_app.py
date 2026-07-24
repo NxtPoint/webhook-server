@@ -166,6 +166,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
       1. Download SportAI result JSON
       2. Bronze ingest
       3. Silver build
+      3b. Analytics tables         (fitness / movement / quality, best-effort)
       4. Video trim trigger        (fire-and-forget)
       5. Billing sync              (fire-and-forget)
       6. Wix notify                (data is ready after silver)
@@ -275,6 +276,21 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         build_silver_point_detail(task_id=task_id, replace=True)
         app.logger.info("INGEST STEP task_id=%s step=silver_build_done", task_id)
         log_task_event(task_id, "silver", "ok")
+
+        # -------------------------
+        # STEP 3b: ANALYTICS TABLES (best-effort, never fatal)
+        # Fitness / movement-grid / match-quality from bronze data point_detail
+        # doesn't read. Enrichment for dashboards — a failure here must NOT fail
+        # the ingest, so it's wrapped and its own build_all is per-table safe.
+        # -------------------------
+        try:
+            from silver_analytics import build_all as build_analytics
+            counts = build_analytics(engine, task_id)
+            app.logger.info("INGEST STEP task_id=%s step=analytics_done counts=%s", task_id, counts)
+            log_task_event(task_id, "analytics", "ok", detail=str(counts))
+        except Exception as ax:  # noqa: BLE001
+            app.logger.warning("INGEST STEP task_id=%s step=analytics_failed err=%s", task_id, ax)
+            log_task_event(task_id, "analytics", "skipped", detail=f"{ax.__class__.__name__}: {ax}")
 
         # -------------------------
         # STEP 4: VIDEO TRIM TRIGGER (fire-and-forget)

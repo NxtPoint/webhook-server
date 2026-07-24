@@ -26,8 +26,9 @@ Design rules (mirror the filter contract):
   - Idempotent: DELETE (task_id, model) then INSERT — safe to re-run.
   - `model` column ('sportai' now) leaves room for a T5 build later.
 
-NOT wired into the prod ingest yet — build + validate first, wire second.
-Run per task: `build_all(engine, task_id)` (see harness / ops wiring, TBD).
+Wired into the SportAI ingest worker (`ingest_worker_app._do_ingest` STEP 3b,
+best-effort — a failure logs and skips, never fails the ingest). Also callable
+standalone: `build_all(engine, task_id)`.
 """
 import logging
 from sqlalchemy import text
