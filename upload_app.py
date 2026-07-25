@@ -2117,6 +2117,14 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 
 INGEST_STALE_AFTER_S = int(os.getenv("INGEST_STALE_AFTER_S", "1800"))  # 30 minutes
 
+# Max times the stale-ingest sweep will re-fire a single SportAI task before it
+# gives up and stamps it failed (so /ops/alert-failures escalates instead of a
+# silent retry-storm on a "poison" match whose ingest dies deterministically —
+# e.g. an OOM on an oversized/badly-tracked payload). Attempts are counted from
+# the 'bronze/started' task_event rows, so this bounds total tries across the
+# browser path + every sweep re-fire, not just sweep re-fires.
+SWEEP_SA_MAX_ATTEMPTS = int(os.getenv("SWEEP_SA_MAX_ATTEMPTS", "4"))
+
 
 def _is_stale_ingest_row(row) -> bool:
     started_at = row.get("ingest_started_at") if row else None
@@ -4869,24 +4877,42 @@ def ops_alert_failures():
 
 @app.post("/ops/sweep-sa-orphans")
 def ops_sweep_sa_orphans():
-    """Catch up SportAI (tennis_singles) tasks that finished on SportAI's side
-    but whose Render ingest never fired — the SA-side twin of
-    /ops/sweep-t5-orphans (rule #10).
+    """Catch up SportAI (tennis_singles) tasks whose Render ingest never fired OR
+    started and then died mid-flight — the SA-side twin of /ops/sweep-t5-orphans
+    (rule #10). Two gaps, same symptom (SportAI done, silver never built):
 
-    The SA completion→ingest gate lives in /upload/api/task-status, which only
-    runs when a BROWSER polls it. On an unattended dual-submit re-run (upload a
-    batch, close the tab), SportAI completes in minutes but the SA task sits in
-    `last_status='processing'` forever — so the T5 twin never auto-spawns and no
-    corpus row lands. This sweep is the server-side poller that closes that gap.
+      (a) ORPHAN — the SA completion→ingest gate lives in /upload/api/task-status,
+          which only runs when a BROWSER polls it. On an unattended dual-submit
+          re-run (upload a batch, close the tab), SportAI completes in minutes but
+          the SA task sits in `last_status='processing'` forever — so the T5 twin
+          never auto-spawns and no corpus row lands. (`ingest_started_at IS NULL`.)
 
-    Unlike the T5 sweep, "SportAI is done" is NOT in our DB — so the worker calls
-    `_sportai_status(task_id)` per candidate and fires `_start_ingest_background`
-    only for tasks SportAI has actually finished (result_url present). The SA
-    ingest then fires `_auto_dual_submit_t5` exactly as the browser path does.
+      (b) STUCK — the ingest started but the worker PROCESS died before any
+          terminal write (Render redeploy mid-ingest, OOM on an oversized payload,
+          host recycle), leaving `ingest_started_at` set + `ingest_finished_at`
+          NULL + `ingest_error` NULL — no exception handler ran, so nothing is
+          logged and NOTHING re-fires it. The browser task-status gate skips it
+          forever (it treats `ingest_started_at` set as "running"). This is the
+          exact stranding that left df594aea (Erin v Jolanda) invisible on the
+          dashboard for 13h. The T5 sweep already handles this branch; the SA
+          sweep did not — now it does, for tasks stale past INGEST_STALE_AFTER_S.
 
-    Idempotent: the inner ingest gate checks `ingest_started_at` + staleness, so
-    a live/finished ingest is never double-run; the dual-submit + corpus hooks
-    are UNIQUE-guarded downstream.
+    Poison-match guard: a task whose ingest dies DETERMINISTICALLY (e.g. an OOM
+    that recurs on every retry) must not retry-storm. Attempts are counted from
+    the `bronze/started` task_event rows; once a task hits SWEEP_SA_MAX_ATTEMPTS
+    the sweep stops re-firing it and stamps `ingest_error` + `last_status='failed'`
+    so /ops/alert-failures escalates it to the ops inbox — turning a silent
+    forever-stuck row into a bounded-retry-then-alert.
+
+    "SportAI is done" is NOT in our DB — so the worker calls `_sportai_status`
+    (via `_resolve_result_url_for_task`) per candidate and fires
+    `_start_ingest_background` only for tasks SportAI has actually finished
+    (fresh result_url present). The SA ingest then fires `_auto_dual_submit_t5`
+    exactly as the browser path does.
+
+    Idempotent: the inner ingest gate checks `ingest_started_at` + staleness and
+    the worker's in-memory mutex blocks a genuinely-live re-run, so a running
+    ingest is never double-run; dual-submit + corpus hooks are UNIQUE-guarded.
 
     Body (all optional): {"dry_run": true, "limit": 50, "min_age_minutes": 5}.
     `min_age_minutes` avoids racing the normal browser-poll path on fresh uploads.
@@ -4909,21 +4935,39 @@ def ops_sweep_sa_orphans():
             rows = conn.execute(sql_text("""
                 SELECT sc.task_id::text AS task_id,
                        sc.last_status,
-                       sc.last_status_at
+                       sc.last_status_at,
+                       sc.ingest_started_at,
+                       (SELECT count(*)
+                          FROM bronze.task_event te
+                         WHERE te.task_id = sc.task_id::text
+                           AND te.step = 'bronze'
+                           AND te.status = 'started') AS attempts
                   FROM bronze.submission_context sc
                  WHERE sc.sport_type = 'tennis_singles'
                    AND sc.deleted_at IS NULL
-                   AND sc.ingest_started_at IS NULL
                    AND sc.ingest_finished_at IS NULL
-                   AND sc.last_status_at < NOW() - (:age || ' minutes')::interval
-                   -- skip terminal FAILURES (SportAI will never produce a result);
-                   -- keep 'completed' — a completed-but-not-ingested task is the
-                   -- prime stuck case this sweep exists to catch.
+                   -- skip terminal FAILURES (SportAI will never produce a result,
+                   -- or we already gave up and alerted). Keep 'completed' — a
+                   -- completed-but-not-ingested task is the prime orphan case.
                    AND lower(coalesce(sc.last_status, '')) NOT IN
                        ('canceled', 'cancelled', 'failed', 'error')
+                   AND (
+                         -- (a) ORPHAN: ingest never fired (no polling browser).
+                         (sc.ingest_started_at IS NULL
+                          AND sc.last_status_at < NOW() - (:age || ' minutes')::interval)
+                         -- (b) STUCK: ingest started but the worker process died
+                         --     mid-flight (redeploy / OOM / recycle) leaving no
+                         --     terminal state. ingest_error IS NULL distinguishes a
+                         --     silent death from a caught failure (already alerted).
+                         OR (sc.ingest_started_at IS NOT NULL
+                             AND sc.ingest_error IS NULL
+                             AND sc.ingest_started_at < NOW() - (:stale_s || ' seconds')::interval)
+                       )
                  ORDER BY sc.last_status_at ASC
                  LIMIT :lim
-            """), {"age": str(min_age_minutes), "lim": limit}).mappings().all()
+            """), {"age": str(min_age_minutes),
+                   "stale_s": str(INGEST_STALE_AFTER_S),
+                   "lim": limit}).mappings().all()
     except Exception as e:
         app.logger.exception("OPS SWEEP-SA-ORPHANS query failed")
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
@@ -4933,33 +4977,76 @@ def ops_sweep_sa_orphans():
 
     if dry_run:
         result["sample"] = [
-            {"task_id": o["task_id"], "last_status": o["last_status"],
+            {"task_id": o["task_id"],
+             "kind": "orphan" if o["ingest_started_at"] is None else "stuck_stale",
+             "attempts": int(o["attempts"] or 0),
+             "last_status": o["last_status"],
              "last_status_at": str(o["last_status_at"])}
             for o in candidates[:10]
         ]
+        result["max_attempts"] = SWEEP_SA_MAX_ATTEMPTS
         return jsonify(result), 200
+
+    def _give_up(tid: str, attempts: int) -> None:
+        """A stuck task that has died too many times: stamp it failed so it drops
+        out of the sweep and /ops/alert-failures escalates it (never silent)."""
+        err = (f"ingest died repeatedly ({attempts} attempts) with no terminal "
+               f"state — likely a worker crash/OOM mid-ingest; needs investigation")
+        try:
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                       SET ingest_error   = :err,
+                           last_status    = 'failed',
+                           last_status_at = now()
+                     WHERE task_id = :t
+                       AND ingest_finished_at IS NULL
+                """), {"t": tid, "err": err})
+            app.logger.error(
+                "SWEEP-SA-ORPHANS task_id=%s GAVE UP after %s attempts — stamped failed",
+                tid, attempts)
+        except Exception:
+            app.logger.exception("SWEEP-SA-ORPHANS give-up stamp failed task_id=%s", tid)
 
     def _worker(items: list) -> None:
         for it in items:
             tid = it["task_id"]
+            attempts = int(it.get("attempts") or 0)
+            stuck = it.get("ingest_started_at") is not None
             try:
-                live = _sportai_status(tid)
-                result_url = (live or {}).get("result_url")
+                # Poison-match guard: a stuck ingest that has already burned its
+                # attempts must not be re-fired again — give up + alert instead.
+                if stuck and attempts >= SWEEP_SA_MAX_ATTEMPTS:
+                    _give_up(tid, attempts)
+                    continue
+
+                # Re-resolve a FRESH result_url (SportAI presigned URLs expire in
+                # ~1h; the cached one is almost certainly dead by sweep time).
+                result_url = _resolve_result_url_for_task(tid)
                 if result_url:
                     ok = _start_ingest_background(tid, result_url)
                     app.logger.info(
-                        "SWEEP-SA-ORPHANS task_id=%s sportai_done=1 started=%s", tid, ok)
+                        "SWEEP-SA-ORPHANS task_id=%s kind=%s attempts=%s sportai_done=1 started=%s",
+                        tid, "stuck" if stuck else "orphan", attempts, ok)
                 else:
                     app.logger.info(
-                        "SWEEP-SA-ORPHANS task_id=%s sportai_not_ready status=%s",
-                        tid, (live or {}).get("status"))
+                        "SWEEP-SA-ORPHANS task_id=%s kind=%s sportai_not_ready",
+                        tid, "stuck" if stuck else "orphan")
             except Exception as exc:
                 app.logger.exception("SWEEP-SA-ORPHANS task_id=%s error: %s", tid, exc)
 
     threading.Thread(target=_worker, args=(candidates,), daemon=True).start()
     # "triggered" here = candidates queued for a SportAI check + ingest-if-done
-    # (the worker skips any SportAI hasn't finished). See logs for per-task result.
-    result["triggered"] = [{"task_id": o["task_id"]} for o in candidates]
+    # (the worker skips any SportAI hasn't finished, and gives up on poison
+    # matches past SWEEP_SA_MAX_ATTEMPTS). See logs for per-task result.
+    result["max_attempts"] = SWEEP_SA_MAX_ATTEMPTS
+    result["triggered"] = [
+        {"task_id": o["task_id"],
+         "kind": "orphan" if o["ingest_started_at"] is None else "stuck_stale",
+         "attempts": int(o["attempts"] or 0)}
+        for o in candidates
+    ]
     return jsonify(result), 200
 
 
