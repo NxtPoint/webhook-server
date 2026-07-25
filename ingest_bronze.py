@@ -1118,6 +1118,13 @@ def _apply_debug_swing_fields(conn, task_id: str, dbg) -> int:
     return len(rows)
 
 
+# Max serialized size of the raw debug_data blob stored in one bronze.debug_event
+# row. ~2 MB is comfortably above the ~1.1 MB normal case and below the multi-MB
+# pathological case that severs the DB connection. Oversized blobs are stubbed
+# (see _insert_debug_data). Env-overridable for headroom.
+DEBUG_DATA_MAX_BYTES = int(os.getenv("DEBUG_DATA_MAX_BYTES", "2000000"))
+
+
 def _insert_debug_data(conn, task_id: str, dbg) -> int:
     """Store SportAI's `debug_data` verbatim as ONE row in bronze.debug_event.
 
@@ -1147,10 +1154,35 @@ def _insert_debug_data(conn, task_id: str, dbg) -> int:
     if isinstance(vi, dict) and "video_source" in vi:
         d = dict(d)
         d["video_info"] = {k: v for k, v in vi.items() if k != "video_source"}
+
+    # Cap the raw blob. Normal debug_data is ~1.1 MB, but a badly-tracked match
+    # can balloon to many MB (df594aea: 7.6 MB), and a single multi-MB
+    # `INSERT ... CAST(:j AS JSONB)` severs the DB connection ("SSL SYSCALL error:
+    # EOF detected") and aborts the ENTIRE bronze transaction — leaving bronze
+    # empty. The USEFUL parts of debug_data are promoted elsewhere and do NOT
+    # depend on this raw row: video_info -> bronze.session columns, per-swing
+    # dbg_* -> bronze.player_swing (_apply_debug_swing_fields), recovered floor
+    # bounces -> bronze.ball_bounce (_insert_ball_bounce_candidates). So when the
+    # blob is oversized we store a compact stub (shape + size, plus the small
+    # video_info) rather than fail the whole ingest.
+    payload_json = json.dumps(d)
+    if len(payload_json) > DEBUG_DATA_MAX_BYTES:
+        stub = {
+            "_truncated": True,
+            "_original_bytes": len(payload_json),
+            "_max_bytes": DEBUG_DATA_MAX_BYTES,
+            "_keys": list(d.keys())[:100],
+            "_note": ("debug_data exceeded DEBUG_DATA_MAX_BYTES and was not stored "
+                      "verbatim; promoted fields (video_info, dbg_* swing signals, "
+                      "recovered bounce candidates) are unaffected"),
+        }
+        if isinstance(d.get("video_info"), dict):
+            stub["video_info"] = d["video_info"]  # small + useful, keep it
+        payload_json = json.dumps(stub)
     conn.execute(sql_text("""
         INSERT INTO bronze.debug_event (task_id, data)
         VALUES (:tid, CAST(:j AS JSONB))
-    """), [{"tid": task_id, "j": json.dumps(d)}])
+    """), [{"tid": task_id, "j": payload_json}])
     return 1
 
 
