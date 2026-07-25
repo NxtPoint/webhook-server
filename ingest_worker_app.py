@@ -38,6 +38,7 @@ from typing import Any, Dict, Optional
 import requests
 from flask import Flask, request, jsonify
 from sqlalchemy import text as sql_text
+from sqlalchemy.exc import OperationalError, InterfaceError
 
 app = Flask(__name__)
 log = logging.getLogger(__name__)
@@ -157,6 +158,40 @@ def _trigger_video_trim(task_id: str) -> None:
 # ============================================================
 # CORE INGEST PIPELINE
 # ============================================================
+
+# Bounded retry for TRANSIENT DB unavailability (e.g. a Render Postgres
+# failover/maintenance blip → "the database system is in recovery mode"). These
+# are connectivity failures, NOT data/logic failures, so re-running the whole
+# (idempotent) ingest after a short backoff rides out the window instead of
+# stranding the match. pool_pre_ping already recycles DEAD connections; this
+# covers the case pre-ping can't — a live endpoint that is itself in recovery.
+INGEST_DB_RETRY_MAX = int(os.getenv("INGEST_DB_RETRY_MAX", "5"))
+INGEST_DB_RETRY_BASE_S = float(os.getenv("INGEST_DB_RETRY_BASE_S", "5"))
+
+_TRANSIENT_DB_MARKERS = (
+    "in recovery mode",
+    "the database system is starting up",
+    "the database system is shutting down",
+    "could not connect",
+    "connection refused",
+    "server closed the connection",
+    "terminating connection",
+    "connection timed out",
+    "could not translate host name",
+    "consuming input failed",
+    "ssl connection has been closed",
+)
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """True for DB-connectivity/recovery errors worth retrying, vs a genuine
+    data/logic failure (ProgrammingError/IntegrityError/DataError — not retried).
+    OperationalError/InterfaceError from psycopg are connection-level by nature."""
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        return True
+    msg = str(exc).lower()
+    return any(m in msg for m in _TRANSIENT_DB_MARKERS)
+
 
 def _do_ingest(task_id: str, result_url: str) -> bool:
     """
@@ -355,6 +390,16 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         return True
 
     except Exception as e:
+        # A TRANSIENT DB error (e.g. Render Postgres failover → "database system
+        # is in recovery mode") is not a data failure and — critically — we can't
+        # even persist it right now because the DB is the thing that's down. Do
+        # NOT stamp the match failed; re-raise so _run_ingest_with_retry backs off
+        # and retries the whole idempotent pipeline once the DB is back.
+        if _is_transient_db_error(e):
+            app.logger.warning(
+                "INGEST TRANSIENT DB ERROR task_id=%s — will retry: %s", task_id, e)
+            raise
+
         app.logger.exception("INGEST FAILED task_id=%s result_url=%s", task_id, result_url)
 
         err_txt = f"{e.__class__.__name__}: {e}"
@@ -395,6 +440,52 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 # BACKGROUND RUNNER
 # ============================================================
 
+def _persist_transient_giveup(task_id: str, exc: BaseException) -> None:
+    """After exhausting retries on a transient DB outage, record a clear error so
+    the failure is visible (not silent). Best-effort with a few tries of its own,
+    since the DB may have come back by now."""
+    err_txt = (f"transient DB unavailable after {INGEST_DB_RETRY_MAX} retries "
+               f"(likely a Render Postgres failover/recovery window): "
+               f"{exc.__class__.__name__}: {exc}")[:1500]
+    app.logger.error("INGEST GAVE UP (transient DB) task_id=%s: %s", task_id, err_txt)
+    for _ in range(3):
+        try:
+            log_task_event(task_id, "bronze", "failed", error=err_txt)
+            with engine.begin() as conn:
+                _ensure_schema(conn)
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                       SET ingest_error = :err, ingest_finished_at = now()
+                     WHERE task_id = :t AND ingest_finished_at IS NULL
+                """), {"t": task_id, "err": err_txt})
+            return
+        except Exception:
+            time.sleep(3)
+
+
+def _run_ingest_with_retry(task_id: str, result_url: str) -> bool:
+    """Run _do_ingest, retrying the WHOLE pipeline on a TRANSIENT DB error with
+    exponential backoff. _do_ingest is idempotent (bronze replace + advisory
+    locks, silver replace), so re-running from the top is safe. Non-transient
+    failures are already handled/marked inside _do_ingest and are not retried."""
+    delay = INGEST_DB_RETRY_BASE_S
+    for attempt in range(1, INGEST_DB_RETRY_MAX + 1):
+        try:
+            return _do_ingest(task_id, result_url)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_transient_db_error(exc):
+                raise  # genuine failure that slipped past _do_ingest's handler
+            if attempt >= INGEST_DB_RETRY_MAX:
+                _persist_transient_giveup(task_id, exc)
+                return False
+            app.logger.warning(
+                "INGEST retry %s/%s for task_id=%s after transient DB error "
+                "(sleeping %.0fs): %s", attempt, INGEST_DB_RETRY_MAX, task_id, delay, exc)
+            time.sleep(delay)
+            delay = min(delay * 2, 120)
+    return False
+
+
 # Track in-flight ingests to prevent duplicate launches
 _active_ingests: Dict[str, threading.Thread] = {}
 _active_lock = threading.Lock()
@@ -412,7 +503,7 @@ def _run_ingest_background(task_id: str, result_url: str) -> bool:
 
         def _worker():
             try:
-                _do_ingest(task_id, result_url)
+                _run_ingest_with_retry(task_id, result_url)
             finally:
                 with _active_lock:
                     _active_ingests.pop(task_id, None)

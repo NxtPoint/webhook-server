@@ -4989,20 +4989,30 @@ def ops_sweep_sa_orphans():
 
     def _give_up(tid: str, attempts: int) -> None:
         """A stuck task that has died too many times: stamp it failed so it drops
-        out of the sweep and /ops/alert-failures escalates it (never silent)."""
-        err = (f"ingest died repeatedly ({attempts} attempts) with no terminal "
-               f"state — likely a worker crash/OOM mid-ingest; needs investigation")
+        out of the sweep and /ops/alert-failures escalates it (never silent).
+
+        PRESERVE any real error the worker already recorded — only append the
+        sweep context. Overwriting it (as the first version did) hid the true
+        cause ('database system is in recovery mode') behind a wrong OOM guess."""
+        ctx = f"[sweep gave up after {attempts} attempts]"
+        fallback = (f"ingest died repeatedly ({attempts} attempts) with no terminal "
+                    f"state captured — worker likely crashed or lost its DB "
+                    f"connection mid-ingest; check the ingest-worker logs")
         try:
             with engine.begin() as conn:
                 _ensure_submission_context_schema(conn)
                 conn.execute(sql_text("""
                     UPDATE bronze.submission_context
-                       SET ingest_error   = :err,
+                       SET ingest_error = CASE
+                               WHEN ingest_error IS NULL OR ingest_error = ''
+                                    THEN :fallback
+                               ELSE left(ingest_error || '  ' || :ctx, 1900)
+                           END,
                            last_status    = 'failed',
                            last_status_at = now()
                      WHERE task_id = :t
                        AND ingest_finished_at IS NULL
-                """), {"t": tid, "err": err})
+                """), {"t": tid, "ctx": ctx, "fallback": fallback})
             app.logger.error(
                 "SWEEP-SA-ORPHANS task_id=%s GAVE UP after %s attempts — stamped failed",
                 tid, attempts)
