@@ -582,10 +582,15 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
     started = time.monotonic()
     deadline = started + TRIM_ENCODE_TIMEOUT_S
 
-    def _remaining(minimum: int = 60) -> int:
+    def _remaining() -> int:
         """Per-command timeout drawn from the ONE whole-trim budget, so N passes
-        can never sum past TRIM_ENCODE_TIMEOUT_S."""
-        return max(minimum, int(deadline - time.monotonic()))
+        can never sum past TRIM_ENCODE_TIMEOUT_S.
+
+        No lower floor on purpose: an earlier version returned max(60, ...), which
+        silently handed every pass another 60s once the deadline had passed — the
+        budget then bounded nothing and a slow trim ran on indefinitely. Callers
+        check the deadline before starting a pass (see _check_budget)."""
+        return max(1, int(deadline - time.monotonic()))
 
     with tempfile.TemporaryDirectory(prefix=f"trim_{task_id[:8]}_") as td_raw:
         td = Path(td_raw)
@@ -660,8 +665,31 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
         # --------------------------
         # Encode: N seek inputs per pass → concat
         # --------------------------
+        def _check_budget(done: int, encoded_s: float) -> None:
+            """Abort before starting a pass we cannot afford, and make the error
+            itself the measurement: how far we got, the achieved encode rate, and
+            the projected total. That turns a budget failure into the diagnostic
+            we would otherwise have to dig out of the worker log."""
+            left = deadline - time.monotonic()
+            if left > 0:
+                return
+            spent = time.monotonic() - started
+            rate = (encoded_s / spent) if spent > 0 else 0.0
+            projected = (total_keep / rate / 60.0) if rate > 0 else float("inf")
+            raise RuntimeError(
+                f"trim budget exhausted after {spent/60:.1f}min "
+                f"(TRIM_ENCODE_TIMEOUT_S={TRIM_ENCODE_TIMEOUT_S}s): completed "
+                f"{done}/{len(batches)} passes = {encoded_s:.0f}s of {total_keep:.0f}s "
+                f"kept footage, rate {rate:.2f}x realtime, projected "
+                f"{projected:.0f}min total. This instance is too slow to encode this "
+                f"reel — add CPU (bigger plan), set TRIM_MAX_HEIGHT, or use a faster "
+                f"VIDEO_PRESET. Raising the timeout alone just moves the failure."
+            )
+
         parts: List[Path] = []
+        encoded_s = 0.0
         for i, batch in enumerate(batches):
+            _check_budget(i, encoded_s)
             target = out if not multipass else (td / f"part_{i:04d}.mp4")
             fscript = td / f"filter_{i:04d}.txt"
             fscript.write_text(
@@ -681,13 +709,22 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
                 raise RuntimeError(f"pass {i + 1}/{len(batches)} produced no output")
 
             batch_keep = _sum_segment_durations(batch)
+            encoded_s += batch_keep
+            pass_s = time.monotonic() - t0
+            elapsed = time.monotonic() - started
+            # Log the running rate + projection every pass: on a slow box this
+            # tells you the trim will not fit long before the budget runs out.
             log.info(
                 "FFMPEG TRIM task_id=%s pass %d/%d done segments=%d keep=%.1fs in %.1fs "
-                "(%.0fMB free, %ds budget left)",
-                task_id, i + 1, len(batches), len(batch), batch_keep,
-                time.monotonic() - t0,
+                "(%.2fx) | cumulative %.0f/%.0fs kept, %.2fx, projected %.0fmin, "
+                "%.0fMB free, %ds budget left",
+                task_id, i + 1, len(batches), len(batch), batch_keep, pass_s,
+                (batch_keep / pass_s) if pass_s > 0 else 0.0,
+                encoded_s, total_keep,
+                (encoded_s / elapsed) if elapsed > 0 else 0.0,
+                (total_keep / (encoded_s / elapsed) / 60.0) if encoded_s > 0 else -1,
                 shutil.disk_usage(td).free / (1024 * 1024),
-                _remaining(0),
+                int(deadline - time.monotonic()),
             )
             parts.append(target)
 
