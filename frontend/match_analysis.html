@@ -2648,6 +2648,10 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   // the visible data and roomier behind-baseline area for return and rally
   // hit positions (where players often stand 1-3m behind the line).
   const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SVC_LINE = 6.40, NET_Y = COURT_L / 2;
+  // Absolute service-line y. SVC_LINE (6.40) is measured FROM THE NET, so the
+  // lines are NET_Y +/- 6.40 = 18.285 / 5.485 — NOT COURT_L - 6.40 (= 17.37),
+  // which drew the box ~0.9m too shallow and made in-box serves render as "out".
+  const SVC_NEAR = NET_Y + SVC_LINE, SVC_FAR = NET_Y - SVC_LINE;
   const SURROUND_X = 2.0;       // ~2m each side outside doubles lines
   const EXTEND_BEHIND_Y = 7.0;  // 7m behind near baseline (was 4m on full court)
   const VIEW_TOP_Y    = NET_Y - 0.4;            // tiny strip above the net for visibility
@@ -2713,17 +2717,17 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   ctx.strokeStyle = 'rgba(255,255,255,0.9)';
   ctx.lineWidth = LW_THIN;
   ctx.beginPath();
-  ctx.moveTo(cx(singleLeft),  cy(COURT_L - SVC_LINE) + half);
-  ctx.lineTo(cx(singleRight), cy(COURT_L - SVC_LINE) + half);
-  ctx.moveTo(cx(singleLeft),  cy(SVC_LINE) + half);
-  ctx.lineTo(cx(singleRight), cy(SVC_LINE) + half);
+  ctx.moveTo(cx(singleLeft),  cy(SVC_NEAR) + half);
+  ctx.lineTo(cx(singleRight), cy(SVC_NEAR) + half);
+  ctx.moveTo(cx(singleLeft),  cy(SVC_FAR) + half);
+  ctx.lineTo(cx(singleRight), cy(SVC_FAR) + half);
   ctx.stroke();
 
   // Centre service line
   const mid = COURT_W / 2;
   ctx.beginPath();
-  ctx.moveTo(cx(mid) + half, cy(SVC_LINE));
-  ctx.lineTo(cx(mid) + half, cy(COURT_L - SVC_LINE));
+  ctx.moveTo(cx(mid) + half, cy(SVC_FAR));
+  ctx.lineTo(cx(mid) + half, cy(SVC_NEAR));
   ctx.stroke();
 
   // Baseline centre ticks
@@ -2795,6 +2799,27 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     if (by < NET_Y) {
       by = COURT_L - by;
       bx = COURT_W - bx;
+    }
+
+    // Soft-clamp bounce tabs into their valid region so an out-of-range shot
+    // (a serve tracked past the service line, a rally ball past the baseline)
+    // folds into a thin band JUST INSIDE the line instead of piling exactly ON
+    // it. Exponential saturation: in-region points are untouched; the further
+    // out a point is, the closer (asymptotically) it sits to the edge — spread
+    // out, never stacked. Only the DISPLAY position moves; data is unchanged.
+    // (margin = band width in m, scale = how fast it saturates.)
+    if (!useHitCoords) {
+      const soft = (v, lo, hi, margin, scale) =>
+        v > hi ? hi - margin * (1 - Math.exp(-(v - hi) / scale))
+      : v < lo ? lo + margin * (1 - Math.exp(-(lo - v) / scale))
+      : v;
+      if (activeTab === 'serve-placement') {
+        by = soft(by, NET_Y, SVC_NEAR, 0.6, 0.5);          // into the service box (depth)
+        bx = soft(bx, singleLeft, singleRight, 0.4, 0.4);  // wide serves -> just inside the sideline
+      } else {
+        by = soft(by, NET_Y, COURT_L, 0.5, 0.5);           // return/rally: past the baseline
+        bx = soft(bx, 0, COURT_W, 0.4, 0.4);               // past the doubles sideline
+      }
     }
 
     // Project to canvas pixels and clamp inside the appropriate bounds
