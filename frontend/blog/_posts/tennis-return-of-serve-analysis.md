@@ -1,7 +1,7 @@
 ---
 title: Tennis Return of Serve Analysis: The Stats That Win You Breaks
 description: Your return wins matches as often as your serve. Learn the return-of-serve stats that matter, the patterns that cost you breaks, and how to read your data.
-date: 2026-06-19
+date: 2026-07-26
 image: /blog/images/return-of-serve-analysis.webp
 ---
 
