@@ -1,0 +1,33 @@
+{
+ "task_id": "c8b77210-542c-4ef9-b026-9d800c932817",
+ "match": "Tomo v Jimbo Ma",
+ "model": "sportai",
+ "signed_off": true,
+ "source": "Video-verified 18/18 point winners (docs/_investigation/silver_gold_filter_contract.md). Winners = prod silver.point_winner_player_id, LOCKED as the anti-overfit anchor.",
+ "player_ids": {
+  "21": "unlabelled",
+  "153": "unlabelled"
+ },
+ "boundary_mode": "identity",
+ "n_true_points": 18,
+ "point_winner": {
+  "1": "21",
+  "2": "21",
+  "3": "153",
+  "4": "21",
+  "5": "153",
+  "6": "21",
+  "7": "153",
+  "8": "21",
+  "9": "21",
+  "10": "21",
+  "11": "21",
+  "12": "21",
+  "13": "153",
+  "14": "21",
+  "15": "153",
+  "16": "153",
+  "17": "153",
+  "18": "153"
+ }
+}

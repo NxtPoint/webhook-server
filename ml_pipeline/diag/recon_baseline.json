@@ -1,0 +1,26 @@
+{
+  "c8b77210": {
+    "task_id": "c8b77210-542c-4ef9-b026-9d800c932817",
+    "match": "Tomo v Jimbo Ma",
+    "silver_points": 18,
+    "true_points": 18,
+    "winner_agree": 18,
+    "winner_total": 18,
+    "winner_pct": 100.0
+  },
+  "df594aea": {
+    "task_id": "df594aea-78ef-47b1-8c10-60174a58d8b0",
+    "match": "Erin v Yolanda",
+    "silver_points": 95,
+    "true_points": 100,
+    "exact_1to1": 86,
+    "merges": 6,
+    "splits": 1,
+    "dropped_points": 1,
+    "excluded_shots": 48,
+    "missing_shots": 2,
+    "winner_agree": 63,
+    "winner_total": 86,
+    "winner_pct": 73.3
+  }
+}
