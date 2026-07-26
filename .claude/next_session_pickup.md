@@ -53,14 +53,20 @@ degrades and whether it's a bronze ceiling or a silver bug.
 read **medium** — the thresholds don't discriminate. Calibrate once the video
 validation shows how bad `df594aea` really is; it should read **low**.
 
-## Parked — video-worker trim (df594aea + a latent URL bug)
+## Parked — video-worker trim (NOT fully fixed — one more iteration needed)
 
-1. **df594aea trim stuck at `accepted`** (since ~10:10, no completion, no error).
-   It's on the real worker with the new streaming+SigV4 fixes. To resume: pull the
-   **real video-worker service Logs** (NOT `video-worker.onrender.com` — see #2)
-   for `FFMPEG TRIM task_id=df594aea` around the last re-fire; see if it's
-   encoding, died (`/tmp`? instance failed?), or errored. Re-fire with
-   `POST /ops/retrim {"task_id":"df594aea-…"}`. Low priority (no customers, test match).
+1. **Trim is too SLOW on long matches — the real remaining fix.** The `/tmp` 2 GB
+   kill IS fixed (streaming single-pass, `f9b8a4c`), but that exposed a new
+   bottleneck: the single-input `trim`-filter graph must **decode the ENTIRE
+   source** (df594aea = 74 min) to pick segments → over HTTP it exceeded
+   `TRIM_ENCODE_TIMEOUT_S=3600` and **failed** (`Command timed out after 3600s`,
+   2026-07-26 11:10). Bumping the timeout is NOT the fix (a ~1 h+ trim is
+   unacceptable). **Correct fix:** rewrite `run_ffmpeg_trim` to use **N `-ss/-to`
+   seek inputs + `concat`** (each `-ss` before `-i` fast-seeks via HTTP range so
+   ffmpeg decodes only the ~30% kept, not the whole source) — `/tmp`-light AND
+   fast. Contained change; needs the worker deploy + can't be tested locally, so
+   validate on a real long match. Re-fire after with `POST /ops/retrim`. Short
+   matches (few segments, short source) likely already work; the gap is long ones.
 2. **`video-worker.onrender.com` serves a FOREIGN Node/Express app** (`"Cannot GET
    /trim"` = Express, not our Flask worker). The committed `render.yaml`
    `VIDEO_WORKER_BASE_URL` value is therefore **wrong/squatted**. Trims still work
