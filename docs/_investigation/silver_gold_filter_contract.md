@@ -7,6 +7,53 @@ filters data.** Every dashboard reads a `gold.*` view; every gold view filters
 `silver.point_detail`; if two views filter differently their numbers never
 reconcile. Read this before changing any silver derivation or building a chart.
 
+## ★ THE RULES OF THE GAME (agreed with Tomo, 2026-07-26) — read first
+
+The whole business pipeline runs off **ONE filter**. Get this perfect and every
+dashboard balances everywhere, forever; break it and numbers disagree across pages
+and we lose credibility. The agreed model (verified reconciling on both reference
+matches):
+
+1. **The spine = `exclude_d IS NOT TRUE` = every REAL in-play event of the match**,
+   and nothing else. It is exactly two kinds of row:
+   - **Serve attempts** (`serve_d = TRUE`): EVERY serve struck — 1st and 2nd,
+     faulted or in. (A faulted 1st serve stays in the spine — it's a real attempt,
+     needed for the 1st-serve-% denominator. It is a serve, not a rally shot.)
+   - **Rally shots** (`serve_d IS NOT TRUE AND shot_ix_in_point IS NOT NULL`): every
+     real stroke from the in-serve to the END of the point.
+2. **`exclude_d = TRUE` = NOISE** — warm-up, pre-first-serve, between-point activity,
+   trailing ghosts. It never reaches gold. (On a badly-tracked match some ghosts leak
+   in — the bronze ceiling, quantified below — but they leak CONSISTENTLY into every
+   view, so pages still agree with each other.)
+3. **Gold reads ONLY the spine.** Every `gold.*` view begins `WHERE exclude_d IS NOT
+   TRUE`. (Verified: all 10 views do.) **Dashboards render ONLY gold** — no page
+   re-derives or re-filters silver.
+4. **Differentiate with FLAGS on spine rows, never with separate filters:**
+   `serve_d` (serve vs rally), `serve_try_ix_in_point` ('1st'/'2nd', for serve-speed
+   and 1st-serve-% splits), `double_fault_d` (point-level DF), `shot_ix_in_point`
+   (rally sequence; NULL on faulted serves).
+5. **`court_x IS NOT NULL` is HAS-PLACEMENT (completeness), NOT membership.** A shot
+   with no bounce is still a real shot — it counts in the topline; it just has no dot.
+6. **The tally-back invariant (the credibility guarantee):** any view that drops rows
+   MUST surface the dropped count, so **shown + no-data = topline**, everywhere. A
+   heatmap shows "N plotted + M no-placement = total serves"; a KPI page shows the
+   same total. Same metric, same spine → the numbers cannot disagree across pages.
+
+**Reconciliation status (2026-07-26):** cross-dashboard = **100%** (serves/points/
+shots byte-identical across spine, match_kpi, shot_placement, vw_point,
+serve_breakdown on both matches). Vs video ground truth: c8b77210 spine is clean
+(18/18); df594aea spine is **87% pure / 91% recall** (52 between-point ghosts leak,
+32 over-excluded — the bronze trailing-shot ceiling, NOT a filter bug). So numbers
+are internally consistent everywhere; accuracy vs video is bronze-gated on the
+worst-tracked match.
+
+**Deferred (Tomo, 2026-07-26):** the placement HEATMAP fine-tuning (serve/return/
+rally look) is DONE for the big items (fault toggle, service-line geometry,
+soft-clamp) and is otherwise parked. **Priority order agreed:** (1) perfect the
+filter contract [this section], (2) verify every gold view filters correctly on
+every page + tally-back holds, (3) THEN return to heatmaps and reconcile the finer
+placement/depth/stroke detail. Don't jump to (3) before (1)+(2) are airtight.
+
 ## The pipeline in one screen
 
 ```

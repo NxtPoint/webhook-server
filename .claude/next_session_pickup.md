@@ -9,6 +9,18 @@
 Built the **two-match silver reconciliation bench** and shipped the first sound
 silver lever. All on `main`, pushed.
 
+> **★ AGREED PRIORITY (Tomo, 2026-07-26) — the "Rules of the Game".** The whole
+> business runs off ONE filter (the spine = `exclude_d IS NOT TRUE`). Canonical
+> statement now at the TOP of `docs/_investigation/silver_gold_filter_contract.md`
+> §"★ THE RULES OF THE GAME". Verified: cross-dashboard reconciliation is **100%**
+> (serves/points/shots byte-identical across all gold views on both matches). **Do
+> (1) perfect the filter contract, (2) verify every gold view + tally-back on every
+> page, BEFORE (3) returning to heatmap fine-tuning.** Heatmap big-items DONE
+> (fault toggle, service-line geometry, soft-clamp, in-box-fault drop); finer
+> placement/depth/stroke recon is PARKED by agreement.
+> **Prod silver rebuild = run the all-matches loop on Render** (prod code has all 3
+> fixes now) — see the loop in this file / the last session message.
+
 - **STEP 1 (GT signed off):** Tomo's video ground truth for **df594aea** (Erin v
   Yolanda, 100 pts) + the **c8b77210** 18/18 anchor are persisted in
   `ml_pipeline/ground_truth/recon_*.json`. Keyed on **`ball_hit_s`** (stable across
