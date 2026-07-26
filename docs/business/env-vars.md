@@ -74,6 +74,7 @@ Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing
     - `TRIM_MAX_HEIGHT` — default `0` (keep source resolution; never upscales). Downscales the reel to at most this height. **Encoding is the binding cost on a small instance** — measured 1080p CRF28 veryfast at only 0.17–0.23× realtime on 0.5 CPU, i.e. ~2 h for a 24-min reel. Levers are this, `VIDEO_PRESET` and `VIDEO_CRF`; the structural fix is a bigger plan.
     - `TRIM_LOCAL_COPY_MAX_MB` — default `1500`. Download-and-seek-locally only below this source size. Real match sources reach **8 GB**, which is why streaming (not downloading) is the default.
     - `TRIM_STREAM_INPUT` — default `1`. `0` forces the download-once path (rollback).
+    - `TRIM_LOCK_DIR` — default `/tmp/trim_locks`. Per-task in-flight locks; a duplicate `POST /trim` for a task already encoding returns `status: already_running` instead of spawning a second ffmpeg. Cleared on restart by design.
     - `TRIM_ENCODE_TIMEOUT_S` — default `3600`. **Whole-trim** wall-clock budget shared by all passes, not per-pass.
     - `TRIM_PRESIGN_EXPIRY_S` — default `21600` (6 h); must outlast the longest encode.
     - `S3_BUCKET_REGION` — optional override; the presigned URL must be SigV4 in the bucket's real region (`nextpoint-prod-uploads` = `eu-north-1`), otherwise ffmpeg gets a 400. Auto-detected from the `x-amz-bucket-region` header.

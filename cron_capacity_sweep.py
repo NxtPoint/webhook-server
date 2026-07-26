@@ -30,7 +30,12 @@ if not OPS_KEY:
 
 # Thresholds (seconds)
 INGEST_STALE_S = int(os.environ.get("INGEST_STALE_S", "1800"))              # 30 min
-TRIM_STALE_S = int(os.environ.get("TRIM_STALE_S", "1800"))                  # 30 min
+# ⚠ Must exceed the longest legitimate trim, and stay in step with
+# upload_app.TRIM_STALE_AFTER_S — this is a SECOND, blunter killer of the same
+# rows (it marks failed outright, with no attempt count and no re-fire). At the
+# old 1800s it declared healthy long-match trims dead: a 74-min match needs 50+
+# min to encode on a small instance. Measured 2026-07-26 on df594aea.
+TRIM_STALE_S = int(os.environ.get("TRIM_STALE_S", "7200"))                  # 2 hours
 
 
 # ============================================================
@@ -76,7 +81,9 @@ def sweep_stale_states():
         result = conn.execute(sql_text("""
             UPDATE bronze.submission_context
                SET trim_status = 'failed',
-                   trim_error = 'Cron sweep: trim stuck in accepted/queued for too long',
+                   trim_error = 'Cron sweep: no terminal status from the video worker '
+                                'within TRIM_STALE_S — check the video-worker log for '
+                                'this task_id before assuming the encode died',
                    trim_finished_at = now()
              WHERE trim_status IN ('accepted', 'queued')
                AND trim_requested_at IS NOT NULL

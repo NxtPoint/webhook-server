@@ -2130,7 +2130,17 @@ SWEEP_SA_MAX_ATTEMPTS = int(os.getenv("SWEEP_SA_MAX_ATTEMPTS", "4"))
 # killed mid-encode (the /tmp-2GB kill, a spin-down, or a redeploy). The stale-trim
 # sweep re-fires it; TRIM_SWEEP_MAX_ATTEMPTS bounds re-fires so a genuinely-broken
 # trim (e.g. source video deleted from S3) escalates instead of looping.
-TRIM_STALE_AFTER_S = int(os.getenv("TRIM_STALE_AFTER_S", "1800"))     # 30 minutes
+#
+# ⚠ This window MUST exceed the longest legitimate trim. The sweep cannot see
+# inside the worker, so a slow trim and a dead one look identical to it. At the
+# old 1800s a real 74-min match (which needs 50+ min to encode on a small
+# instance) was re-fired while still encoding — stacking a second ffmpeg over the
+# same 8 GB source until the box OOMed, then declared "stalled" at the attempt
+# cap. Measured 2026-07-26: df594aea ran 32 min healthily and was killed by this,
+# not by ffmpeg. The worker now also refuses duplicate concurrent trims per task
+# (see video_worker_app._acquire_trim_lock) — belt and braces, since only the
+# worker knows whether an encode is still alive.
+TRIM_STALE_AFTER_S = int(os.getenv("TRIM_STALE_AFTER_S", "7200"))     # 2 hours
 TRIM_SWEEP_MAX_ATTEMPTS = int(os.getenv("TRIM_SWEEP_MAX_ATTEMPTS", "3"))
 
 
@@ -5168,8 +5178,15 @@ def ops_sweep_stale_trims():
         return jsonify(result), 200
 
     def _giveup_trim(tid: str, attempts: int) -> None:
-        err = (f"trim stalled after {attempts} attempts — worker likely killed "
-               f"mid-encode, or the source video is unavailable; needs investigation")
+        # State only what is known. This runs when the trim never reported back
+        # inside TRIM_STALE_AFTER_S — which does NOT establish that the worker
+        # died; it may still be encoding (that exact misreading cost a session).
+        # Check the video-worker logs for `FFMPEG TRIM task_id=<id>` before
+        # concluding anything.
+        err = (f"no terminal status from the video worker within "
+               f"{TRIM_STALE_AFTER_S}s across {attempts} attempts — the encode may "
+               f"still be running, may have been killed, or the source may be "
+               f"unavailable; check the video-worker log for this task_id")
         try:
             with engine.begin() as conn:
                 conn.execute(sql_text("""

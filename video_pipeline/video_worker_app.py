@@ -42,6 +42,20 @@ CALLBACK_RETRY_BASE_S = float(os.getenv("VIDEO_TRIM_CALLBACK_RETRY_BASE_S", "2.0
 # Subprocess log directory — logs are preserved for debugging failed trims
 TRIM_LOG_DIR = os.getenv("TRIM_LOG_DIR", "/tmp/trim_logs")
 
+# In-flight locks, one file per task_id, holding the trim subprocess PID.
+#
+# WHY (2026-07-26): the main API's stale-trim sweep re-fires any trim still sitting
+# in 'accepted' after TRIM_STALE_AFTER_S, and it CANNOT tell a long-running trim
+# from a dead one. A legitimate long-match trim now outlives that window, so the
+# sweep re-POSTs /trim while the original ffmpeg is still encoding — and this
+# endpoint used to spawn a second ffmpeg unconditionally. Two concurrent encodes
+# of a multi-GB source exhaust the instance's memory and BOTH die, which then
+# looks exactly like the "worker killed mid-encode" the sweep was written to fix.
+#
+# The lock makes a duplicate /trim a no-op instead. /tmp is wiped on restart,
+# which is correct: a restarted instance has no surviving ffmpeg to protect.
+TRIM_LOCK_DIR = os.getenv("TRIM_LOCK_DIR", "/tmp/trim_locks")
+
 if not VIDEO_WORKER_OPS_KEY:
     raise RuntimeError("VIDEO_WORKER_OPS_KEY env var is required")
 
@@ -123,6 +137,84 @@ def _callback(callback_url: str, callback_headers: Dict[str, Any], payload: Dict
     )
 
 
+def _lock_path(task_id: str) -> str:
+    safe = "".join(ch for ch in str(task_id) if ch.isalnum() or ch in "-_")
+    return os.path.join(TRIM_LOCK_DIR, f"{safe}.lock")
+
+
+def _pid_alive(pid: int) -> bool:
+    """POSIX liveness probe — signal 0 checks existence without delivering."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by another user
+    except Exception:
+        return False
+
+
+def _acquire_trim_lock(task_id: str) -> tuple[bool, int]:
+    """Claim the right to trim this task. Returns (acquired, holder_pid).
+
+    O_EXCL create so two simultaneous /trim requests can't both win. A lock whose
+    recorded PID is gone is stale (instance restarted, or the subprocess died
+    without cleanup) and gets taken over."""
+    os.makedirs(TRIM_LOCK_DIR, exist_ok=True)
+    path = _lock_path(task_id)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.close(fd)
+        return True, 0
+    except FileExistsError:
+        pass
+
+    try:
+        holder = int((open(path, encoding="utf-8").read() or "0").strip() or 0)
+    except Exception:
+        holder = 0
+
+    if holder and _pid_alive(holder):
+        return False, holder
+
+    # Stale: previous holder is gone (or never recorded a PID). Take it over.
+    APP.logger.warning(
+        "VIDEO TRIM stale lock for task_id=%s (holder pid=%s not running) — taking over",
+        task_id, holder or "unknown",
+    )
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.close(fd)
+        return True, 0
+    except FileExistsError:
+        # Someone else won the takeover race; let them have it.
+        return False, 0
+
+
+def _write_lock_pid(task_id: str, pid: int) -> None:
+    try:
+        with open(_lock_path(task_id), "w", encoding="utf-8") as fh:
+            fh.write(str(pid))
+    except Exception:
+        APP.logger.exception("VIDEO TRIM could not record lock pid for task_id=%s", task_id)
+
+
+def _release_trim_lock(task_id: str) -> None:
+    try:
+        os.unlink(_lock_path(task_id))
+    except FileNotFoundError:
+        pass
+    except Exception:
+        APP.logger.exception("VIDEO TRIM could not release lock for task_id=%s", task_id)
+
+
 def _run_trim_job(
     *,
     task_id: str,
@@ -187,6 +279,12 @@ def _run_trim_job(
                 tb,
             )
 
+    finally:
+        # Always free the slot, including on SIGTERM-free crashes — otherwise a
+        # genuinely dead trim could never be re-fired. A lock left behind by a
+        # hard kill is reclaimed by the stale-PID check in _acquire_trim_lock.
+        _release_trim_lock(task_id)
+
 
 def _launch_trim_subprocess(
     *,
@@ -225,7 +323,7 @@ def _launch_trim_subprocess(
         task_id, log_path,
     )
 
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, "-c", py_code, json.dumps(payload)],
         stdout=log_fh,
         stderr=log_fh,
@@ -235,6 +333,9 @@ def _launch_trim_subprocess(
         cwd=os.getcwd(),
         env=env,
     )
+    # Record the holder so a duplicate /trim can tell "still encoding" from
+    # "died without cleanup".
+    _write_lock_pid(task_id, proc.pid)
 
 
 @APP.post("/trim")
@@ -252,6 +353,24 @@ def trim():
             "error": str(e),
         }), 400
 
+    # Refuse to stack a second encode on a task already in flight. The main API's
+    # stale-trim sweep re-fires long-running trims because it can't see inside the
+    # worker; without this, each re-fire added another concurrent ffmpeg over the
+    # same multi-GB source until the instance ran out of memory.
+    acquired, holder = _acquire_trim_lock(payload["task_id"])
+    if not acquired:
+        APP.logger.warning(
+            "VIDEO TRIM DUPLICATE ignored task_id=%s — already encoding (pid=%s)",
+            payload["task_id"], holder,
+        )
+        return jsonify({
+            "ok": True,
+            "accepted": False,
+            "task_id": payload["task_id"],
+            "status": "already_running",
+            "holder_pid": holder,
+        }), 202
+
     try:
         _launch_trim_subprocess(
             task_id=payload["task_id"],
@@ -262,6 +381,7 @@ def trim():
             callback_headers=payload["callback_headers"],
         )
     except Exception as e:
+        _release_trim_lock(payload["task_id"])
         APP.logger.exception("VIDEO TRIM LAUNCH FAILED task_id=%s error=%s", payload["task_id"], e)
         return jsonify({
             "ok": False,
