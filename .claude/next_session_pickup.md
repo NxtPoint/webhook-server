@@ -24,7 +24,57 @@ silver lever. All on `main`, pushed.
   missed-serve ceiling was refuted** — the serves were detected; it was a silver
   point-anchor gap (a missing serve breaks deuce/ad alternation → same-side glue).
 
-## ⚠️ Two follow-ups (not blocking)
+## ⚠️ ACTION REQUIRED (Tomo) — fix df594aea player identity in gold
+
+Gold has **Erin/Yolanda SWAPPED**. `gold.vw_player` maps names→track-ids from
+`submission_context.first_server`; the upload marked `first_server=Erin` but
+**Yolanda served first**, so gold pinned Erin=772 (should be Erin=466). Every
+dashboard shows the two players swapped. Fix (write on Render DB — psql/dashboard,
+`/ops/diag/sql` is read-only):
+```sql
+UPDATE bronze.submission_context SET first_server='player_b'
+WHERE task_id='df594aea-78ef-47b1-8c10-60174a58d8b0';
+```
+`vw_player` is a live view → corrects ALL dashboards instantly, no rebuild (silver's
+serve detection is geometric, doesn't use this field). Truth: **Erin=466,
+Yolanda=772** (the recon GT was right). **Design fragility:** identity rests on that
+one user-entered field — a wrong tick swaps everyone. Durable fix = a post-upload
+"confirm which player is which id" step (future feature), or anchor identity on
+something sturdier than `first_server`.
+
+## Bugs fixed + gold/dashboard phase (2026-07-26 pm, cont.)
+
+**Two silver bugs fixed** (both default-ON, env rollback, both-match gate green, serve bench green):
+- `3b0eed1` **deuce/ad + serve-location use the FIXED centre 5.485**, not drifting
+  `AVG(x)` (`SILVER_SERVE_SIDE_FIXED_MIDLINE`) — audit P1 closed. Neutral on point
+  structure (no serve fell in either match's drift band), corrects serve placement.
+- `26fff51` **serve false-positive guard**: demote a serve struck <3s after a
+  DIFFERENT-player serve — it's a return (`SILVER_SERVE_FP_GUARD`, `SERVE_FP_GAP_S`=3).
+  df594aea split **1→0**, exact **98→99**, winners **72→73**, silver points now
+  **== 100 GT points exactly**. 0336b82b (same footage) −2 (its 2 return-FP splits).
+
+**Gold reconciliation (tf_readonly now has gold SELECT):** all 10 gold views respect
+the spine (`exclude_d IS NOT TRUE`). Row-level views (`vw_point`, `shot_placement`)
+match the spine EXACTLY on both matches; `match_kpi` aggregates tie out (serves
+72+62=134, points 101, service pts 51+50=101). The ONE defect was the identity swap
+(above), NOT a filter bug — the "one filter through all dashboards" discipline holds.
+
+**Ring-fence (spine vs GT in-play, df594aea):** **87% purity** (52 between-point
+ghosts leak into gold) / **91% recall** (32 over-excluded). The bronze ghost ceiling
+(same trailing-shot problem); clean on well-tracked matches.
+
+**Serve-placement dashboard fixes** (`frontend/match_analysis.html`):
+- `7ff1ab3` **faults hidden by default** + grey **"Faults: Hide/Show"** toggle (were
+  plotted scattered AND mis-counted as wins when the point was won).
+- `2ef0624` **service lines were drawn ~0.9m too shallow** (`cy(COURT_L-SVC_LINE)`=17.37
+  vs true `NET_Y+SVC_LINE`=18.285 — the 6.40/17.37→5.485/18.285 bug the audit fixed in
+  silver, still live in the FRONTEND court draw). FIXED all 3 service lines. Plus
+  **SOFT-CLAMP** (exp saturation) folds out-of-box bounces into a band just inside the
+  line — no pile-up; serve tab→service box, return/rally→court, player-position tabs
+  unclamped. Residual out-of-box = bronze near-serve y-precision. **Root cause of "so
+  many serves outside the box": ~14/48 were the mis-drawn line, ~13 bronze.**
+
+## ⚠️ Follow-ups (not blocking)
 
 1. **Prod silver rebuild** — the fix only changes silver on **re-ingest /
    `rerun-silver`**. Existing prod silver (df594aea + all matches) is unchanged
