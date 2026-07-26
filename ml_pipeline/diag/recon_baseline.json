@@ -11,16 +11,16 @@
   "df594aea": {
     "task_id": "df594aea-78ef-47b1-8c10-60174a58d8b0",
     "match": "Erin v Yolanda",
-    "silver_points": 95,
+    "silver_points": 101,
     "true_points": 100,
-    "exact_1to1": 86,
-    "merges": 6,
+    "exact_1to1": 98,
+    "merges": 0,
     "splits": 1,
     "dropped_points": 1,
-    "excluded_shots": 48,
+    "excluded_shots": 32,
     "missing_shots": 2,
-    "winner_agree": 63,
-    "winner_total": 86,
-    "winner_pct": 73.3
+    "winner_agree": 72,
+    "winner_total": 98,
+    "winner_pct": 73.5
   }
 }

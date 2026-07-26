@@ -119,6 +119,26 @@ SERVE_SA_MIN_AGREEMENT = float(os.getenv("SILVER_SERVE_SA_MIN_AGREEMENT") or 0.5
 # Rollback: SILVER_RALLY_CONTIGUITY=0 restores the legacy re-anchor exactly.
 RALLY_CONTIGUITY = (os.getenv("SILVER_RALLY_CONTIGUITY") or "1").strip().lower() in ("1", "true", "yes")
 
+# ========== SERVE-GAP POINT ANCHOR (2026-07-26) ==========
+# A new point is normally anchored only when the serve SIDE or the SERVER changes
+# (point_anchors, pass 3). That relies on side alternation (deuce/ad), so a SINGLE
+# missing serve — a far serve the detector dropped, or a whole point's rally
+# excluded — breaks the alternation and two same-side serves by the same server
+# collapse into ONE silver point, the second mislabelled a '2nd serve' up to 70s
+# after the first. Measured on df594aea: 6 merges (silver pts 8/20/35/55/58/68),
+# each a pair of same-side serves 47-71s apart, each gluing two real points (and
+# corrupting that point's winner, since the winner is read off the merged tail).
+#
+# A real 1st->2nd serve is bounded by the rules (~20-25s between points). So ANY
+# consecutive-serve gap beyond SERVE_GAP_ANCHOR_S is a new point, regardless of
+# side/server. 30s sits cleanly between the largest legitimate 2nd-serve gap
+# measured (c8b77210 16.6s incl. a double fault; df594aea 16.3s) and the smallest
+# merge gap (47.4s) — ~13-17s margin each side. Sound tennis logic, not a fit.
+#
+# Rollback: SILVER_SERVE_GAP_ANCHOR=0 restores side/server-only anchoring.
+SERVE_GAP_ANCHOR = (os.getenv("SILVER_SERVE_GAP_ANCHOR") or "1").strip().lower() in ("1", "true", "yes")
+SERVE_GAP_ANCHOR_S = float(os.getenv("SILVER_SERVE_GAP_ANCHOR_S") or "30")
+
 # Coverage floor for trusting SportAI's is_in_rally as the gap_break escape.
 # A value > 1.0 can never be met, so the escape is DISABLED by default.
 #
@@ -641,6 +661,13 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
           AND lc.lc_legacy IS NOT NULL AND e.ball_hit_s > lc.lc_legacy
         )"""
 
+    # A large time gap between two consecutive serves means a new point (see
+    # SERVE_GAP_ANCHOR at module top). Inserted into the point_anchors CASE below.
+    serve_gap_anchor_clause = (
+        "WHEN a.prev_serve_s IS NOT NULL AND (a.ball_hit_s - a.prev_serve_s) > :serve_gap_s THEN 1"
+        if SERVE_GAP_ANCHOR else ""
+    )
+
     COURT_LEN       = cfg["court_length_m"]
     EPS             = cfg["eps_baseline_m"]
     SX_LEFT         = cfg["singles_left_x"]
@@ -818,7 +845,8 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     anchors AS (
       SELECT s.id, s.task_id, s.ball_hit_s, s.player_id, s.serve_side_d,
         LAG(s.serve_side_d) OVER (PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id) AS prev_side,
-        LAG(s.player_id) OVER (PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id) AS prev_pid
+        LAG(s.player_id) OVER (PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id) AS prev_pid,
+        LAG(s.ball_hit_s) OVER (PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id) AS prev_serve_s
       FROM srv_side s
       WHERE s.serve_d IS TRUE AND s.serve_side_d IS NOT NULL
         AND s.player_id IN (:p1, :p2)
@@ -830,6 +858,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
           WHEN a.prev_side IS NULL THEN 0
           WHEN a.prev_side IS DISTINCT FROM a.serve_side_d THEN 1
           WHEN a.prev_pid IS DISTINCT FROM a.player_id THEN 1
+          {serve_gap_anchor_clause}
           ELSE 0
         END) OVER (PARTITION BY a.task_id ORDER BY a.ball_hit_s, a.id
                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)::integer AS point_number
@@ -1656,6 +1685,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         "svc": float(HALF_Y - SVC_LINE), "far_svc": float(HALF_Y + SVC_LINE),
         "b1": float(B1), "b2": float(B2), "b3": float(B3),
         "serve_src": _resolve_serve_source(conn, task_id, EPS, COURT_LEN),
+        "serve_gap_s": float(SERVE_GAP_ANCHOR_S),
     }
 
     # --- Route B staging (perf, no behaviour change) -----------------------
