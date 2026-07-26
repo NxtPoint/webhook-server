@@ -83,13 +83,41 @@ neutral-or-better → `bench` (serve) green → ship with env rollback. **devenv
   seek inputs risk OOM → passes of `TRIM_SEEK_INPUTS_PER_PASS`=12 joined with the
   concat demuxer, `-c copy`). Measured shape: **86 segments, 23.8 min kept of
   73.9 min (32%)**.
+  **⚠ BUT the trim will still not fit the budget — ENCODE is now the binding
+  constraint, and it needs a Tomo decision.** Measured on a 0.5 CPU / 512 MB box
+  (= Render starter, what the video-worker runs on) against 1080p 29.97 footage
+  matching the real source, `df594aea` keeps 1425 s:
+
+  | output | preset | rate | df594aea encode | file size | verdict |
+  |---|---|---|---|---|---|
+  | 1080p | veryfast (current) | 0.17–0.23× | **104–141 min** | 17 MB/min | OVER |
+  | 1080p | ultrafast | 0.44–0.51× | 46–54 min | 75 MB/min | tight, huge file |
+  | 720p | veryfast | 0.34× | 69 min | 5 MB/min | OVER |
+  | 720p | ultrafast | 0.49× | **49 min** | 28 MB/min | only sub-budget option |
+  | 540p | veryfast | 0.42× | 56 min | 3 MB/min | OVER |
+
+  **A 0.5 CPU instance cannot re-encode ~24 min of 1080p inside the hour at any
+  preset.** Downscaling helps less than the pixel ratio suggests because the
+  scale filter itself costs CPU. Options, in preference order:
+  1. **Upgrade the video-worker Render plan** (starter 0.5 CPU → standard/pro).
+     Roughly linear: 2 CPU puts 1080p veryfast at ~35–50 min, 720p at ~17–25 min.
+     Costs money; keeps reel quality. **Recommended — this is a compute problem.**
+  2. `TRIM_MAX_HEIGHT=720` + `VIDEO_PRESET=ultrafast` (both no-redeploy env
+     flips): fits today at ~49 min, but ultrafast inflates the file ~5× (28 vs
+     5 MB/min) so the reel gets big to store and stream.
+  3. Raise `TRIM_ENCODE_TIMEOUT_S` — **explicitly rejected**, an hour-plus trim
+     is the thing being fixed.
+  (dev-box 0.5 CPU ≠ Render 0.5 CPU exactly — treat as ratios, verify on the
+  first real run. Also confirm the worker's LIVE plan in the dashboard; the
+  committed `plan: starter` may not match.)
+
   **TO DO — validate in prod** once the worker redeploys: re-fire
   `POST /ops/retrim {"task_id":"df594aea-78ef-47b1-8c10-60174a58d8b0"}` (header
   `X-Ops-Key`, main-API Render shell). Success = accepted→completed,
-  `trim_output_s3_key=trimmed/df594aea-…/review.mp4`, `trim_duration_s` ≈ 1425 s,
-  in **minutes not an hour**. Watch video-worker Logs for `pass N/8 done …`.
-  If it still times out, the residual cost is *encode* on 0.5 CPU, not decode →
-  lower `VIDEO_PRESET` / resolution; do NOT raise the timeout.
+  `trim_output_s3_key=trimmed/df594aea-…/review.mp4`, `trim_duration_s` ≈ 1425 s.
+  Watch video-worker Logs for the per-pass lines (`pass N/22 done … keep …s in
+  …s`) — the first pass gives the real encode rate, so you can extrapolate
+  immediately instead of waiting an hour for a timeout.
   Checks: `python -m video_pipeline.tests.test_trim_cmd` +
   `video_pipeline/tests/e2e_trim_docker.py` (real ffmpeg in Docker).
 - **`video-worker.onrender.com` is a FOREIGN app** — still true, never

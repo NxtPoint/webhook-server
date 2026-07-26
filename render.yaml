@@ -242,12 +242,19 @@ services:
       # The trim decodes ONLY the kept footage: one `-ss/-t` seek input per EDL
       # segment. See video_pipeline/ffmpeg_trim_worker.py for the full rationale.
       #
-      # Seek inputs per ffmpeg pass. Each open input costs a socket + demuxer
-      # index and this is a 512 MB starter instance, so a 100-input single pass
-      # risks OOM. Above this, the trim runs in several passes joined with the
-      # concat demuxer (-c copy, no re-encode). 0 = one pass regardless.
+      # Seek inputs per ffmpeg pass. ffmpeg opens every input up front and queues
+      # packets for inputs the concat filter hasn't consumed, so RAM grows with
+      # input_count x bitrate. MEASURED on 0.5 CPU / 512 MB against 1080p 15 Mbps:
+      # 8 inputs = SIGKILL (OOM), 6 survives, throughput flat 1..6. Don't raise
+      # without re-measuring. Above this the trim runs several passes joined with
+      # the concat demuxer (-c copy). 0 = one pass regardless.
       - key: TRIM_SEEK_INPUTS_PER_PASS
-        value: "12"
+        value: "4"
+      # Downscale the reel to at most this height (0 = keep source resolution).
+      # Encoding dominates wall-clock on 0.5 CPU — this is the quality/time lever
+      # and needs no redeploy. See the encode table in the pickup doc.
+      - key: TRIM_MAX_HEIGHT
+        value: "0"
       # Download-and-seek-locally only below this source size; /tmp is 2 GB and
       # must hold the output too (the match that motivated this was 8.0 GB).
       - key: TRIM_LOCAL_COPY_MAX_MB

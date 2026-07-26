@@ -78,9 +78,11 @@ def _make_source(path: Path, *, with_audio: bool) -> None:
 
 
 def _encode(src: Path, segments, *, has_audio: bool, out: Path, td: Path,
-            force_fps: float | None = None) -> None:
+            force_fps: float | None = None, scale_height: int = 0) -> None:
     fscript = td / f"filter_{out.stem}.txt"
-    fscript.write_text(_build_concat_filter(len(segments), has_audio), encoding="utf-8")
+    fscript.write_text(
+        _build_concat_filter(len(segments), has_audio, scale_height), encoding="utf-8"
+    )
     _run(_build_pass_cmd(
         src=str(src), segments=segments, has_audio=has_audio,
         filter_script=fscript, out_path=out,
@@ -157,6 +159,23 @@ def test_seek_accuracy(td: Path, src: Path) -> None:
     close(got, expected, 0.3, f"mid-GOP cut duration == requested {expected}s")
 
 
+def test_downscale(td: Path, src: Path) -> None:
+    """TRIM_MAX_HEIGHT path: the reel is re-encoded smaller, which is the lever
+    for wall-clock on a small instance. Source here is 360p, so ask for 240."""
+    print("optional downscale (TRIM_MAX_HEIGHT)")
+
+    segs = _normalize_segments([{"start_s": 5.0, "end_s": 12.0}], float(SRC_DURATION_S))
+    expected = _sum_segment_durations(segs)
+    out = td / "scaled.mp4"
+    info = _probe_source(str(src))
+    _encode(src, segs, has_audio=info.has_audio, out=out, td=td, scale_height=240)
+
+    check(out.exists() and out.stat().st_size > 0, "scaled output produced")
+    scaled = _probe_source(str(out))
+    check(scaled.height == 240, f"output height is 240 (got {scaled.height})")
+    close(_probe_duration(out), expected, 0.3, "scaled output keeps the duration")
+
+
 def main() -> int:
     if not shutil.which(FFMPEG_BIN):
         print(f"SKIP: {FFMPEG_BIN} not on PATH — run this inside the test container "
@@ -174,11 +193,12 @@ def main() -> int:
         _make_source(src_av, with_audio=True)
         info = _probe_source(str(src_av))
         print(f"  source: {info.duration_s:.2f}s has_audio={info.has_audio} "
-              f"fps={info.fps:.3f}\n")
+              f"fps={info.fps:.3f} height={info.height}\n")
 
         test_single_pass(td, src_av, has_audio=True)
         test_multipass_join(td, src_av)
         test_seek_accuracy(td, src_av)
+        test_downscale(td, src_av)
 
         src_v = td / "src_v.mp4"
         print("\nbuilding video-only source")

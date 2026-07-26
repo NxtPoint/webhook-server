@@ -87,12 +87,21 @@ TRIM_STREAM_INPUT = os.getenv("TRIM_STREAM_INPUT", "1").strip().lower() in ("1",
 TRIM_ENCODE_TIMEOUT_S = int(os.getenv("TRIM_ENCODE_TIMEOUT_S", "3600"))
 TRIM_PRESIGN_EXPIRY_S = int(os.getenv("TRIM_PRESIGN_EXPIRY_S", "21600"))  # 6h — covers a long encode
 
-# Seek inputs per ffmpeg invocation. Each open input costs a socket + a demuxer
-# index, and the worker runs on a 512 MB Render starter instance, so a 100-input
-# single pass is a real OOM risk. Chunking bounds concurrent inputs without
-# costing extra HTTP header reads (the moov is read once per input either way).
+# Seek inputs per ffmpeg invocation. ffmpeg opens EVERY input up front and keeps
+# demuxing/queueing packets for inputs the concat filter hasn't consumed yet, so
+# RAM grows with input_count x bitrate. MEASURED on a 0.5 CPU / 512 MB box
+# (= Render starter) against 1080p 15 Mbps footage: 8 inputs is SIGKILLed (OOM),
+# 6 survives, and throughput is flat from 1..6 — so a small N costs nothing and
+# buys the headroom. Don't raise this without re-measuring at the real bitrate.
 # 0 = no chunking (all segments in one pass) — escape hatch, no redeploy needed.
-TRIM_SEEK_INPUTS_PER_PASS = int(os.getenv("TRIM_SEEK_INPUTS_PER_PASS", "12"))
+TRIM_SEEK_INPUTS_PER_PASS = int(os.getenv("TRIM_SEEK_INPUTS_PER_PASS", "4"))
+
+# Downscale the output to at most this height (0 = keep the source resolution;
+# never upscales). Encoding is the dominant cost on a small instance — this is
+# the lever that trades reel resolution for wall-clock, flippable without a
+# redeploy. Note scaling itself costs CPU, so the win is smaller than the pixel
+# ratio suggests (measured 1080p->720p at veryfast: 0.17x -> 0.34x realtime).
+TRIM_MAX_HEIGHT = int(os.getenv("TRIM_MAX_HEIGHT", "0"))
 
 # Only download-and-seek-locally when the source is at most this big. Local
 # seeks are quicker and avoid N HTTP connections, but /tmp is 2 GB total and
@@ -307,6 +316,7 @@ class _SourceInfo:
     duration_s: float
     has_audio: bool
     fps: Optional[float]
+    height: Optional[int]
 
 
 def _parse_fps(raw: str) -> Optional[float]:
@@ -354,23 +364,33 @@ def _probe_source(src: str) -> _SourceInfo:
         src,
     ], timeout=FFPROBE_TIMEOUT_S)
 
-    fps_out = ""
+    fps_out, height = "", None
     try:
-        fps_out = _run([
+        v_out = _run([
             FFPROBE_BIN, "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=r_frame_rate",
+            "-show_entries", "stream=r_frame_rate,height",
             "-of", "default=noprint_wrappers=1:nokey=1",
             src,
         ], timeout=FFPROBE_TIMEOUT_S)
+        # nokey output is one value per line, in the order ffprobe lists them;
+        # pick them apart by shape rather than by position.
+        for line in v_out.splitlines():
+            line = line.strip()
+            if "/" in line:
+                fps_out = line
+            elif line.isdigit():
+                height = int(line)
     except Exception as e:
-        # fps is an optimisation for multi-pass uniformity, never load-bearing
-        log.warning("TRIM fps probe failed (continuing without): %s", e)
+        # Both are optimisations (multi-pass uniformity / optional downscale),
+        # never load-bearing.
+        log.warning("TRIM video-stream probe failed (continuing without): %s", e)
 
     return _SourceInfo(
         duration_s=duration,
         has_audio=bool(a_out.strip()),
         fps=_parse_fps(fps_out),
+        height=height,
     )
 
 
@@ -380,18 +400,32 @@ def _probe_source(src: str) -> _SourceInfo:
 #  end-to-end against a real ffmpeg: video_pipeline/tests/e2e_trim_docker.py)
 # ============================================================
 
-def _build_concat_filter(n: int, has_audio: bool) -> str:
-    """Concat filter over N seek inputs.
+def _build_concat_filter(n: int, has_audio: bool, scale_height: int = 0) -> str:
+    """Concat filter over N seek inputs, optionally downscaling first.
 
     Each input is ALREADY cut to its segment by `-ss`/`-t`, so there is no
     trim/setpts here and nothing has to be split off one decoded stream — that
-    is exactly what let the old single-input graph decode the whole source."""
+    is exactly what let the old single-input graph decode the whole source.
+
+    scale_height > 0 inserts `scale=-2:H` per input (‑2 keeps the aspect ratio
+    and forces an even width, which yuv420p requires)."""
     if n < 1:
         raise ValueError("concat filter needs at least one input")
-    labels = "".join(f"[{i}:v][{i}:a]" if has_audio else f"[{i}:v]" for i in range(n))
+
+    lines: List[str] = []
+    if scale_height > 0:
+        lines += [f"[{i}:v]scale=-2:{scale_height}[v{i}]" for i in range(n)]
+        vlabel = lambda i: f"[v{i}]"  # noqa: E731
+    else:
+        vlabel = lambda i: f"[{i}:v]"  # noqa: E731
+
+    joins = "".join(
+        f"{vlabel(i)}[{i}:a]" if has_audio else vlabel(i) for i in range(n)
+    )
     tail = "concat=n=%d:v=1:a=%d%s" % (n, 1 if has_audio else 0,
                                        "[outv][outa]" if has_audio else "[outv]")
-    return labels + tail
+    lines.append(joins + tail)
+    return ";\n".join(lines)
 
 
 def _build_pass_cmd(
@@ -576,10 +610,22 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
 
         info = _probe_source(src)
         log.info(
-            "FFMPEG TRIM task_id=%s source_duration=%.3fs has_audio=%s fps=%s streaming=%s",
+            "FFMPEG TRIM task_id=%s source_duration=%.3fs has_audio=%s fps=%s "
+            "height=%s streaming=%s",
             task_id, info.duration_s, info.has_audio,
-            f"{info.fps:.3f}" if info.fps else "unknown", stream_input,
+            f"{info.fps:.3f}" if info.fps else "unknown",
+            info.height or "unknown", stream_input,
         )
+
+        # Downscale only if asked AND the source is actually taller (never upscale).
+        scale_height = (
+            TRIM_MAX_HEIGHT
+            if TRIM_MAX_HEIGHT > 0 and (info.height or 0) > TRIM_MAX_HEIGHT
+            else 0
+        )
+        if scale_height:
+            log.info("FFMPEG TRIM task_id=%s downscaling %sp -> %sp (TRIM_MAX_HEIGHT)",
+                     task_id, info.height, scale_height)
 
         # --------------------------
         # Normalize segments
@@ -619,7 +665,8 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
             target = out if not multipass else (td / f"part_{i:04d}.mp4")
             fscript = td / f"filter_{i:04d}.txt"
             fscript.write_text(
-                _build_concat_filter(len(batch), info.has_audio), encoding="utf-8"
+                _build_concat_filter(len(batch), info.has_audio, scale_height),
+                encoding="utf-8",
             )
 
             cmd = _build_pass_cmd(

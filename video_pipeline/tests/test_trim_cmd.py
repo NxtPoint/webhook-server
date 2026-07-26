@@ -92,9 +92,15 @@ def test_chunk() -> None:
     eq(list(_chunk(items, 0)), [items], "size 0 = single chunk (escape hatch)")
     eq(list(_chunk(items, 99)), [items], "size >= len = single chunk")
     eq(list(_chunk([1], 4)), [[1]], "single item")
-    # 86 segments (the df594aea shape) at the default 12 per pass
-    eq(len(list(_chunk(list(range(86)), 12))), 8, "86 segments -> 8 passes at default")
-    eq(sum(len(c) for c in _chunk(list(range(86)), 12)), 86, "chunking loses no segments")
+    # 86 segments (the measured df594aea shape) at the default 4 per pass.
+    # The default is 4 because 8 concurrent 1080p inputs were SIGKILLed (OOM) on
+    # a 0.5 CPU / 512 MB box — see TRIM_SEEK_INPUTS_PER_PASS.
+    from video_pipeline.ffmpeg_trim_worker import TRIM_SEEK_INPUTS_PER_PASS
+    check(0 < TRIM_SEEK_INPUTS_PER_PASS <= 6,
+          f"default inputs-per-pass stays inside the measured-safe range "
+          f"(got {TRIM_SEEK_INPUTS_PER_PASS}, OOM observed at 8)")
+    eq(len(list(_chunk(list(range(86)), 4))), 22, "86 segments -> 22 passes at default")
+    eq(sum(len(c) for c in _chunk(list(range(86)), 4)), 86, "chunking loses no segments")
 
 
 # ============================================================
@@ -122,6 +128,21 @@ def test_concat_filter() -> None:
         check(False, "rejects zero inputs")
     except ValueError:
         check(True, "rejects zero inputs")
+
+    # Optional downscale (TRIM_MAX_HEIGHT)
+    fs = _build_concat_filter(2, True, 720)
+    check("[0:v]scale=-2:720[v0]" in fs and "[1:v]scale=-2:720[v1]" in fs,
+          "scales every input when scale_height set")
+    check("[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]" in fs,
+          "concat consumes the scaled labels")
+    check("scale=-2:720" in fs and "scale=720" not in fs,
+          "scale keeps aspect + even width (-2)")
+    check("scale" not in _build_concat_filter(2, True, 0),
+          "no scale filter when scale_height=0 (default)")
+
+    fs_na = _build_concat_filter(2, False, 540)
+    check("[v0][v1]concat=n=2:v=1:a=0[outv]" in fs_na,
+          "scaled video-only concat is well-formed")
 
 
 # ============================================================
