@@ -275,14 +275,25 @@ def ensure_schema(conn: Connection):
         if col.lower() not in existing:
             _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
 
-    # Drop columns retired 2026-07-23 (Phase 2 cleanup) — idempotent. All four
-    # were write-only with 0 consumers anywhere (grep-verified across the repo):
-    #   shot_q / shot_key_q   — external PowerBI join keys, unused
-    #   invert_hit / invert_bounce — informational flags; the inversion is applied
-    #                                inline via ball_hit_location_y, never read.
+    # Drop columns retired 2026-07-23 (Phase 2 cleanup) — BEST-EFFORT. All four
+    # were write-only with 0 consumers in the app (grep-verified across the repo).
+    # But in prod a legacy `ss_.*` view schema (no longer in the repo) plus gold
+    # views built with SELECT * still bind these columns, so the DROP is blocked
+    # by DependentObjectsStillExist. A failed DDL also POISONS the surrounding
+    # transaction, which would abort the ENTIRE silver build — and therefore every
+    # SportAI ingest (this is what stranded df594aea at the silver step). So each
+    # drop runs in its OWN SAVEPOINT: if a dependent view blocks it, we roll back
+    # just that savepoint and skip — the dead column simply remains (harmless NULLs)
+    # until the legacy views are retired. Never let cosmetic cleanup fail an ingest.
     for dead in ("shot_q", "shot_key_q", "invert_hit", "invert_bounce"):
         if dead in existing:
-            _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} DROP COLUMN IF EXISTS {dead};")
+            try:
+                with conn.begin_nested():
+                    _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} DROP COLUMN IF EXISTS {dead};")
+            except Exception as _drop_e:  # noqa: BLE001
+                log.warning(
+                    "silver: skipping DROP COLUMN %s (blocked by a dependent view; "
+                    "harmless): %s", dead, str(_drop_e).splitlines()[0][:160])
 
     # Backfill model column for existing rows
     if "model" not in existing:
