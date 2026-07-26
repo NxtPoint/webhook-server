@@ -123,8 +123,13 @@ services:
       - key: INGEST_WORKER_OPS_KEY
         sync: false
 
+      # Dashboard-set, deliberately NOT committed: the obvious public URL
+      # https://video-worker.onrender.com is squatted by a FOREIGN Node/Express
+      # app ("Cannot GET /trim"), not our Flask worker. Committing that value
+      # risks a blueprint sync clobbering the real one and silently pointing
+      # every trim at a stranger's service. Never external-health-check that URL.
       - key: VIDEO_WORKER_BASE_URL
-        value: "https://video-worker.onrender.com"
+        sync: false
       - key: VIDEO_WORKER_OPS_KEY
         sync: false
 
@@ -181,8 +186,13 @@ services:
       - key: RENDER_TO_WIX_OPS_KEY
         sync: false
 
+      # Dashboard-set, deliberately NOT committed: the obvious public URL
+      # https://video-worker.onrender.com is squatted by a FOREIGN Node/Express
+      # app ("Cannot GET /trim"), not our Flask worker. Committing that value
+      # risks a blueprint sync clobbering the real one and silently pointing
+      # every trim at a stranger's service. Never external-health-check that URL.
       - key: VIDEO_WORKER_BASE_URL
-        value: "https://video-worker.onrender.com"
+        sync: false
       - key: VIDEO_WORKER_OPS_KEY
         sync: false
 
@@ -227,6 +237,27 @@ services:
 
       - key: VIDEO_TRIM_CALLBACK_TIMEOUT_S
         value: "20"
+
+      # ---- Trim performance / safety knobs (all = code defaults) ----
+      # The trim decodes ONLY the kept footage: one `-ss/-t` seek input per EDL
+      # segment. See video_pipeline/ffmpeg_trim_worker.py for the full rationale.
+      #
+      # Seek inputs per ffmpeg pass. Each open input costs a socket + demuxer
+      # index and this is a 512 MB starter instance, so a 100-input single pass
+      # risks OOM. Above this, the trim runs in several passes joined with the
+      # concat demuxer (-c copy, no re-encode). 0 = one pass regardless.
+      - key: TRIM_SEEK_INPUTS_PER_PASS
+        value: "12"
+      # Download-and-seek-locally only below this source size; /tmp is 2 GB and
+      # must hold the output too (the match that motivated this was 8.0 GB).
+      - key: TRIM_LOCAL_COPY_MAX_MB
+        value: "1500"
+      # Whole-trim wall-clock budget, shared across all passes.
+      - key: TRIM_ENCODE_TIMEOUT_S
+        value: "3600"
+      # 0 = force the download-once path (rollback).
+      - key: TRIM_STREAM_INPUT
+        value: "1"
 
   # =========================================
   # 5) Locker Room dashboard (client-facing)

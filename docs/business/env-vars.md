@@ -68,7 +68,15 @@ Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing
 ## Other Services
 
 - **Ingest Worker**: `INGEST_WORKER_OPS_KEY` (required — startup crash), `DATABASE_URL`, `VIDEO_WORKER_*` for trim trigger.
-- **Video Trim Worker** (Docker): `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS credentials. FFmpeg tunables: `VIDEO_CRF=28`, `VIDEO_PRESET=veryfast`, `FFMPEG_TIMEOUT_S=1800`.
+- **Video Trim Worker** (Docker, Render **starter = 512 MB RAM / 2 GB `/tmp`** — both are binding constraints): `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS credentials. FFmpeg tunables: `VIDEO_CRF=28`, `VIDEO_PRESET=veryfast`, `FFMPEG_TIMEOUT_S=1800`.
+  - Trim strategy knobs (`video_pipeline/ffmpeg_trim_worker.py`; the trim uses one `-ss/-t` seek input per kept segment, so runtime scales with highlight length, not match length):
+    - `TRIM_SEEK_INPUTS_PER_PASS` — default `12`. Seek inputs per ffmpeg pass; above this the trim runs several passes joined by the concat demuxer (`-c copy`). Bounds concurrent sockets/demuxer indexes on a 512 MB box. `0` = one pass regardless.
+    - `TRIM_LOCAL_COPY_MAX_MB` — default `1500`. Download-and-seek-locally only below this source size. Real match sources reach **8 GB**, which is why streaming (not downloading) is the default.
+    - `TRIM_STREAM_INPUT` — default `1`. `0` forces the download-once path (rollback).
+    - `TRIM_ENCODE_TIMEOUT_S` — default `3600`. **Whole-trim** wall-clock budget shared by all passes, not per-pass.
+    - `TRIM_PRESIGN_EXPIRY_S` — default `21600` (6 h); must outlast the longest encode.
+    - `S3_BUCKET_REGION` — optional override; the presigned URL must be SigV4 in the bucket's real region (`nextpoint-prod-uploads` = `eu-north-1`), otherwise ffmpeg gets a 400. Auto-detected from the `x-amz-bucket-region` header.
+  - `VIDEO_WORKER_BASE_URL` (set on the main API + ingest worker, **not** here) is `sync: false` on purpose — the obvious public `video-worker.onrender.com` is a foreign app, so the real URL is dashboard-only.
 - **Locker Room**: `PORT` + the Clerk frontend vars (`AUTH_V2_ENABLED`, `CLERK_PUBLISHABLE_KEY`, `AUTH_AFTER_LOGIN_URL`, `AUTH_API_BASE`, `CLERK_JWT_TEMPLATE` — see the De-Wix auth section above; injected into `/login` + `/auth_client.js`) + optional `MARKETING_HOSTS`. No DB or S3.
 - **Cron `cron_capacity_sweep.py`**: `OPS_KEY`, `DATABASE_URL`, `INGEST_STALE_S=1800`, `TRIM_STALE_S=1800`.
 - **Cron `cron_monthly_refill.py`**: `BILLING_OPS_KEY` or `OPS_KEY`.

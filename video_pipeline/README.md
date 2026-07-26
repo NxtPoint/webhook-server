@@ -24,7 +24,9 @@
 | `video_trim_api.py` | **Main API side.** `trigger_video_trim(task_id)` — loads silver, builds EDL via `build_video_timeline`, POSTs to worker, sets `trim_status='queued'`. |
 | `build_video_timeline.py` | Pure-Python EDL builder. Reads silver, pads point boundaries, merges overlaps, drops too-short segments. No I/O. |
 | `video_worker_app.py` | **Worker side (separate Render service).** Flask app. `POST /trim` validates auth + body, spawns detached subprocess, returns 202. |
-| `ffmpeg_trim_worker.py` | Subprocess body. Downloads source from S3 → ffprobe → re-encodes per segment → concat → uploads `trimmed/{task_id}/review.mp4` → POSTs callback. |
+| `ffmpeg_trim_worker.py` | Subprocess body. Streams (or downloads, if small) the S3 source → ffprobe → encodes with **one `-ss/-t` seek input per kept segment** + `concat` → uploads `trimmed/{task_id}/review.mp4` → POSTs callback. Runtime scales with the *highlight* length, not the match length — see the header comment for the two designs this replaced. |
+| `tests/test_trim_cmd.py` | Arg/segment math checks, no ffmpeg needed: `python -m video_pipeline.tests.test_trim_cmd`. |
+| `tests/e2e_trim_docker.py` | Real-ffmpeg end-to-end over a synthetic clip, run in Docker (the dev box has no ffmpeg). Covers seek accuracy + the multi-pass concat join. |
 | `video_worker_wsgi.py` | Gunicorn entry for the worker service. |
 
 ## Entry points
@@ -71,10 +73,15 @@ POST /trim
 
    subprocess (run_ffmpeg_trim):
         │
-        ├─ aws s3 cp s3://{bucket}/{key} /tmp/source.mp4
-        ├─ ffprobe duration
-        ├─ for each segment: ffmpeg -ss .. -to .. -c:v libx264 -crf 28 ... clip{n}.mp4
-        ├─ ffmpeg -f concat -i list.txt -c copy review.mp4
+        ├─ source: presigned-URL stream, or download once if < TRIM_LOCAL_COPY_MAX_MB
+        ├─ ffprobe duration / has_audio / fps  (metadata only — works on the URL)
+        ├─ normalise + clamp EDL segments
+        ├─ per pass (<= TRIM_SEEK_INPUTS_PER_PASS segments):
+        │     ffmpeg  -ss s1 -t d1 -i SRC  -ss s2 -t d2 -i SRC  ...
+        │             -filter_complex "[0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1"
+        │     → ONE seek input per kept segment: ffmpeg seeks (HTTP range) instead
+        │       of decoding forward, so only the kept ~30% is ever decoded
+        ├─ if >1 pass: ffmpeg -f concat -i parts.txt -c copy review.mp4  (no re-encode)
         ├─ aws s3 cp review.mp4 s3://{bucket}/trimmed/{task_id}/review.mp4
         │
         └─ POST {callback_url} headers={callback_headers}

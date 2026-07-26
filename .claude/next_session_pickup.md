@@ -71,11 +71,33 @@ neutral-or-better → `bench` (serve) green → ship with env rollback. **devenv
 
 ## Parked (unchanged from the am session)
 
-- **df594aea video TRIM** stuck at `trim_status='accepted'` (no customers, test
-  match). Pull the real video-worker Logs for `FFMPEG TRIM task_id=df594aea`;
-  re-fire `POST /ops/retrim {"task_id":"df594aea-…"}`. Low priority.
-- **`video-worker.onrender.com` is a FOREIGN app** — fix the committed `render.yaml`
-  `VIDEO_WORKER_BASE_URL`; don't external-health-check that URL.
+- **df594aea video TRIM — REWRITTEN, awaiting prod validation.** (`trim_status` is
+  `failed`, not `accepted` — the am note drifted; the error is
+  `Command timed out after 3600s`.) `run_ffmpeg_trim` now uses **one `-ss/-t` seek
+  input per kept segment + `concat`**, so ffmpeg decodes only the ~30% kept
+  instead of the whole source — measured **3.4× less decode work** (= the
+  theoretical ceiling at a 30% keep ratio) on a real ffmpeg in Docker.
+  Two constraints found while doing it, both now designed around: the source is
+  **8.0 GB** (so download-once CANNOT be the default — it doesn't fit the 2 GB
+  `/tmp`) and the worker is a **512 MB starter** instance (so ~86 simultaneous
+  seek inputs risk OOM → passes of `TRIM_SEEK_INPUTS_PER_PASS`=12 joined with the
+  concat demuxer, `-c copy`). Measured shape: **86 segments, 23.8 min kept of
+  73.9 min (32%)**.
+  **TO DO — validate in prod** once the worker redeploys: re-fire
+  `POST /ops/retrim {"task_id":"df594aea-78ef-47b1-8c10-60174a58d8b0"}` (header
+  `X-Ops-Key`, main-API Render shell). Success = accepted→completed,
+  `trim_output_s3_key=trimmed/df594aea-…/review.mp4`, `trim_duration_s` ≈ 1425 s,
+  in **minutes not an hour**. Watch video-worker Logs for `pass N/8 done …`.
+  If it still times out, the residual cost is *encode* on 0.5 CPU, not decode →
+  lower `VIDEO_PRESET` / resolution; do NOT raise the timeout.
+  Checks: `python -m video_pipeline.tests.test_trim_cmd` +
+  `video_pipeline/tests/e2e_trim_docker.py` (real ffmpeg in Docker).
+- **`video-worker.onrender.com` is a FOREIGN app** — still true, never
+  external-health-check it (use the service's Render Logs). **Fixed:**
+  `VIDEO_WORKER_BASE_URL` is now `sync: false` in `render.yaml` (main API +
+  ingest worker) instead of carrying the squatted value, so a blueprint sync
+  can't clobber the working dashboard URL. Tomo: confirm both services still
+  hold the real URL after the next sync.
 - **quality_tier calibration:** both c8b77210 (good) and df594aea (bad) read
   `medium` — thresholds don't discriminate; df594aea should read `low`.
 

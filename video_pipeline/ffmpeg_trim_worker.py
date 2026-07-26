@@ -5,17 +5,40 @@
 # spawned by video_worker_app.py after it returns 202 to the caller.
 #
 # Flow:
-#   1. Download source video from S3 (wix-uploads/ prefix) to a temp file.
-#   2. Probe video duration with ffprobe to validate EDL segment bounds.
+#   1. Resolve the source: stream it from S3 (presigned URL) or, when it is
+#      small enough to fit /tmp comfortably, download it once.
+#   2. Probe duration / audio / fps (works on a URL — metadata only).
 #   3. Normalise EDL segments (clamp to [0, duration], discard empties).
-#   4. Re-encode each keep segment with configurable CRF/preset (H.264).
-#   5. Concatenate all clip files into a single review.mp4 via FFmpeg concat.
+#   4. Encode the keep segments using ONE SEEK INPUT PER SEGMENT
+#      (`-ss <start> -t <dur> -i <src>`) + the concat filter, so ffmpeg
+#      decodes only the footage we keep — not the whole source.
+#   5. Above TRIM_SEEK_INPUTS_PER_PASS segments this runs as several passes
+#      producing part files, then joins them with the concat demuxer (-c copy).
 #   6. Upload the final file to S3 as trimmed/{task_id}/review.mp4.
-#   7. POST a completion callback to VIDEO_TRIM_CALLBACK_URL with
-#      { task_id, status: "completed"|"failed", output_s3_key }.
+#   7. The caller (video_worker_app) POSTs the completion callback.
 #
-# Main entry: run_ffmpeg_trim(task_id, s3_key, edl, callback_url)
-# Called from video_worker_app.py subprocess launch.
+# Main entry: run_ffmpeg_trim(task_id, s3_bucket, s3_key, edl)
+#
+# ---------------- WHY SEEK INPUTS (2026-07-26, second iteration) ------------
+# Iteration 1 fixed a /tmp blowout: the original worker downloaded the whole
+# source + wrote N per-segment re-encodes + the output into Render's 2 GB /tmp,
+# so long matches got the instance SIGKILLed. That was replaced by streaming the
+# source and running ONE `trim`-filter graph over a single input.
+#
+# That fix exposed a worse bottleneck: a single-input `trim` graph must DECODE
+# THE ENTIRE SOURCE to reach the later segments. On df594aea (74 min, 8.0 GB)
+# that blew past TRIM_ENCODE_TIMEOUT_S=3600 and failed outright.
+#
+# Now each kept segment is its own INPUT with `-ss` before `-i`, which seeks
+# (HTTP range request when streaming) instead of decoding forward. Only the
+# ~30% of footage actually kept is decoded. `-ss` as an *input* option is
+# keyframe-based but ffmpeg's default accurate_seek then decodes forward from
+# that keyframe to the exact timestamp, so cuts stay frame-accurate while the
+# skipped footage is never touched.
+#
+# Measured shape of the failing match: 86 segments, 23.8 min kept of 73.9 min
+# (32%), source 8.0 GB. 8.0 GB is why "download once, seek locally" is NOT the
+# default — it cannot fit a 2 GB /tmp (see _resolve_source).
 # ============================================================
 
 from __future__ import annotations
@@ -26,8 +49,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import boto3
 from botocore.config import Config
@@ -49,18 +74,30 @@ MIN_KEEP_SEGMENT_S = float(os.getenv("MIN_KEEP_SEGMENT_S", "0.25"))
 OUTPUT_KEY_TEMPLATE = "trimmed/{task_id}/review.mp4"
 
 # Safety ceilings
-FFMPEG_TIMEOUT_S = int(os.getenv("FFMPEG_TIMEOUT_S", "1800"))        # legacy per-segment ceiling
+FFMPEG_TIMEOUT_S = int(os.getenv("FFMPEG_TIMEOUT_S", "1800"))        # legacy per-command ceiling
 FFPROBE_TIMEOUT_S = int(os.getenv("FFPROBE_TIMEOUT_S", "60"))        # 1 min probe
 MIN_DISK_FREE_MB = int(os.getenv("TRIM_MIN_DISK_FREE_MB", "500"))    # 500 MB minimum
 
-# Streaming single-pass trim (2026-07-26). The old path downloaded the full
-# source + wrote N per-segment files + the output all to /tmp, which blew past
-# Render's 2 GB /tmp limit on long matches → instance killed → orphaned trim.
-# Now: stream the source straight from S3 (presigned URL, nothing downloaded)
-# and do ONE trim+concat filtergraph pass → only the final clip touches /tmp.
+# Source strategy. TRIM_STREAM_INPUT=1 (default) allows streaming from S3;
+# set it to 0 to force the download-once path (rollback / local-seek behaviour).
 TRIM_STREAM_INPUT = os.getenv("TRIM_STREAM_INPUT", "1").strip().lower() in ("1", "true", "yes", "y")
-TRIM_ENCODE_TIMEOUT_S = int(os.getenv("TRIM_ENCODE_TIMEOUT_S", "3600"))   # whole single-pass encode
+
+# Whole-trim wall-clock budget: every ffmpeg pass shares this deadline, so N
+# passes can never add up to more than one budget.
+TRIM_ENCODE_TIMEOUT_S = int(os.getenv("TRIM_ENCODE_TIMEOUT_S", "3600"))
 TRIM_PRESIGN_EXPIRY_S = int(os.getenv("TRIM_PRESIGN_EXPIRY_S", "21600"))  # 6h — covers a long encode
+
+# Seek inputs per ffmpeg invocation. Each open input costs a socket + a demuxer
+# index, and the worker runs on a 512 MB Render starter instance, so a 100-input
+# single pass is a real OOM risk. Chunking bounds concurrent inputs without
+# costing extra HTTP header reads (the moov is read once per input either way).
+# 0 = no chunking (all segments in one pass) — escape hatch, no redeploy needed.
+TRIM_SEEK_INPUTS_PER_PASS = int(os.getenv("TRIM_SEEK_INPUTS_PER_PASS", "12"))
+
+# Only download-and-seek-locally when the source is at most this big. Local
+# seeks are quicker and avoid N HTTP connections, but /tmp is 2 GB total and
+# must also hold the output.
+TRIM_LOCAL_COPY_MAX_MB = int(os.getenv("TRIM_LOCAL_COPY_MAX_MB", "1500"))
 
 s3 = boto3.client("s3")
 
@@ -86,18 +123,31 @@ def _run(cmd: List[str], *, timeout: int | None = None) -> str:
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"Command timed out after {effective_timeout}s\n"
-            f"cmd={' '.join(cmd)}"
+            f"cmd={_redact(cmd)}"
         )
 
     if p.returncode != 0:
         raise RuntimeError(
             "Command failed\n"
             f"returncode={p.returncode}\n"
-            f"cmd={' '.join(cmd)}\n"
+            f"cmd={_redact(cmd)}\n"
             f"stdout={p.stdout}\n"
-            f"stderr={p.stderr}"
+            f"stderr={p.stderr[-4000:]}"
         )
     return p.stdout.strip()
+
+
+def _redact(cmd: Sequence[str]) -> str:
+    """Collapse presigned URLs (long, credential-bearing, and repeated once per
+    seek input) so a failure message stays readable and keeps the signature out
+    of logs / trim_error."""
+    parts: List[str] = []
+    for a in cmd:
+        if a.startswith("http") and ("X-Amz-Signature" in a or "Signature=" in a):
+            parts.append("<presigned-url>")
+        else:
+            parts.append(a)
+    return " ".join(parts)
 
 
 def _probe_duration(path: Path) -> float:
@@ -172,6 +222,19 @@ def _sum_segment_durations(valid_segments: List[Tuple[float, float]]) -> float:
     return round(sum((e - s) for s, e in valid_segments), 3)
 
 
+def _chunk(items: Sequence[Any], size: int) -> Iterator[List[Any]]:
+    """Split into consecutive chunks. size <= 0 means one chunk of everything."""
+    if size <= 0 or size >= len(items):
+        yield list(items)
+        return
+    for i in range(0, len(items), size):
+        yield list(items[i:i + size])
+
+
+# ============================================================
+# S3 helpers
+# ============================================================
+
 _bucket_region_cache: Dict[str, str] = {}
 
 
@@ -224,11 +287,52 @@ def _presigned_get_url(bucket: str, key: str, expires: int) -> str:
     )
 
 
-def _probe_source(src: str) -> Tuple[float, bool]:
-    """Probe a source (local path OR http(s) URL) for (duration_s, has_audio).
+def _source_size_mb(bucket: str, key: str) -> Optional[float]:
+    """Source size in MB, or None if it can't be read (never fatal — an unknown
+    size simply means we stream rather than risk filling /tmp)."""
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+        return float(head["ContentLength"]) / (1024 * 1024)
+    except Exception as e:
+        log.warning("TRIM head_object failed for s3://%s/%s: %s", bucket, key, e)
+        return None
 
-    Works on a streamed presigned URL — ffprobe reads only the metadata via
-    range requests, so no full download is needed to clamp segments."""
+
+# ============================================================
+# Probing
+# ============================================================
+
+@dataclass(frozen=True)
+class _SourceInfo:
+    duration_s: float
+    has_audio: bool
+    fps: Optional[float]
+
+
+def _parse_fps(raw: str) -> Optional[float]:
+    """ffprobe reports frame rates as a rational ('30000/1001')."""
+    raw = (raw or "").strip().splitlines()[0].strip() if raw.strip() else ""
+    if not raw or raw in ("0/0", "N/A"):
+        return None
+    try:
+        if "/" in raw:
+            num, den = raw.split("/", 1)
+            den_f = float(den)
+            if den_f == 0:
+                return None
+            fps = float(num) / den_f
+        else:
+            fps = float(raw)
+    except Exception:
+        return None
+    return fps if 1.0 <= fps <= 240.0 else None
+
+
+def _probe_source(src: str) -> _SourceInfo:
+    """Probe a source (local path OR http(s) URL) for duration / audio / fps.
+
+    Works on a streamed presigned URL — ffprobe reads only the container
+    metadata via range requests, so no full download is needed."""
     dur_out = _run([
         FFPROBE_BIN, "-v", "error",
         "-show_entries", "format=duration",
@@ -249,33 +353,158 @@ def _probe_source(src: str) -> Tuple[float, bool]:
         "-of", "csv=p=0",
         src,
     ], timeout=FFPROBE_TIMEOUT_S)
-    return duration, bool(a_out.strip())
+
+    fps_out = ""
+    try:
+        fps_out = _run([
+            FFPROBE_BIN, "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            src,
+        ], timeout=FFPROBE_TIMEOUT_S)
+    except Exception as e:
+        # fps is an optimisation for multi-pass uniformity, never load-bearing
+        log.warning("TRIM fps probe failed (continuing without): %s", e)
+
+    return _SourceInfo(
+        duration_s=duration,
+        has_audio=bool(a_out.strip()),
+        fps=_parse_fps(fps_out),
+    )
 
 
-def _build_filter_script(valid_segments: List[Tuple[float, float]], has_audio: bool) -> str:
-    """Single-pass trim+concat filtergraph.
+# ============================================================
+# Command construction
+# (checked by video_pipeline/tests/test_trim_cmd.py — pure arg math, no ffmpeg;
+#  end-to-end against a real ffmpeg: video_pipeline/tests/e2e_trim_docker.py)
+# ============================================================
 
-    Explicit split/asplit so the ONE input stream can feed every segment (no
-    reliance on ffmpeg auto-split), keeping the whole trim to a single
-    decode+encode pass — no per-segment temp files, so /tmp only ever holds the
-    final clip. Written to a script file (-filter_complex_script) so a 100+
-    segment graph never hits a command-line length limit."""
-    n = len(valid_segments)
-    lines: List[str] = []
-    lines.append("[0:v]split=%d%s" % (n, "".join(f"[vs{i}]" for i in range(n))))
-    if has_audio:
-        lines.append("[0:a]asplit=%d%s" % (n, "".join(f"[as{i}]" for i in range(n))))
-    concat_in: List[str] = []
-    for i, (s, e) in enumerate(valid_segments):
-        lines.append(f"[vs{i}]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS[v{i}]")
-        concat_in.append(f"[v{i}]")
-        if has_audio:
-            lines.append(f"[as{i}]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{i}]")
-            concat_in.append(f"[a{i}]")
+def _build_concat_filter(n: int, has_audio: bool) -> str:
+    """Concat filter over N seek inputs.
+
+    Each input is ALREADY cut to its segment by `-ss`/`-t`, so there is no
+    trim/setpts here and nothing has to be split off one decoded stream — that
+    is exactly what let the old single-input graph decode the whole source."""
+    if n < 1:
+        raise ValueError("concat filter needs at least one input")
+    labels = "".join(f"[{i}:v][{i}:a]" if has_audio else f"[{i}:v]" for i in range(n))
     tail = "concat=n=%d:v=1:a=%d%s" % (n, 1 if has_audio else 0,
-                                        "[outv][outa]" if has_audio else "[outv]")
-    lines.append("".join(concat_in) + tail)
-    return ";\n".join(lines)
+                                       "[outv][outa]" if has_audio else "[outv]")
+    return labels + tail
+
+
+def _build_pass_cmd(
+    *,
+    src: str,
+    segments: Sequence[Tuple[float, float]],
+    has_audio: bool,
+    filter_script: Path,
+    out_path: Path,
+    stream_input: bool,
+    force_fps: Optional[float],
+) -> List[str]:
+    """One ffmpeg invocation: N seek inputs → concat → one encoded file.
+
+    `-ss` BEFORE `-i` is the whole point: it seeks (HTTP range request when
+    streaming) rather than decoding forward from 0. `-t <duration>` is used
+    instead of `-to` because, as an input option, `-t` is unambiguously
+    relative to the seek point."""
+    cmd = [FFMPEG_BIN, "-y", "-hide_banner", "-nostdin"]
+
+    for start_s, end_s in segments:
+        dur = round(end_s - start_s, 3)
+        if dur <= 0:
+            raise ValueError(f"non-positive segment duration: {start_s}..{end_s}")
+        if stream_input:
+            # Survive transient network hiccups on each HTTP input.
+            cmd += ["-reconnect", "1", "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "10"]
+        cmd += ["-ss", f"{start_s:.3f}", "-t", f"{dur:.3f}", "-i", src]
+
+    cmd += ["-filter_complex_script", str(filter_script), "-map", "[outv]"]
+    if has_audio:
+        cmd += ["-map", "[outa]"]
+
+    cmd += ["-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+            "-pix_fmt", "yuv420p"]
+    if force_fps:
+        # Multi-pass only: the parts are joined with `-c copy`, so every part
+        # must share a frame rate or the join drifts (phone .mov sources are
+        # often variable-frame-rate).
+        # -fps_mode (not the deprecated -vsync): available since ffmpeg 5.0 and
+        # still current in 7.x, so it survives a base-image bump.
+        cmd += ["-r", f"{force_fps:.6f}", "-fps_mode", "cfr"]
+    if has_audio:
+        cmd += ["-c:a", "aac", "-b:a", AUDIO_BITRATE]
+        if force_fps:
+            cmd += ["-ar", "48000", "-ac", "2"]
+
+    cmd += ["-movflags", "+faststart", str(out_path)]
+    return cmd
+
+
+def _build_concat_demuxer_cmd(list_file: Path, out_path: Path) -> List[str]:
+    """Join already-encoded parts without re-encoding."""
+    return [
+        FFMPEG_BIN, "-y", "-hide_banner", "-nostdin",
+        "-f", "concat", "-safe", "0", "-i", str(list_file),
+        "-c", "copy", "-movflags", "+faststart", str(out_path),
+    ]
+
+
+def _write_concat_list(parts: Sequence[Path], list_file: Path) -> None:
+    list_file.write_text(
+        "".join(f"file '{p.name}'\n" for p in parts),
+        encoding="utf-8",
+    )
+
+
+# ============================================================
+# Source resolution
+# ============================================================
+
+def _resolve_source(
+    *, task_id: str, s3_bucket: str, s3_key: str, workdir: Path, free_mb: float,
+) -> Tuple[str, bool]:
+    """Decide how ffmpeg reads the source. Returns (src, stream_input).
+
+    Downloading once and seeking locally is the faster, more predictable option
+    — no N HTTP connections, no per-input container-header re-read — but /tmp is
+    2 GB and must also hold the output, so it is only safe for a small source.
+    The match that motivated this rewrite is 8.0 GB, so streaming is the
+    default for anything sizeable.
+    """
+    if not TRIM_STREAM_INPUT:
+        log.info("FFMPEG TRIM task_id=%s TRIM_STREAM_INPUT=0 → forced download", task_id)
+        local = workdir / "source_input"
+        s3.download_file(s3_bucket, s3_key, str(local))
+        return str(local), False
+
+    size_mb = _source_size_mb(s3_bucket, s3_key)
+    # Keep MIN_DISK_FREE_MB headroom, and leave room for the output too.
+    room_mb = free_mb - MIN_DISK_FREE_MB
+    fits_locally = (
+        size_mb is not None
+        and size_mb <= TRIM_LOCAL_COPY_MAX_MB
+        and (size_mb * 2.0) < room_mb   # source + generous output allowance
+    )
+
+    if fits_locally:
+        log.info(
+            "FFMPEG TRIM task_id=%s source %.0fMB fits /tmp (free %.0fMB) → download once, local seeks",
+            task_id, size_mb, free_mb,
+        )
+        local = workdir / "source_input"
+        s3.download_file(s3_bucket, s3_key, str(local))
+        return str(local), False
+
+    log.info(
+        "FFMPEG TRIM task_id=%s streaming source from s3://%s/%s (size=%s free=%.0fMB)",
+        task_id, s3_bucket, s3_key,
+        f"{size_mb:.0f}MB" if size_mb is not None else "unknown", free_mb,
+    )
+    return _presigned_get_url(s3_bucket, s3_key, TRIM_PRESIGN_EXPIRY_S), True
 
 
 # ============================================================
@@ -284,7 +513,10 @@ def _build_filter_script(valid_segments: List[Tuple[float, float]], has_audio: b
 
 def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> dict:
     """
-    Download source from S3, trim keep segments, concatenate, upload output to S3.
+    Trim the keep segments out of an S3 source and upload one review.mp4.
+
+    Decodes ONLY the kept footage (one seek input per segment), so runtime scales
+    with the highlight length rather than the match length.
 
     Returns:
       {
@@ -313,73 +545,118 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
     if not isinstance(segments, list) or not segments:
         raise ValueError("EDL has no segments")
 
+    started = time.monotonic()
+    deadline = started + TRIM_ENCODE_TIMEOUT_S
+
+    def _remaining(minimum: int = 60) -> int:
+        """Per-command timeout drawn from the ONE whole-trim budget, so N passes
+        can never sum past TRIM_ENCODE_TIMEOUT_S."""
+        return max(minimum, int(deadline - time.monotonic()))
+
     with tempfile.TemporaryDirectory(prefix=f"trim_{task_id[:8]}_") as td_raw:
         td = Path(td_raw)
         out = td / "review.mp4"
-        filter_script = td / "filter.txt"
-        downloaded_src = td / "source_input"
 
         # --------------------------
-        # Disk guard — when streaming, only the OUTPUT lands in /tmp, so this is
-        # easily satisfied; it still catches a genuinely full volume.
+        # Disk guard
         # --------------------------
-        free_mb = shutil.disk_usage(td).free // (1024 * 1024)
+        free_mb = shutil.disk_usage(td).free / (1024 * 1024)
         if free_mb < MIN_DISK_FREE_MB:
             raise RuntimeError(
-                f"Insufficient disk space: {free_mb}MB free, need at least {MIN_DISK_FREE_MB}MB"
+                f"Insufficient disk space: {free_mb:.0f}MB free, need at least {MIN_DISK_FREE_MB}MB"
             )
 
         # --------------------------
-        # Source: stream from S3 (default — nothing downloaded, /tmp-safe) or,
-        # with TRIM_STREAM_INPUT=0, fall back to a full download.
+        # Source + probe
         # --------------------------
-        input_prefix_args: List[str] = []
-        if TRIM_STREAM_INPUT:
-            src = _presigned_get_url(s3_bucket, s3_key, TRIM_PRESIGN_EXPIRY_S)
-            # Survive transient network hiccups mid-encode on the HTTP input.
-            input_prefix_args = ["-reconnect", "1", "-reconnect_streamed", "1",
-                                 "-reconnect_delay_max", "10"]
-            log.info("FFMPEG TRIM task_id=%s streaming source from s3://%s/%s", task_id, s3_bucket, s3_key)
-        else:
-            log.info("FFMPEG TRIM task_id=%s downloading source s3://%s/%s", task_id, s3_bucket, s3_key)
-            s3.download_file(s3_bucket, s3_key, str(downloaded_src))
-            src = str(downloaded_src)
+        src, stream_input = _resolve_source(
+            task_id=task_id, s3_bucket=s3_bucket, s3_key=s3_key,
+            workdir=td, free_mb=free_mb,
+        )
 
-        source_duration_s, has_audio = _probe_source(src)
-        log.info("FFMPEG TRIM task_id=%s source_duration=%.3fs has_audio=%s",
-                 task_id, source_duration_s, has_audio)
+        info = _probe_source(src)
+        log.info(
+            "FFMPEG TRIM task_id=%s source_duration=%.3fs has_audio=%s fps=%s streaming=%s",
+            task_id, info.duration_s, info.has_audio,
+            f"{info.fps:.3f}" if info.fps else "unknown", stream_input,
+        )
 
         # --------------------------
         # Normalize segments
         # --------------------------
-        valid_segments = _normalize_segments(segments, source_duration_s)
+        valid_segments = _normalize_segments(segments, info.duration_s)
         if not valid_segments:
             raise ValueError("No valid segments remain after normalization/clamping")
 
-        total_keep = sum(e - s for s, e in valid_segments)
+        total_keep = _sum_segment_durations(valid_segments)
+        batches = list(_chunk(valid_segments, TRIM_SEEK_INPUTS_PER_PASS))
+        multipass = len(batches) > 1
+
         log.info(
-            "FFMPEG TRIM task_id=%s segments=%d total_keep=%.3fs removing=%.3fs (single-pass)",
-            task_id, len(valid_segments), total_keep, source_duration_s - total_keep,
+            "FFMPEG TRIM task_id=%s segments=%d total_keep=%.1fs (%.1f%% of source) "
+            "removing=%.1fs passes=%d inputs_per_pass=%d",
+            task_id, len(valid_segments), total_keep,
+            100.0 * total_keep / info.duration_s,
+            info.duration_s - total_keep, len(batches),
+            TRIM_SEEK_INPUTS_PER_PASS if multipass else len(valid_segments),
         )
 
-        # --------------------------
-        # ONE trim+concat pass. Reads the source once (streamed), writes only the
-        # final clip — no per-segment temp files, so /tmp stays tiny and it beats
-        # the 2 GB limit that killed long-match trims.
-        # --------------------------
-        filter_script.write_text(_build_filter_script(valid_segments, has_audio), encoding="utf-8")
+        # Force CFR only when the parts will be joined with `-c copy`; a single
+        # pass needs no cross-part uniformity, so leave its behaviour untouched.
+        force_fps = info.fps if multipass else None
+        if multipass and not force_fps:
+            log.warning(
+                "FFMPEG TRIM task_id=%s multi-pass with UNKNOWN source fps — parts "
+                "cannot be frame-rate normalised, so a variable-frame-rate source "
+                "may drift across the concat join", task_id,
+            )
 
-        cmd = [FFMPEG_BIN, "-y", *input_prefix_args, "-i", src,
-               "-filter_complex_script", str(filter_script),
-               "-map", "[outv]"]
-        if has_audio:
-            cmd += ["-map", "[outa]"]
-        cmd += ["-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF, "-pix_fmt", "yuv420p"]
-        if has_audio:
-            cmd += ["-c:a", "aac", "-b:a", AUDIO_BITRATE]
-        cmd += ["-movflags", "+faststart", str(out)]
+        # --------------------------
+        # Encode: N seek inputs per pass → concat
+        # --------------------------
+        parts: List[Path] = []
+        for i, batch in enumerate(batches):
+            target = out if not multipass else (td / f"part_{i:04d}.mp4")
+            fscript = td / f"filter_{i:04d}.txt"
+            fscript.write_text(
+                _build_concat_filter(len(batch), info.has_audio), encoding="utf-8"
+            )
 
-        _run(cmd, timeout=TRIM_ENCODE_TIMEOUT_S)
+            cmd = _build_pass_cmd(
+                src=src, segments=batch, has_audio=info.has_audio,
+                filter_script=fscript, out_path=target,
+                stream_input=stream_input, force_fps=force_fps,
+            )
+
+            t0 = time.monotonic()
+            _run(cmd, timeout=_remaining())
+            if not target.exists() or target.stat().st_size == 0:
+                raise RuntimeError(f"pass {i + 1}/{len(batches)} produced no output")
+
+            batch_keep = _sum_segment_durations(batch)
+            log.info(
+                "FFMPEG TRIM task_id=%s pass %d/%d done segments=%d keep=%.1fs in %.1fs "
+                "(%.0fMB free, %ds budget left)",
+                task_id, i + 1, len(batches), len(batch), batch_keep,
+                time.monotonic() - t0,
+                shutil.disk_usage(td).free / (1024 * 1024),
+                _remaining(0),
+            )
+            parts.append(target)
+
+        # --------------------------
+        # Join parts (stream copy — no second encode)
+        # --------------------------
+        if multipass:
+            list_file = td / "parts.txt"
+            _write_concat_list(parts, list_file)
+            _run(_build_concat_demuxer_cmd(list_file, out), timeout=_remaining())
+            # Reclaim /tmp before the upload.
+            for p in parts:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
 
         if not out.exists():
             raise RuntimeError("Final trimmed output was not created")
@@ -389,7 +666,11 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
             raise RuntimeError("Trimmed output duration is invalid")
 
         out_key = OUTPUT_KEY_TEMPLATE.format(task_id=task_id)
-        log.info("FFMPEG TRIM task_id=%s uploading to s3://%s/%s (%.3fs)", task_id, s3_bucket, out_key, trimmed_duration_s)
+        out_mb = out.stat().st_size / (1024 * 1024)
+        log.info(
+            "FFMPEG TRIM task_id=%s uploading to s3://%s/%s (%.1fs, %.0fMB)",
+            task_id, s3_bucket, out_key, trimmed_duration_s, out_mb,
+        )
 
         s3.upload_file(
             str(out),
@@ -400,18 +681,20 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
             },
         )
 
-        seconds_removed = max(0.0, round(source_duration_s - trimmed_duration_s, 3))
+        seconds_removed = max(0.0, round(info.duration_s - trimmed_duration_s, 3))
 
         log.info(
-            "FFMPEG TRIM DONE task_id=%s source=%.1fs trimmed=%.1fs removed=%.1fs segments=%d",
-            task_id, source_duration_s, trimmed_duration_s, seconds_removed, len(valid_segments),
+            "FFMPEG TRIM DONE task_id=%s source=%.1fs trimmed=%.1fs removed=%.1fs "
+            "segments=%d passes=%d elapsed=%.1fs",
+            task_id, info.duration_s, trimmed_duration_s, seconds_removed,
+            len(valid_segments), len(batches), time.monotonic() - started,
         )
 
         return {
             "task_id": str(task_id),
             "status": "completed",
             "output_s3_key": out_key,
-            "source_duration_s": round(source_duration_s, 3),
+            "source_duration_s": round(info.duration_s, 3),
             "trimmed_duration_s": round(trimmed_duration_s, 3),
             "segment_count": int(len(valid_segments)),
             "seconds_removed": seconds_removed,
