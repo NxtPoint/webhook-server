@@ -812,7 +812,7 @@ async function selectMatch(idx) {
   performanceSelectedPlayer = null;
 
   // Reset heatmap filters to defaults for new match
-  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all' };
+  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all', faults: 'off' };
   heatmapPlayer = 'player_a';
 
   // Show loading state
@@ -2125,7 +2125,7 @@ async function callCoachAnalyze(body) {
 
 // Heatmap filter state persists across tabs (cross-filter)
 // Defaults reset only when a new match is selected
-let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all' };
+let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all', faults: 'off' };
 let heatmapPlayer = 'player_a';
 let heatmapInfoOpen = false;  // side info panel collapsed by default
 let performanceData = null;
@@ -2228,7 +2228,10 @@ function renderHeatmapContent() {
   if (activeTab === 'serve-placement') {
     tabTogglesHTML = toggleGroup('Serve', 'hf-serve', [
       {val:'all',label:'All'},{val:'1st',label:'1st'},{val:'2nd',label:'2nd'}
-    ], heatmapFilter.serve, 'setHeatmapFilterServe');
+    ], heatmapFilter.serve, 'setHeatmapFilterServe')
+    + toggleGroup('Faults', 'hf-faults', [
+      {val:'off',label:'Hide'},{val:'on',label:'Show'}
+    ], heatmapFilter.faults, 'setHeatmapFilterFaults');
   } else if (activeTab === 'player-return-pos' || activeTab === 'return-ball-pos') {
     tabTogglesHTML = toggleGroup('Stroke', 'hf-stroke', [
       {val:'all',label:'All'},{val:'Forehand',label:'Forehand'},{val:'Backhand',label:'Backhand'}
@@ -2252,9 +2255,11 @@ function renderHeatmapContent() {
   const infoContent = {
     'serve-placement': `
       <h4>Serve Placement</h4>
-      <p>Each dot is a serve, plotted at the bounce location on the opponent's service box.</p>
+      <p>Each dot is a serve that landed in, plotted at its bounce location in the opponent's service box.</p>
       <p><span class="info-dot" style="background:rgba(26,92,46,0.9)"></span>Green = the point was won.
-         <span class="info-dot" style="background:rgba(220,38,38,0.85)"></span>Red = the point was lost.</p>
+         <span class="info-dot" style="background:rgba(220,38,38,0.85)"></span>Red = the point was lost.
+         <span class="info-dot" style="background:rgba(140,140,140,0.7)"></span>Grey = a fault (only shown with <strong>Faults: Show</strong>).</p>
+      <p>Faults are hidden by default — a faulted serve landed out, so it isn't a placement. Use <strong>Faults</strong> to reveal them (grey).</p>
       <p>Use the <strong>1st / 2nd</strong> filter to compare your first vs second serve patterns.</p>
       <p>The Ad / Deuce table below splits serves by service court and direction (Wide / Body / T) with win % per cell.</p>
     `,
@@ -2326,6 +2331,7 @@ function renderHeatmapContent() {
 
 // Onclick wrappers for filter buttons
 function setHeatmapFilterServe(val)   { setHeatmapFilter('serve', val); }
+function setHeatmapFilterFaults(val)  { setHeatmapFilter('faults', val); }
 function setHeatmapFilterStroke(val)  { setHeatmapFilter('stroke', val); }
 function setHeatmapFilterOutcome(val) { setHeatmapFilter('outcome', val); }
 function setHeatmapFilterSet(val)     { setHeatmapFilter('setNum', val); }
@@ -2371,6 +2377,13 @@ function getHeatmapShots(playerRole) {
   // Apply tab-specific filters
   if (activeTab === 'serve-placement') {
     shots = shots.filter(p => p.serve_d === true);
+    // Faults (a serve that didn't start a rally -> shot_ix_in_point NULL) are
+    // hidden by default: a fault landed OUT, so its "placement" is misleading and
+    // it double-represents a point (1st-serve fault + 2nd-serve-in = 2 dots).
+    // The 'Faults' toggle shows them (rendered grey, not by point win/loss).
+    if (heatmapFilter.faults !== 'on') {
+      shots = shots.filter(p => p.shot_ix_in_point != null);
+    }
     if (heatmapFilter.serve && heatmapFilter.serve !== 'all') {
       shots = shots.filter(p => p.serve_try_ix_in_point === heatmapFilter.serve);
     }
@@ -2795,7 +2808,14 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     }
 
     let colour;
-    if (s.point_winner_player_id === ownerId) {
+    // A serve fault (shown only via the Faults toggle) is drawn GREY regardless
+    // of who won the point — the serve landed OUT, so colouring it by point
+    // win/loss would mislead (a fault whose point was later won would read green).
+    const isFault = (s.serve_d === true && s.shot_ix_in_point == null);
+    if (isFault) {
+      colour = 'rgba(140,140,140,0.7)';
+      unknownCount++;
+    } else if (s.point_winner_player_id === ownerId) {
       colour = 'rgba(26,92,46,0.9)';
       wonCount++;
     } else if (s.point_winner_player_id) {
