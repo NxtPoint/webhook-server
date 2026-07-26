@@ -80,7 +80,7 @@ Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing
     - `S3_BUCKET_REGION` — optional override; the presigned URL must be SigV4 in the bucket's real region (`nextpoint-prod-uploads` = `eu-north-1`), otherwise ffmpeg gets a 400. Auto-detected from the `x-amz-bucket-region` header.
   - `VIDEO_WORKER_BASE_URL` (set on the main API + ingest worker, **not** here) is `sync: false` on purpose — the obvious public `video-worker.onrender.com` is a foreign app, so the real URL is dashboard-only.
 - **Locker Room**: `PORT` + the Clerk frontend vars (`AUTH_V2_ENABLED`, `CLERK_PUBLISHABLE_KEY`, `AUTH_AFTER_LOGIN_URL`, `AUTH_API_BASE`, `CLERK_JWT_TEMPLATE` — see the De-Wix auth section above; injected into `/login` + `/auth_client.js`) + optional `MARKETING_HOSTS`. No DB or S3.
-- **Cron `cron_capacity_sweep.py`**: `OPS_KEY`, `DATABASE_URL`, `INGEST_STALE_S=1800`, `TRIM_STALE_S=1800`.
+- **Cron `cron_capacity_sweep.py`**: `OPS_KEY`, `DATABASE_URL`, `INGEST_STALE_S=1800`, `TRIM_STALE_S=7200`. **`TRIM_STALE_S` must stay in step with `upload_app.TRIM_STALE_AFTER_S`** — they are two independent killers of the same rows, and this one marks a trim failed outright with no re-fire. Both must exceed the longest legitimate trim (a 74-min match needs 50+ min to encode); at the old 1800s they declared healthy long trims dead. Neither is pinned in `render.yaml`, so the code defaults apply unless set in the dashboard — **check the dashboard for a stale `1800`**.
 - **Cron `cron_monthly_refill.py`**: `BILLING_OPS_KEY` or `OPS_KEY`.
 - **Lambda `lambda/ml_trigger.py`**: `BATCH_JOB_QUEUE`, `BATCH_JOB_DEF`, `DATABASE_URL`.
 - **ML Pipeline Docker** (`ml_pipeline/__main__.py`): `S3_BUCKET`, `DATABASE_URL`, `AWS_REGION=us-east-1`.
