@@ -1,118 +1,135 @@
-# Next-session pickup — 2026-07-24 — second-match validation (Erin v Jolanda)
+# Next-session pickup — 2026-07-26 — post-incident, pipeline hardened
 
-> **Two parallel threads.** This covers the **SportAI (`tennis_singles`)
+> **Two parallel threads.** This is the **SportAI (`tennis_singles`)
 > business-analytics pipeline**. The **T5 ML pipeline** is parked at "bronze DEV
 > complete, training is the incremental remainder" (`.claude/handover_t5.md`).
 
 ## ⚡ Executive summary (read first)
 
-The **silver-derivation correctness sprint is complete and shipped** — validated
-18/18 point winners against video on `c8b77210` (Tomo v Jimbo Ma). Canonical
-logic doc: **`docs/_investigation/silver_gold_filter_contract.md`** (bronze → 16
-verbatim → derived → spine → gold filters). Audit closeout status lives at the
-top of `docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md` §"CLOSEOUT
-STATUS".
+The last session was a long **incident + hardening** sprint triggered by the
+**Erin v Jolanda** upload (`df594aea`) getting stuck. It is now **fully ingested**
+(bronze + silver + the new analytics tables) and the whole ingest→silver→trim
+path was hardened. **Everything is shipped to `main`.** Bench is green.
 
-**Bench must stay green** (`ea1e500c=12/26, 880dff02=23/24`):
-`.venv/Scripts/python -m ml_pipeline.diag.bench`.
+**The one thing still open on `df594aea`: the video TRIM** (highlight reel) is
+parked at `trim_status='accepted'` — not blocking (the dashboard/analytics are
+done; the trim is polish). See "Parked" below.
 
-## THE JOB FOR TOMORROW — validate on a second, different match
+**THE job for next session = analytics validation of `df594aea` against video**
+(the owner is recording actual values). Baseline numbers are below.
 
-18 points (one match) is thin. Everything is validated on the Tomo-v-Jimbo
-footage only. **`0336b82b` = Erin v Jolanda Gericke — a genuinely different match
-(different players, court, and it is badly tracked).** Run the same validation:
+## THE JOB — validate df594aea against the owner's video
 
-1. Seed into devenv (may already be seeded): `python -m devenv.seed_local --source-url "$RO" --task 0336b82b-15d9-4364-bc1e-c9a2b57b70e1`, then rebuild silver.
-2. **It is the stress case:** 6% `is_in_rally` coverage, 28% ball-speed coverage, and it reported **0 winners in 112 points** before the sprint. Check whether the sprint's fixes (bounce honesty, contiguity, DF flag) hold up or break on bad tracking.
-3. The goal is NOT 18/18 here — it's to find where the logic degrades on poor input, and decide what is a bronze-accuracy ceiling vs a silver bug. Expect the per-match quality-gate question (below) to become concrete.
-4. If a second *clean* match ever gets uploaded, that is the better generality test — `0336b82b` is deliberately the hard one.
+The owner (Tomo) is watching the Erin v Jolanda footage and recording the real
+point winners / outcomes, exactly like the **18/18** validation we did on
+`c8b77210` (Tomo v Jimbo). Then reconcile against silver.
 
-## Dashboard data layer — BUILT + validated (2026-07-23 eve), NOT wired
+**df594aea silver baseline (measured 2026-07-26):**
+| metric | value |
+|---|---|
+| `silver.point_detail` shots | **611** |
+| distinct points | **95** (owner flagged 95 as maybe-low — verify vs video; plausible for a full match) |
+| spine shots (`exclude_d IS NOT TRUE`) | 389 |
+| points with a winner | 95 / 95 |
+| `match_quality` tier | **medium** (ball 0.29 / pose 0.68 / swing 0.76 / final 0.62) |
+| `match_player_summary` rows | 2 · `player_movement_grid` cells | 762 |
 
-`silver_analytics/` (`1b5d2d6`) builds three new grains from bronze SportAI data
-`build_silver_v2` never reads. Validated in devenv on `c8b77210`. **Does not touch
-`point_detail`.** Roadmap: `.claude/plans/twinkly-seeking-bentley.md`.
+Method: same as the filter-contract doc §Verification — vw_point export, compare
+point winners to the video, triage any gap as **bronze-accuracy vs silver-bug**
+(RULE 6 / bronze-first). This is a *badly-tracked* match (ball_conf 0.29), so
+expect it to degrade vs the 18/18 clean match — the goal is to find WHERE it
+degrades and whether it's a bronze ceiling or a silver bug.
 
-- `silver.match_player_summary` — fitness (distance/sprint/activity, all SportAI
-  pre-computed), shot mix, movement summary, near/far.
-- `silver.player_movement_grid` — **pre-aggregated** 1m court occupancy grid
-  (~150 rows/player, not ~3000 raw) — the heatmap source, performance-safe.
-- `silver.match_quality` — ball/pose/swing/final confidence + reliability tier.
+**quality_tier calibration (open):** both `c8b77210` (good) and `df594aea` (bad)
+read **medium** — the thresholds don't discriminate. Calibrate once the video
+validation shows how bad `df594aea` really is; it should read **low**.
 
-**Two open design decisions for tomorrow:**
-1. **quality_tier thresholds need calibration.** `c8b77210` (our 18/18 match)
-   reads **`medium`** because SportAI's `ball_conf` is only 0.30 — even our best
-   match isn't "high". Calibrate the thresholds once `0336b82b` (the badly-tracked
-   match) is built; it should read `low`.
-2. **far-player heatmap orientation.** The grid stores raw `court_x/court_y`
-   (silver stays faithful). Inverting the far player onto a canonical "own half"
-   view is a gold/frontend job — decide the canonical frame when building.
+## Parked — video-worker trim (df594aea + a latent URL bug)
 
-**Not wired into prod ingest** — `build_all(engine, task_id)` runs standalone.
-Wiring (ingest hook or ops endpoint) is a reviewed step for tomorrow; the tables
-must exist in prod before the dashboards can read them. Momentum curves need NO
-new table (gold view over `point_detail`).
+1. **df594aea trim stuck at `accepted`** (since ~10:10, no completion, no error).
+   It's on the real worker with the new streaming+SigV4 fixes. To resume: pull the
+   **real video-worker service Logs** (NOT `video-worker.onrender.com` — see #2)
+   for `FFMPEG TRIM task_id=df594aea` around the last re-fire; see if it's
+   encoding, died (`/tmp`? instance failed?), or errored. Re-fire with
+   `POST /ops/retrim {"task_id":"df594aea-…"}`. Low priority (no customers, test match).
+2. **`video-worker.onrender.com` serves a FOREIGN Node/Express app** (`"Cannot GET
+   /trim"` = Express, not our Flask worker). The committed `render.yaml`
+   `VIDEO_WORKER_BASE_URL` value is therefore **wrong/squatted**. Trims still work
+   because the main API's *actual* env points to the real worker (else trims would
+   404-fail, not `accept`). **Fix:** confirm the video-worker service's real URL +
+   the main API's `VIDEO_WORKER_BASE_URL`, correct the `render.yaml` value, and
+   don't trust external curls of `video-worker.onrender.com`.
+
+## What shipped this session (all on `main`)
+
+| commit | what |
+|---|---|
+| `7b15768` | `/ops/sweep-sa-orphans` now also recovers **STUCK** (started-then-died) SportAI ingests, not just never-started; poison-match attempt cap (`SWEEP_SA_MAX_ATTEMPTS`). |
+| `b0ead43` | ingest worker: **retry on transient DB errors** (Render PG failover / "in recovery") with backoff; sweep give-up no longer overwrites the worker's real `ingest_error`. |
+| `56b75db` | **debug_data blob size cap** (`DEBUG_DATA_MAX_BYTES`, ~2 MB) — a 7.6 MB `bronze.debug_event` JSONB insert was severing the DB connection and aborting the whole bronze txn (the primary df594aea root cause; also forced PG crash-recovery → the misleading "in recovery mode"). |
+| `6cbe94c` | silver: the retired-column `DROP COLUMN shot_q/…` runs in a **SAVEPOINT** — it was blocked by legacy `ss_.*` + gold `SELECT *` views (`DependentObjectsStillExist`), poisoning the txn and failing **every** ingest's silver build. |
+| `f9b8a4c` | **streaming single-pass ffmpeg trim** — was download-full-source + N per-segment files + output → blew Render's **2 GB `/tmp`** limit on long matches → instance killed → trim orphaned. Now streams source from S3 + one `trim`+`concat` pass; only the output touches `/tmp`. |
+| `bfd6a57` | `POST /ops/retrim` + `POST /ops/sweep-stale-trims` + `trim_attempts` column — recover trims killed mid-encode (attempt-capped + ops alert). |
+| `75dfc33` | trim source presigned with **SigV4 in the bucket's real region** (bucket is **eu-north-1**; SigV2/us-east-1 → 400). Region auto-detected via the `x-amz-bucket-region` header. |
+| `0b98d8d` | `_mark_trim_accepted` stamps `trim_requested_at=NOW()` so a fresh re-fire isn't seen as stale and double-fired by the sweep. |
+
+**Ingest worker instance was moved back to $7 (standard)** — the failures were
+never memory (they were the debug_data blob + silver DROP), so the $25 bump was
+unjustified. If a *truly enormous* match ever pressures 512 MB it will now fail
+**visibly** (real error + the stale-ingest sweep), and you can bump just-in-time.
+
+## New env vars (all have safe defaults)
+
+`DEBUG_DATA_MAX_BYTES`=2000000 · `INGEST_DB_RETRY_MAX`=5 / `INGEST_DB_RETRY_BASE_S`=5 ·
+`SWEEP_SA_MAX_ATTEMPTS`=4 · `TRIM_STALE_AFTER_S`=1800 / `TRIM_SWEEP_MAX_ATTEMPTS`=3 ·
+`TRIM_STREAM_INPUT`=1 (0 = download fallback) · `TRIM_ENCODE_TIMEOUT_S`=3600 ·
+`TRIM_PRESIGN_EXPIRY_S`=21600 · `S3_BUCKET_REGION` (override; auto-detected otherwise).
+
+## New ops surface + schema
+
+- `POST /ops/retrim {task_id, force?}` — reset + re-fire one trim.
+- `POST /ops/sweep-stale-trims {dry_run, limit}` — recover trims stuck at
+  accepted/queued/processing (cron-wired; attempt-capped).
+- `POST /ops/sweep-sa-orphans` — now covers stuck-stale ingests too.
+- New column `bronze.submission_context.trim_attempts INT`.
+- Cron `cron_sweep_t5_orphans.py` now also POSTs `/ops/sweep-stale-trims`.
+- `tf_readonly` was GRANTed SELECT on `silver.*` (so dev can read the analytics tables).
+
+## Open audit P1s (unchanged — none touched this session)
+
+All billing/frontend/gold, outside the silver-derivation work. Ranked:
+1. **deuce/ad midline** (`build_silver_v2.py:653`) — splits on drifting AVG instead of fixed 5.485.
+2. **hollow ingest bills the customer** — zero-row ingest marked completed + consumes a credit.
+3. **NULL rendered as `0%`** across Match Analytics (frontend).
+4. **Serve Strategy totals double-count** (frontend re-keys + sums).
+5. **soft-deleted matches never leave `vw_player`** (`gold_init.py`, no `deleted_at IS NULL`).
+6. P2: serve-speed KPIs average a partial sample; `_validate_rally_count` false-alarms.
+
+## Dashboard data layer — BUILT + wired + first prod run confirmed
+
+`silver_analytics/` (fitness / movement-grid / quality) is wired into the ingest
+worker (STEP 3b) and populated on df594aea's real ingest (762 grid cells, 2
+player summaries, 1 quality row). **Dashboards NOT built yet** — that's the next
+build after validation. Roadmap: `.claude/plans/twinkly-seeking-bentley.md`
+(momentum curve needs no new table; fitness/heatmap read the new tables).
 
 ## Reference matches
 
 | task | who | note |
 |---|---|---|
-| `c8b77210` | Tomo v Jimbo Ma, 2026-07-23 | **primary reference — 18/18 vs video, debug_data captured.** Protect from orphan sweep. |
-| `052786b4` / `079d2c62` | Tomo v Jimbo Ma | same footage, earlier SportAI runs (SportAI is nondeterministic) |
-| `0336b82b` | **Erin v Jolanda**, 2026-04-28 | **tomorrow's target** — different match, badly tracked |
+| `c8b77210` | Tomo v Jimbo Ma | **primary reference — 18/18 vs video.** Protect from orphan sweep. |
+| `df594aea` | **Erin v Jolanda** | this session's match — 611 shots / 95 points, badly tracked (ball 0.29). **Next: validate vs video.** |
+| `0336b82b` | Erin v Jolanda (earlier run) | different SportAI run of the same footage |
 
-## Open audit P1s (NOT this sprint's cluster — verify each before fixing)
+## Canonical docs
 
-Ranked; all are billing/frontend/gold, outside the silver-derivation work just done.
+- Pipeline logic + filter contract → `docs/_investigation/silver_gold_filter_contract.md`
+- Audit closeout → `docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md`
+- Bench (mandatory before serve_detector edits): `.venv/Scripts/python -m ml_pipeline.diag.bench` (ea1e500c=12/26, 880dff02=23/24).
 
-1. **deuce/ad midline** (`build_silver_v2.py:653`) — splits deuce/ad on the
-   drifting `AVG(ball_hit_location_x)` instead of the fixed centre mark 5.485
-   (`MID_X_DEFAULT`). In-wheelhouse, low-risk, the top open silver item. Measure
-   the deuce/ad delta on `c8b77210` before/after.
-2. **hollow ingest bills the customer** — a zero-row ingest is marked `completed`
-   and consumes a credit. Add a zero-count guard (upload/billing).
-3. **NULL rendered as `0%`** across Match Analytics (frontend) — "not measured"
-   shows as a real 0. Distinguish NULL from 0 in `match_analysis.html`.
-4. **Serve Strategy totals double-count** — gold emits `points_played` per
-   `(side,bucket,serve_try)`; the frontend re-keys on `side|bucket` and sums.
-5. **soft-deleted matches never leave `vw_player`** (`gold_init.py:48-49`, no
-   `deleted_at IS NULL`) — 11 downstream views inherit it.
-6. **P2:** serve-speed KPIs average a partial sample (surface coverage);
-   `_validate_rally_count` false-alarms in both directions (re-anchor or drop it).
+## Key lesson from this session
 
-## Per-match quality gate (the biggest untreated risk)
-
-`0336b82b` publishes confidently wrong numbers (0 winners / 112 points) with
-nothing flagging the analytics as unreliable. `bronze.session_confidences` +
-the new `debug_data` per-swing confidences are the natural anchor for a
-"this match's analytics are low-confidence" gate. Likely to surface hard when
-tomorrow's run lands.
-
-## What shipped in the silver-correctness sprint (all on main)
-
-`81e48d9` swing-bounce honesty · `bfe7dd7` drop 4 dead columns (52 cols) ·
-`e872a74` derived-column verification + rally_location_bounce NULL ·
-`61f61e1` double_fault_d + event-spine model (first-serve % 52.9→50.0) ·
-`3432ce6` exclude_d explicit across gold · `5f160b2` shot_phase service-line
-constants + service-box investigation. Earlier same-day: rally contiguity
-(default ON), debug_data capture, video_info/dbg_* promotion, 18/18 reconciled.
-
-## Live flags (SportAI silver)
-
-`SILVER_RALLY_CONTIGUITY` **default ON** (rally ends at first >5s break) ·
-`SILVER_RALLY_IIR_MIN_COVERAGE=1.01` (is_in_rally escape OFF) ·
-`BOUNCE_CANDIDATES_ENABLED` **default ON in code** · `SILVER_SERVE_SOURCE`
-=`geometric`. All have env rollbacks.
-
-## Local dev environment
-
-- Docker Postgres `localhost:55433` (NOT `:55432` = CourtFlow).
-  `docker compose -f devenv/docker-compose.yml up -d`.
-- Read-only prod role `tf_readonly` in gitignored `devenv/.env.local`.
-  **Still live — drop when done** (`DROP OWNED BY tf_readonly; DROP ROLE tf_readonly;`).
-- ⚠ this box exports `DATABASE_URL` = `…:55432/courtflow_dev`; pin the devenv URL
-  explicitly (`postgresql+psycopg://tf:tf@localhost:55433/tf_dev`) or scripts hit
-  the wrong DB.
-- Rebuild + 18/18 check pattern: filter-contract doc §Verification.
-- Re-ingest in prod: `POST /ops/ingest-task {"task_id":"…","mode":"worker"}` with
-  `X-Ops-Key: $OPS_KEY` from the main-API Render shell (`mode` must be `worker`).
+**Don't guess Render/infra failures — get the actual service log.** The df594aea
+cause was misread as OOM (→ a wasted memory bump) and as a generic failover before
+the worker's own log named it (`debug_event` 7.6 MB insert → severed connection).
+Each real log line was decisive. See memory `feedback_get_real_logs_not_guess`.
