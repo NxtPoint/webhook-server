@@ -29,5 +29,15 @@
   "16": "153",
   "17": "153",
   "18": "153"
+ },
+ "outcome_gt": {
+  "_source": "Video-adjudicated (docs filter-contract): complete for this 18-pt clip. Keyed by point_number.",
+  "_scoring": "complete GT -> recall AND precision gated (extras are false positives).",
+  "double_fault_points": [
+   5
+  ],
+  "ace_points": [
+   9
+  ]
  }
 }

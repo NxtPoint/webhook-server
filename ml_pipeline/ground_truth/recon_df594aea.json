@@ -508,5 +508,35 @@
   "4392.365": 99,
   "4415.867": 100,
   "4427.433": 100
+ },
+ "outcome_gt": {
+  "_source": "col BK free-text annotations (Tomo, partial/inconsistent). Keyed by ball_hit_s.",
+  "_scoring": "recall gated vs these explicit notes; false-positive count baselined (must not increase), NOT auto-fail (GT is partial).",
+  "double_fault_shots": {
+   "32.835": "2nd serve out - double fault",
+   "1514.28": "double fault",
+   "2431.195": "double",
+   "2921.388": "2nd serve net - double fault",
+   "2998.558": "serve out - double",
+   "3436.415": "double fault",
+   "3560.655": "double fault",
+   "4158.653": "2nd fault double"
+  },
+  "ace_shots": {
+   "989.62": "2nd serve hits net and goes over - ace",
+   "1294.868": "1st serve net in - winner ace"
+  },
+  "net_error_shots": {
+   "94.005": "erin makes error in net",
+   "570.53": "yolanda makes error in net",
+   "1048.857": "yolanda hits inot net",
+   "1281.735": "erin hits in net",
+   "1349.205": "yolanda hits ball in net",
+   "1456.91": "yolanda errro in net",
+   "2168.682": "yolanda hits inot net",
+   "2503.533": "erin makes error into net",
+   "2672.975": "erin hits into net",
+   "3280.24": "erin makes error in net"
+  }
  }
 }

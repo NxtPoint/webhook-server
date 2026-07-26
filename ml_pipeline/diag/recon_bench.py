@@ -94,6 +94,7 @@ def _fetch_all(conn, task_id: str, model: str) -> list[dict]:
     from sqlalchemy import text
     return [dict(r) for r in conn.execute(text("""
         SELECT id, point_number, point_winner_player_id, exclude_d,
+               double_fault_d, ace_d, shot_outcome_d,
                round(ball_hit_s::numeric, 3) AS hs
         FROM silver.point_detail
         WHERE task_id = :t AND model = :m
@@ -186,6 +187,66 @@ def score_match(conn, gt: dict) -> dict:
             "winner_pct": round(100 * agree / total, 1) if total else None,
             "_winner_mismatch": mism,
         })
+    out.update(_score_outcomes(gt, rows, spine))
+    return out
+
+
+def _score_outcomes(gt: dict, rows: list, spine: list) -> dict:
+    """Score DF / ace / net-error derivation vs the outcome GT (if present).
+
+    Recall is scored against the owner's explicit annotations. False positives
+    (silver flags an event GT doesn't) are counted and baselined — they must not
+    INCREASE, but on a partial-GT match they are not treated as auto-fail.
+    On a complete-GT match (c8b77210) the baseline FP is 0, so it gates precision.
+    """
+    og = gt.get("outcome_gt")
+    if not og:
+        return {}
+    sv_df = {r["point_number"] for r in spine if r.get("double_fault_d")}
+    sv_ace = {r["point_number"] for r in spine if r.get("ace_d")}
+    out: dict = {}
+
+    if gt["boundary_mode"] == "shot_map":
+        ts_row = {float(r["hs"]): r for r in rows if r["hs"] is not None}
+
+        def _pt(ts):
+            r = ts_row.get(round(float(ts), 3))
+            return r["point_number"] if r and r["point_number"] is not None else None
+
+        df_shots = og.get("double_fault_shots", {})
+        ace_shots = og.get("ace_shots", {})
+        df_gt_pts = {p for p in (_pt(k) for k in df_shots) if p is not None}
+        ace_gt_pts = {p for p in (_pt(k) for k in ace_shots) if p is not None}
+        df_caught = sum(1 for k in df_shots if _pt(k) in sv_df)
+        ace_caught = sum(1 for k in ace_shots if _pt(k) in sv_ace)
+
+        ne = og.get("net_error_shots", {})
+        ne_caught = 0
+        ne_miss = []
+        for k in ne:
+            r = ts_row.get(round(float(k), 3))
+            if r and str(r["shot_outcome_d"]) == "Error":
+                ne_caught += 1
+            else:
+                ne_miss.append((k, r["shot_outcome_d"] if r else None))
+
+        out.update({
+            "df_caught": df_caught, "df_total": len(df_shots), "df_fp": len(sv_df - df_gt_pts),
+            "ace_caught": ace_caught, "ace_total": len(ace_shots), "ace_fp": len(sv_ace - ace_gt_pts),
+            "neterr_caught": ne_caught, "neterr_total": len(ne),
+            "_df_fp_points": sorted(sv_df - df_gt_pts),
+            "_ace_fp_points": sorted(sv_ace - ace_gt_pts),
+            "_neterr_miss": ne_miss,
+        })
+    else:  # identity — GT keyed by point_number
+        df_gt = set(og.get("double_fault_points", []))
+        ace_gt = set(og.get("ace_points", []))
+        out.update({
+            "df_caught": len(df_gt & sv_df), "df_total": len(df_gt), "df_fp": len(sv_df - df_gt),
+            "ace_caught": len(ace_gt & sv_ace), "ace_total": len(ace_gt), "ace_fp": len(sv_ace - ace_gt),
+            "_df_fp_points": sorted(sv_df - df_gt),
+            "_ace_fp_points": sorted(sv_ace - ace_gt),
+        })
     return out
 
 
@@ -195,8 +256,9 @@ def score_match(conn, gt: dict) -> dict:
 # For each of these keys, a candidate that moves the metric in the "bad"
 # direction beyond tolerance is a regression. Boundaries: fewer exact / more
 # merges|splits = worse. Winners: fewer agree = worse.
-_LOWER_IS_WORSE = {"exact_1to1", "winner_agree", "winner_pct"}
-_HIGHER_IS_WORSE = {"merges", "splits", "dropped_points"}
+_LOWER_IS_WORSE = {"exact_1to1", "winner_agree", "winner_pct",
+                   "df_caught", "ace_caught", "neterr_caught"}
+_HIGHER_IS_WORSE = {"merges", "splits", "dropped_points", "df_fp", "ace_fp"}
 
 
 def _regressions(cur: dict, base: dict) -> list[str]:
@@ -228,7 +290,18 @@ def _print_card(s: dict, show_diff: bool) -> None:
         print(f"  points     : silver {s['silver_points']}  vs GT {s['true_points']}")
     wt, wa = s["winner_total"], s["winner_agree"]
     print(f"  winners    : {wa}/{wt} = {s['winner_pct']}%  ({wt - wa} wrong)")
+    if "df_total" in s:
+        nt = s.get("neterr_total")
+        ne = f"  net-err recall {s['neterr_caught']}/{nt}" if nt else ""
+        print(f"  outcomes   : DF recall {s['df_caught']}/{s['df_total']} (+{s['df_fp']} FP)  "
+              f"ace recall {s['ace_caught']}/{s['ace_total']} (+{s['ace_fp']} FP){ne}")
     if show_diff:
+        if s.get("_df_fp_points"):
+            print(f"       DF false-positive silver points : {s['_df_fp_points']}")
+        if s.get("_ace_fp_points"):
+            print(f"       ace false-positive silver points: {s['_ace_fp_points']}")
+        if s.get("_neterr_miss"):
+            print(f"       net-error misses (ts, silver outcome): {s['_neterr_miss']}")
         if s.get("_merges"):
             print("  -- merges (silver pt -> true points) --")
             for sp, tps in s["_merges"].items():

@@ -6,7 +6,13 @@
     "true_points": 18,
     "winner_agree": 18,
     "winner_total": 18,
-    "winner_pct": 100.0
+    "winner_pct": 100.0,
+    "df_caught": 1,
+    "df_total": 1,
+    "df_fp": 0,
+    "ace_caught": 1,
+    "ace_total": 1,
+    "ace_fp": 0
   },
   "df594aea": {
     "task_id": "df594aea-78ef-47b1-8c10-60174a58d8b0",
@@ -21,6 +27,14 @@
     "missing_shots": 2,
     "winner_agree": 72,
     "winner_total": 98,
-    "winner_pct": 73.5
+    "winner_pct": 73.5,
+    "df_caught": 3,
+    "df_total": 8,
+    "df_fp": 2,
+    "ace_caught": 0,
+    "ace_total": 2,
+    "ace_fp": 9,
+    "neterr_caught": 2,
+    "neterr_total": 10
   }
 }
