@@ -139,6 +139,20 @@ RALLY_CONTIGUITY = (os.getenv("SILVER_RALLY_CONTIGUITY") or "1").strip().lower()
 SERVE_GAP_ANCHOR = (os.getenv("SILVER_SERVE_GAP_ANCHOR") or "1").strip().lower() in ("1", "true", "yes")
 SERVE_GAP_ANCHOR_S = float(os.getenv("SILVER_SERVE_GAP_ANCHOR_S") or "30")
 
+# ========== DEUCE/AD FIXED CENTRE MIDLINE (audit P1, 2026-07-26) ==========
+# serve_side_d (deuce/ad) was split on mid_x = AVG(ball_hit_location_x) over serve
+# hits — a DATA-DERIVED midline. Detected serves + faults are never balanced
+# deuce:ad, so the average drifts off-centre (a 2:1 ratio pulls mid to ~5.20),
+# and a serve struck genuinely ad-side at x=5.35 evaluates 5.35 > 5.20 -> 'deuce'.
+# That flip is not cosmetic: point_number increments on serve_side change
+# (point_anchors), so a mislabelled side splits/merges points and corrupts
+# rally_length / point_winner. The real centre service line is the FIXED court
+# centre x = 5.485 (= doubles_width/2 = singles_left_x + singles_width/2 =
+# MID_X_DEFAULT). Use it, not the drifting average.
+#
+# Rollback: SILVER_SERVE_SIDE_FIXED_MIDLINE=0 restores the AVG(x) midline.
+SERVE_SIDE_FIXED_MIDLINE = (os.getenv("SILVER_SERVE_SIDE_FIXED_MIDLINE") or "1").strip().lower() in ("1", "true", "yes")
+
 # Coverage floor for trusting SportAI's is_in_rally as the gap_break escape.
 # A value > 1.0 can never be met, so the escape is DISABLED by default.
 #
@@ -688,21 +702,26 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     # serve_events.hitter_court_x, so this midline reflects them.
     # Geometric-only here so it doesn't depend on SA's bronze serve flag; 'other'
     # deliberately excluded — too loose without a serve flag as a guard.
-    mid_x_row = conn.execute(text(f"""
-        SELECT COALESCE(AVG(ball_hit_location_x), :mid_default)
-        FROM {SILVER_SCHEMA}.{TABLE}
-        WHERE task_id = :tid
-          AND ball_hit_location_x IS NOT NULL
-          AND ball_hit_location_y IS NOT NULL
-          AND lower(COALESCE(trim(swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
-          AND (ball_hit_location_y < :eps OR ball_hit_location_y > (:y_max - :eps))
-          AND ball_hit_location_x BETWEEN :sx_left AND :sx_right
-    """), {
-        "tid": task_id, "mid_default": float(MID_X_DEFAULT),
-        "eps": float(EPS), "y_max": float(COURT_LEN),
-        "sx_left": float(SX_LEFT), "sx_right": float(SX_RIGHT),
-    }).scalar()
-    mid_x = float(mid_x_row) if mid_x_row is not None else float(MID_X_DEFAULT)
+    if SERVE_SIDE_FIXED_MIDLINE:
+        # Audit P1: the true centre service line is the FIXED court centre, not a
+        # drifting average of imbalanced serve detections.
+        mid_x = float(MID_X_DEFAULT)
+    else:
+        mid_x_row = conn.execute(text(f"""
+            SELECT COALESCE(AVG(ball_hit_location_x), :mid_default)
+            FROM {SILVER_SCHEMA}.{TABLE}
+            WHERE task_id = :tid
+              AND ball_hit_location_x IS NOT NULL
+              AND ball_hit_location_y IS NOT NULL
+              AND lower(COALESCE(trim(swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
+              AND (ball_hit_location_y < :eps OR ball_hit_location_y > (:y_max - :eps))
+              AND ball_hit_location_x BETWEEN :sx_left AND :sx_right
+        """), {
+            "tid": task_id, "mid_default": float(MID_X_DEFAULT),
+            "eps": float(EPS), "y_max": float(COURT_LEN),
+            "sx_left": float(SX_LEFT), "sx_right": float(SX_RIGHT),
+        }).scalar()
+        mid_x = float(mid_x_row) if mid_x_row is not None else float(MID_X_DEFAULT)
 
     sql = f"""
     WITH
