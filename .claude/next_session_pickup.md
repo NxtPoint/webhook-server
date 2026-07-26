@@ -35,19 +35,35 @@ silver lever. All on `main`, pushed.
    validated green locally (unchanged: ea1e500c 12/26, 880dff02 23/24). Eyeball the
    GitHub Actions run to confirm (no `gh` on this box).
 
-## Where the accuracy stands + what's left (all documented in the plan doc)
+## STEP 4 — outcome layer measured; true-last-shot lever prototyped + REJECTED (bronze-limited)
 
-`docs/_investigation/silver_recon_bench_plan.md` §OUTCOME has the full triage.
-- **df594aea after the fix:** boundaries exact **98/100** (merges 0, splits 1,
-  dropped 1); **winners 72/98 = 73.5%**.
-- The **26 winner disagreements are mostly a bronze ceiling** — ~10 bounce ~0.1m
-  past the net (filter-contract forbids tightening the bounce test), ~3 tracking
-  stopped early. Only ~13 "trailing-extra" (silver kept a between-point shot 2-8s
-  past the true end) are a *possible* future sound exclusion lever — delicate, must
-  not re-merge; NOT attempted this session.
-- **1 split (true 44):** a serve false-positive (a return flagged `serve_d`) — a
-  sound guard is possible but it's serve-derivation territory. NOT attempted.
-- **1 dropped (true 9):** all shots `exclude_d` — exclusion-relax territory.
+Bench now scores **DF / ace / net-error** vs the owner's BK annotations (commit
+`bae91df`). df594aea: DF 3/8 (+2 FP), ace 0/2 (+9 FP), net-err 2/10; c8b77210 perfect
+(DF 1/1, ace 1/1, 0 FP → gates precision). **Outcome layer is at the BRONZE CEILING
+for badly-tracked matches** — proven, not assumed:
+- **Aces** = untracked returns (bronze); `bounce_plausible_d` doesn't separate 9 FP
+  from 2 real. **Bounce-past-net** = wrong coordinate (bronze).
+- **true-last-shot lever** (would fix winner+net-err+DF together): 29 points corrupted
+  by a between-point "ghost" last shot. **Perfect remover fixes 29/29, breaks 0**
+  (architecture is right) — but **NO signal separates ghosts from real last shots**
+  (`dbg_discarded` 0/29, `is_in_rally` collapsed, gaps overlap). Best heuristic fixes
+  6/29 while breaking 3 → **rejected, nothing shipped**.
+- **Unlocks (all upstream):** is_in_rally recovery / bounce recall / **`ball_impact_type`
+  populated** (reserved now — WATCH after each SportAI version bump). Re-run the bench then.
+
+## Where the accuracy stands + remaining SILVER-side candidates (not the outcome axis)
+
+`docs/_investigation/silver_recon_bench_plan.md` §OUTCOME + §STEP 4 have the full triage.
+- **df594aea after the serve-gap fix:** boundaries exact **98/100** (merges 0, splits 1,
+  dropped 1); **winners 72/98 = 73.5%**; the residual is bronze (above).
+- **NOT a blanket "silver is done"** — still-unexamined silver items for a future session:
+  - **1 split (true 44):** a serve false-positive (a return flagged `serve_d`) — a sound
+    guard (two serves 1.07s apart, different players, can't both be 1st serves) is
+    possible; edges into serve-derivation. NOT attempted.
+  - **deuce/ad midline P1** (`build_silver_v2:653`) — splits on drifting AVG vs fixed 5.485.
+  - **placement zones / depth / aggression / stroke-type** — never reconciled vs GT;
+    headroom unknown, not zero.
+  - **1 dropped (true 9):** all shots `exclude_d` — exclusion-relax territory.
 
 ## How to run the recon bench
 

@@ -47,6 +47,46 @@ matches byte-identical; serve bench green.
 - **bench_silver `1d6feb3a` is pre-existing RED** (baseline expects 7 rows, builder
   makes 101 — stale T5 fixture drift, unrelated; my change proven inert on it).
 
+## ✅ STEP 4 (2026-07-26) — outcome layer measured + true-last-shot lever PROTOTYPED and rejected
+
+Extended the recon bench to score **double-fault / ace / net-error** vs the owner's
+BK annotations (commit `bae91df`). Baseline: c8b77210 DF 1/1, ace 1/1, 0 FP
+(complete GT → gates precision); df594aea DF 3/8 (+2 FP), ace 0/2 (+9 FP),
+net-err 2/10 (partial GT → gates recall, baselines FP count).
+
+**Everything sorts into two piles, and we PROVED which is which (measure, not assume):**
+- **Bronze ceiling — do NOT touch (SportAI will lift it):**
+  - **Aces** (9 FP): all are a serve with *zero tracked return* → look unreturned.
+    `bounce_plausible_d` doesn't separate the 9 fakes from the 2 real aces. Untracked
+    returns = bronze.
+  - **Bounce-past-net** (~2 net errors, several winners): rule correct, coordinate wrong.
+- **The one silver-addressable axis = true-last-shot identification** (fixes winner +
+  net-error + DF together). **Prototyped and REJECTED — bronze-limited:**
+  - 29 points have a between-point "ghost" as their last shot (the corruptor).
+  - Simulation: a **perfect** ghost-remover fixes **29/29, breaks 0** — so the
+    *architecture* is right (given the true last shot, all outcomes fall out).
+  - But **no available signal separates the 29 ghosts from the 71 correct last shots**:
+    `dbg_discarded` 0/29 (SportAI itself keeps them), `dbg_conf_ball_hit` null,
+    `is_in_rally` collapsed (match is 93% flagged warm-up), gap overlaps (ghost
+    0.6–4.6s vs real 1.0–16.3s), NULL-bounce 69% vs 32%. Best heuristic
+    (`ball_player_distance>1.0`) fixes only 6/29 while breaking 3 correct points.
+  - Shipping any heuristic = "improve bad, compromise good" → **rejected. Nothing shipped.**
+
+**What unlocks the residual 29 points (all upstream — re-run the bench after any of these):**
+1. `is_in_rally` recovery on badly-tracked matches → "last in-rally shot = point end" becomes sound.
+2. Better floor-bounce recall → "no bounce after this shot = point over" works.
+3. **`ball_impact_type` populated** (currently reserved/`None`) — would hand us net/floor/out
+   labels directly. **WATCH-ITEM:** check it after every SportAI version bump.
+
+**Are we at the silver ceiling? Precisely:** on the axes we measured — point
+BOUNDARIES, WINNERS, DF, ACE, NET-ERRORS — **yes for badly-tracked matches** (silver
+logic is proven *correct* on c8b77210: 18/18, DF/ace 1/1, 0 FP), and the residual is
+bronze. It is **NOT** a blanket "silver is done": still un-examined silver-side items —
+(a) the **1 split** (serve false-positive guard), (b) the **deuce/ad midline P1**
+(`build_silver_v2:653` splits on a drifting AVG vs fixed 5.485), (c) placement
+**zones / depth / aggression / stroke-type** columns never reconciled against GT
+(headroom unknown, not zero). Those are separate axes for a future session.
+
 ---
 
 ## Original plan (below, for reference)
