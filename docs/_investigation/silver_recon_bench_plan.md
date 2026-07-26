@@ -1,7 +1,55 @@
 # Silver reconciliation bench — two-match accuracy harness (task plan)
 
-**Status:** NOT STARTED (planned 2026-07-26). This is the next major SportAI job.
-**Owner context:** Tomo hand-mapped the full Erin v Jolanda match on video.
+**Status:** ✅ STEPS 1-3 DONE (2026-07-26). Bench built + baseline locked + first
+sound lever shipped default-ON. **Owner context:** Tomo hand-mapped the full Erin v
+Jolanda match on video.
+
+## ✅ OUTCOME (2026-07-26)
+
+**STEP 1 — GT signed off.** Extracted from the (fixed) Excel and persisted in-repo,
+keyed on `ball_hit_s` (STABLE across silver rebuilds — the serial `id` churns and
+broke the join). Tomo signed off: 100 true points, 466=Erin/772=Yolanda, pt12=466.
+- `ml_pipeline/ground_truth/recon_df594aea.json` (`signed_off: true`)
+- `ml_pipeline/ground_truth/recon_c8b77210.json` (the 18/18 anchor, winners from prod)
+
+**STEP 2 — bench built + baseline locked.** `ml_pipeline/diag/recon_bench.py` —
+scores point BOUNDARIES (exact-1:1 / merges / splits / **dropped** — a true point
+whose every shot silver excluded) and point WINNERS (id-based) for both matches.
+Swappable DB source (`--db prod` tf_readonly / `--db devenv`). devenv==prod parity
+verified. `recon_baseline.json` is the locked both-match anti-overfit gate.
+
+**STEP 3 — first sound lever SHIPPED (serve-gap point anchor).** The first-look
+called the 6 merges "mostly a bronze missed-serve ceiling." **Measurement refuted
+that:** all 6 boundaries HAD a detected serve — silver just didn't start a new point
+because point-anchoring keyed only on serve SIDE/SERVER change, and a single missing
+serve breaks deuce/ad alternation → two same-side serves glue (the 2nd mislabelled
+"2nd serve" 47-71s later). Fix: also anchor on a >30s consecutive-serve gap
+(`SILVER_SERVE_GAP_ANCHOR`, default ON, commit `aee78bc`). Result: df594aea merges
+**6→0**, exact-1:1 **86→98**, winners **63→72**; c8b77210 held **18/18**; clean
+matches byte-identical; serve bench green.
+
+**Still open (documented, NOT chased — realistic bronze-ceiling residue):**
+- **Winner accuracy ~73%** (72/98). Triaged the 26 disagreements: ~10 "same ending"
+  (silver has the true last shot but bounce coord is ~0.1m past the net → wrong
+  outcome = **bronze bounce accuracy**, the filter-contract doc forbids tightening),
+  ~3 "stopped early" (tracking ends 10-21s before the true last shot = **bronze**),
+  ~13 "trailing extra" (silver kept a between-point shot 2-8s after the true end).
+  The trailing-extra subset is the only remaining *possible* sound silver lever
+  (tighter trailing-shot exclusion) — delicate, must not re-merge; NOT attempted.
+- **1 split** (true 44 → 2 silver points): a serve FALSE-POSITIVE (466's return
+  flagged `serve_d`). That's the geometric serve derivation, not point structure;
+  a sound guard (two serves 1.07s apart by different players can't both be 1st
+  serves) is possible but edges into serve-detector territory — NOT attempted.
+- **1 dropped point** (true 9): all its shots `exclude_d`. Exclusion-relax territory.
+- **Prod rebuild needed:** existing prod silver is unchanged until re-ingest /
+  `rerun-silver`. df594aea + other matches must be rebuilt on Render for the fix to
+  reach dashboards (Tomo runs `/ops/*`).
+- **bench_silver `1d6feb3a` is pre-existing RED** (baseline expects 7 rows, builder
+  makes 101 — stale T5 fixture drift, unrelated; my change proven inert on it).
+
+---
+
+## Original plan (below, for reference)
 
 ## Goal
 

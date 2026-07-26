@@ -1,4 +1,4 @@
-# Next-session pickup — 2026-07-26 — post-incident, pipeline hardened
+# Next-session pickup — 2026-07-26 (pm) — silver recon bench + serve-gap anchor shipped
 
 > **Two parallel threads.** This is the **SportAI (`tennis_singles`)
 > business-analytics pipeline**. The **T5 ML pipeline** is parked at "bronze DEV
@@ -6,145 +6,95 @@
 
 ## ⚡ Executive summary (read first)
 
-The last session was a long **incident + hardening** sprint triggered by the
-**Erin v Jolanda** upload (`df594aea`) getting stuck. It is now **fully ingested**
-(bronze + silver + the new analytics tables) and the whole ingest→silver→trim
-path was hardened. **Everything is shipped to `main`.** Bench is green.
+Built the **two-match silver reconciliation bench** and shipped the first sound
+silver lever. All on `main`, pushed.
 
-**The one thing still open on `df594aea`: the video TRIM** (highlight reel) is
-parked at `trim_status='accepted'` — not blocking (the dashboard/analytics are
-done; the trim is polish). See "Parked" below.
+- **STEP 1 (GT signed off):** Tomo's video ground truth for **df594aea** (Erin v
+  Yolanda, 100 pts) + the **c8b77210** 18/18 anchor are persisted in
+  `ml_pipeline/ground_truth/recon_*.json`. Keyed on **`ball_hit_s`** (stable across
+  silver rebuilds — the serial `id` churns). 466=Erin, 772=Yolanda; pt12=466.
+- **STEP 2 (bench + baseline):** `ml_pipeline/diag/recon_bench.py` scores boundaries
+  (exact/merges/splits/dropped) + winners for both matches; `--db prod|devenv`;
+  `recon_baseline.json` is the locked both-match anti-overfit gate. devenv==prod.
+- **STEP 3 (lever shipped, commit `aee78bc`):** **serve-gap point anchor** —
+  `SILVER_SERVE_GAP_ANCHOR` (default ON, rollback `=0`). A new point now also
+  anchors when consecutive serves are **>30s** apart. Fixed all **6 merges** on
+  df594aea (exact-1:1 **86→98**, winners **63→72**); **c8b77210 held 18/18**; clean
+  matches byte-identical. **The plan's assumption that merges were a bronze
+  missed-serve ceiling was refuted** — the serves were detected; it was a silver
+  point-anchor gap (a missing serve breaks deuce/ad alternation → same-side glue).
 
-**THE job for next session = build the two-match silver reconciliation bench and
-strengthen silver (logic-only) → full plan in
-`docs/_investigation/silver_recon_bench_plan.md`.** The owner has hand-mapped the
-full Erin v Jolanda match on video (Excel: `…OneDrive\Documentos\Tenfifty5\erin_v_yolanda recon.xlsx`).
-**Ground truth is CLEAN**: column A = `true point` (1–100), column C = silver `id` —
-join those, no colour parsing. **First-look already done: 86/100 points are 1:1
-with silver; the gap is 6 merges + 1 split (see the plan doc §First-look).** Next:
-persist the GT in-repo, ask Tomo for a true WINNER per point, build the bench, then
-sound silver levers under the iron rule: improve df594aea WITHOUT moving c8b77210
-off 18/18 (anti-overfit), no manufacturing, bronze is the ceiling (most merges are
-missed serves = bronze).
+## ⚠️ Two follow-ups (not blocking)
 
-## THE JOB — validate df594aea against the owner's video
+1. **Prod silver rebuild** — the fix only changes silver on **re-ingest /
+   `rerun-silver`**. Existing prod silver (df594aea + all matches) is unchanged
+   until rebuilt on Render, so dashboards won't reflect it yet. Rebuild df594aea
+   when convenient. Recon bench `--db prod` shows the OLD numbers until then; the
+   gate uses **devenv** (already lever-on).
+2. **CI** — `build_silver_v2.py` is a bench.yml trigger; the serve bench was
+   validated green locally (unchanged: ea1e500c 12/26, 880dff02 23/24). Eyeball the
+   GitHub Actions run to confirm (no `gh` on this box).
 
-The owner (Tomo) is watching the Erin v Jolanda footage and recording the real
-point winners / outcomes, exactly like the **18/18** validation we did on
-`c8b77210` (Tomo v Jimbo). Then reconcile against silver.
+## Where the accuracy stands + what's left (all documented in the plan doc)
 
-**df594aea silver baseline (measured 2026-07-26):**
-| metric | value |
-|---|---|
-| `silver.point_detail` shots | **611** |
-| distinct points | **95** (owner flagged 95 as maybe-low — verify vs video; plausible for a full match) |
-| spine shots (`exclude_d IS NOT TRUE`) | 389 |
-| points with a winner | 95 / 95 |
-| `match_quality` tier | **medium** (ball 0.29 / pose 0.68 / swing 0.76 / final 0.62) |
-| `match_player_summary` rows | 2 · `player_movement_grid` cells | 762 |
+`docs/_investigation/silver_recon_bench_plan.md` §OUTCOME has the full triage.
+- **df594aea after the fix:** boundaries exact **98/100** (merges 0, splits 1,
+  dropped 1); **winners 72/98 = 73.5%**.
+- The **26 winner disagreements are mostly a bronze ceiling** — ~10 bounce ~0.1m
+  past the net (filter-contract forbids tightening the bounce test), ~3 tracking
+  stopped early. Only ~13 "trailing-extra" (silver kept a between-point shot 2-8s
+  past the true end) are a *possible* future sound exclusion lever — delicate, must
+  not re-merge; NOT attempted this session.
+- **1 split (true 44):** a serve false-positive (a return flagged `serve_d`) — a
+  sound guard is possible but it's serve-derivation territory. NOT attempted.
+- **1 dropped (true 9):** all shots `exclude_d` — exclusion-relax territory.
 
-Method: same as the filter-contract doc §Verification — vw_point export, compare
-point winners to the video, triage any gap as **bronze-accuracy vs silver-bug**
-(RULE 6 / bronze-first). This is a *badly-tracked* match (ball_conf 0.29), so
-expect it to degrade vs the 18/18 clean match — the goal is to find WHERE it
-degrades and whether it's a bronze ceiling or a silver bug.
+## How to run the recon bench
 
-**quality_tier calibration (open):** both `c8b77210` (good) and `df594aea` (bad)
-read **medium** — the thresholds don't discriminate. Calibrate once the video
-validation shows how bad `df594aea` really is; it should read **low**.
+```bash
+.venv/Scripts/python -m ml_pipeline.diag.recon_bench            # score both vs prod
+.venv/Scripts/python -m ml_pipeline.diag.recon_bench --diff     # + per-point diffs
+.venv/Scripts/python -m ml_pipeline.diag.recon_bench --db devenv        # a local rebuild
+.venv/Scripts/python -m ml_pipeline.diag.recon_bench --db devenv --update-baseline
+```
+Verification loop for any silver-derivation change: seed devenv → rebuild silver →
+`recon_bench --db devenv` must show c8b77210 unchanged (18/18) AND df594aea
+neutral-or-better → `bench` (serve) green → ship with env rollback. **devenv (port
+55433) already has all 5 matches seeded + lever-on silver built.**
 
-## Parked — video-worker trim (NOT fully fixed — one more iteration needed)
+## Known-broken (pre-existing, not mine)
 
-1. **Trim is too SLOW on long matches — the real remaining fix.** The `/tmp` 2 GB
-   kill IS fixed (streaming single-pass, `f9b8a4c`), but that exposed a new
-   bottleneck: the single-input `trim`-filter graph must **decode the ENTIRE
-   source** (df594aea = 74 min) to pick segments → over HTTP it exceeded
-   `TRIM_ENCODE_TIMEOUT_S=3600` and **failed** (`Command timed out after 3600s`,
-   2026-07-26 11:10). Bumping the timeout is NOT the fix (a ~1 h+ trim is
-   unacceptable). **Correct fix:** rewrite `run_ffmpeg_trim` to use **N `-ss/-to`
-   seek inputs + `concat`** (each `-ss` before `-i` fast-seeks via HTTP range so
-   ffmpeg decodes only the ~30% kept, not the whole source) — `/tmp`-light AND
-   fast. Contained change; needs the worker deploy + can't be tested locally, so
-   validate on a real long match. Re-fire after with `POST /ops/retrim`. Short
-   matches (few segments, short source) likely already work; the gap is long ones.
-2. **`video-worker.onrender.com` serves a FOREIGN Node/Express app** (`"Cannot GET
-   /trim"` = Express, not our Flask worker). The committed `render.yaml`
-   `VIDEO_WORKER_BASE_URL` value is therefore **wrong/squatted**. Trims still work
-   because the main API's *actual* env points to the real worker (else trims would
-   404-fail, not `accept`). **Fix:** confirm the video-worker service's real URL +
-   the main API's `VIDEO_WORKER_BASE_URL`, correct the `render.yaml` value, and
-   don't trust external curls of `video-worker.onrender.com`.
+- **bench_silver `1d6feb3a` is RED** — baseline expects 7 rows, builder makes 101
+  (89 serves). Stale T5 fixture drift, unrelated to the anchor change (proven inert
+  with the flag on/off). Someone should re-snapshot or investigate the T5 builder
+  on that fixture; don't blindly `--update-baseline` (could mask a real regression).
 
-## What shipped this session (all on `main`)
+## Parked (unchanged from the am session)
 
-| commit | what |
-|---|---|
-| `7b15768` | `/ops/sweep-sa-orphans` now also recovers **STUCK** (started-then-died) SportAI ingests, not just never-started; poison-match attempt cap (`SWEEP_SA_MAX_ATTEMPTS`). |
-| `b0ead43` | ingest worker: **retry on transient DB errors** (Render PG failover / "in recovery") with backoff; sweep give-up no longer overwrites the worker's real `ingest_error`. |
-| `56b75db` | **debug_data blob size cap** (`DEBUG_DATA_MAX_BYTES`, ~2 MB) — a 7.6 MB `bronze.debug_event` JSONB insert was severing the DB connection and aborting the whole bronze txn (the primary df594aea root cause; also forced PG crash-recovery → the misleading "in recovery mode"). |
-| `6cbe94c` | silver: the retired-column `DROP COLUMN shot_q/…` runs in a **SAVEPOINT** — it was blocked by legacy `ss_.*` + gold `SELECT *` views (`DependentObjectsStillExist`), poisoning the txn and failing **every** ingest's silver build. |
-| `f9b8a4c` | **streaming single-pass ffmpeg trim** — was download-full-source + N per-segment files + output → blew Render's **2 GB `/tmp`** limit on long matches → instance killed → trim orphaned. Now streams source from S3 + one `trim`+`concat` pass; only the output touches `/tmp`. |
-| `bfd6a57` | `POST /ops/retrim` + `POST /ops/sweep-stale-trims` + `trim_attempts` column — recover trims killed mid-encode (attempt-capped + ops alert). |
-| `75dfc33` | trim source presigned with **SigV4 in the bucket's real region** (bucket is **eu-north-1**; SigV2/us-east-1 → 400). Region auto-detected via the `x-amz-bucket-region` header. |
-| `0b98d8d` | `_mark_trim_accepted` stamps `trim_requested_at=NOW()` so a fresh re-fire isn't seen as stale and double-fired by the sweep. |
-
-**Ingest worker instance was moved back to $7 (standard)** — the failures were
-never memory (they were the debug_data blob + silver DROP), so the $25 bump was
-unjustified. If a *truly enormous* match ever pressures 512 MB it will now fail
-**visibly** (real error + the stale-ingest sweep), and you can bump just-in-time.
-
-## New env vars (all have safe defaults)
-
-`DEBUG_DATA_MAX_BYTES`=2000000 · `INGEST_DB_RETRY_MAX`=5 / `INGEST_DB_RETRY_BASE_S`=5 ·
-`SWEEP_SA_MAX_ATTEMPTS`=4 · `TRIM_STALE_AFTER_S`=1800 / `TRIM_SWEEP_MAX_ATTEMPTS`=3 ·
-`TRIM_STREAM_INPUT`=1 (0 = download fallback) · `TRIM_ENCODE_TIMEOUT_S`=3600 ·
-`TRIM_PRESIGN_EXPIRY_S`=21600 · `S3_BUCKET_REGION` (override; auto-detected otherwise).
-
-## New ops surface + schema
-
-- `POST /ops/retrim {task_id, force?}` — reset + re-fire one trim.
-- `POST /ops/sweep-stale-trims {dry_run, limit}` — recover trims stuck at
-  accepted/queued/processing (cron-wired; attempt-capped).
-- `POST /ops/sweep-sa-orphans` — now covers stuck-stale ingests too.
-- New column `bronze.submission_context.trim_attempts INT`.
-- Cron `cron_sweep_t5_orphans.py` now also POSTs `/ops/sweep-stale-trims`.
-- `tf_readonly` was GRANTed SELECT on `silver.*` (so dev can read the analytics tables).
-
-## Open audit P1s (unchanged — none touched this session)
-
-All billing/frontend/gold, outside the silver-derivation work. Ranked:
-1. **deuce/ad midline** (`build_silver_v2.py:653`) — splits on drifting AVG instead of fixed 5.485.
-2. **hollow ingest bills the customer** — zero-row ingest marked completed + consumes a credit.
-3. **NULL rendered as `0%`** across Match Analytics (frontend).
-4. **Serve Strategy totals double-count** (frontend re-keys + sums).
-5. **soft-deleted matches never leave `vw_player`** (`gold_init.py`, no `deleted_at IS NULL`).
-6. P2: serve-speed KPIs average a partial sample; `_validate_rally_count` false-alarms.
-
-## Dashboard data layer — BUILT + wired + first prod run confirmed
-
-`silver_analytics/` (fitness / movement-grid / quality) is wired into the ingest
-worker (STEP 3b) and populated on df594aea's real ingest (762 grid cells, 2
-player summaries, 1 quality row). **Dashboards NOT built yet** — that's the next
-build after validation. Roadmap: `.claude/plans/twinkly-seeking-bentley.md`
-(momentum curve needs no new table; fitness/heatmap read the new tables).
+- **df594aea video TRIM** stuck at `trim_status='accepted'` (no customers, test
+  match). Pull the real video-worker Logs for `FFMPEG TRIM task_id=df594aea`;
+  re-fire `POST /ops/retrim {"task_id":"df594aea-…"}`. Low priority.
+- **`video-worker.onrender.com` is a FOREIGN app** — fix the committed `render.yaml`
+  `VIDEO_WORKER_BASE_URL`; don't external-health-check that URL.
+- **quality_tier calibration:** both c8b77210 (good) and df594aea (bad) read
+  `medium` — thresholds don't discriminate; df594aea should read `low`.
 
 ## Reference matches
 
 | task | who | note |
 |---|---|---|
-| `c8b77210` | Tomo v Jimbo Ma | **primary reference — 18/18 vs video.** Protect from orphan sweep. |
-| `df594aea` | **Erin v Jolanda** | this session's match — 611 shots / 95 points, badly tracked (ball 0.29). **Next: validate vs video.** |
-| `0336b82b` | Erin v Jolanda (earlier run) | different SportAI run of the same footage |
+| `c8b77210-542c-4ef9-b026-9d800c932817` | Tomo v Jimbo | **18/18 anchor** — protect from orphan sweep |
+| `df594aea-78ef-47b1-8c10-60174a58d8b0` | Erin v Yolanda | recon GT match; badly tracked (ball 0.29) |
+| `0336b82b` | Erin v Yolanda (earlier run) | same footage, different SA run |
+
+## Open audit P1s (unchanged — none touched)
+
+deuce/ad midline · hollow-ingest billing · NULL-as-0% frontend · serve-strategy
+double-count · soft-delete on `vw_player`. (See prior pickup / audit closeout.)
 
 ## Canonical docs
 
+- Task plan + outcome → `docs/_investigation/silver_recon_bench_plan.md`
 - Pipeline logic + filter contract → `docs/_investigation/silver_gold_filter_contract.md`
-- Audit closeout → `docs/_investigation/pipeline_end_to_end_audit_2026-07-19.md`
-- Bench (mandatory before serve_detector edits): `.venv/Scripts/python -m ml_pipeline.diag.bench` (ea1e500c=12/26, 880dff02=23/24).
-
-## Key lesson from this session
-
-**Don't guess Render/infra failures — get the actual service log.** The df594aea
-cause was misread as OOM (→ a wasted memory bump) and as a generic failover before
-the worker's own log named it (`debug_event` 7.6 MB insert → severed connection).
-Each real log line was decisive. See memory `feedback_get_real_logs_not_guess`.
+- Recon bench → `ml_pipeline/diag/recon_bench.py`; GT → `ml_pipeline/ground_truth/recon_*.json`
+- Serve bench (mandatory pre-`build_silver_v2`/`serve_detector` push): `.venv/Scripts/python -m ml_pipeline.diag.bench`
