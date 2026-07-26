@@ -166,12 +166,14 @@ The ingest worker is **self-contained** — does NOT import `upload_app.py`, cal
 
 S3 presigned URLs + multipart, sport-routed submission, task-status orchestration, auto-ingest, video-trim callback, SES notify, CORS preflight for `/api/client/*`. Blueprints: grep `app.register_blueprint`.
 
+**It is a ~5.4k-line monolith — navigate it by grep, never by reading it top to bottom.** `@app.` finds its own routes (the `/ops/*` surface plus submit/task-status), `_do_ingest_t5` is the T5 in-process ingest, `_technique_run_pipeline` the technique thread, `trigger_video_trim` the trim hand-off. `client_api.py` (~2.6k) and `build_silver_v2.py` (~2.1k) are the other two files big enough to need the same treatment.
+
 **On-boot init order** (each try/except-wrapped so one failure can't kill the service; order matters because later steps may read earlier views):
 1. `gold_init_presentation()` — `gold.vw_player`, `vw_point`, `match_*`, `player_performance`
 2. legacy `gold_init()` — `gold.vw_client_match_summary` (feeds `/api/client/matches` sidebar; will be replaced by `gold.match_kpi`)
 3. `init_tennis_coach()` + register `coach_bp` — `gold.coach_*` views + `tennis_coach.coach_cache`
 4. `init_support_bot()` + register `support_bp` — `support_bot.conversations` + `faq_cache`
-5. register `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep`
+5. register `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep` — **and `cleanup.retention_sweep_bp`** — `POST /ops/retention-sweep`
 6. register `diag_sql.diag_sql_bp` — `POST /ops/diag/sql`
 7. `technique_bronze_init()` + `ensure_silver_schema()` + `init_technique_gold_views()`
 8. `init_auth_v2(app)` — Clerk JWT verifier boot hook (logs state; the actual dual-mode auth is in `client_api._guard()` / `resolve_principal`)
@@ -304,6 +306,7 @@ All `/ops/*` use header-only auth (`X-Ops-Key: <OPS_KEY>` or `Authorization: Bea
 - `GET /ops/db-ping` — DB connectivity
 - `POST /ops/compact-storage` — `VACUUM (FULL, ANALYZE)` over bronze/silver/ml_analysis tables, returns per-table `before/after/freed` bytes. Optional `{"only": ["schema.table", …]}` to scope. Takes ACCESS EXCLUSIVE per table — low-traffic only.
 - `POST /ops/orphan-sweep` — soft-delete cascade mop-up. Two passes: (1) child rows of deleted `submission_context`, (2) true orphans with no `submission_context`. `{"dry_run": true}` reports counts; `{"include_orphans": false}` skips pass 2. Never touches `billing.*`. (`cleanup/orphan_sweep.py`)
+- `POST /ops/retention-sweep` — **the only destructive `/ops/*` endpoint** (privacy scope v2 enforcement of `core.retention_rule`): soft-deletes closed accounts' submissions, **deletes their S3 videos**, and anonymises account/member PII (job A), plus deletes expired originals still in S3 (job B). Billing rows are anonymised, never hard-deleted. **DRY-RUN BY DEFAULT and NOT cron-wired** — deletes nothing unless POSTed with `{"dry_run": false}`. Review the dry-run report first; `{"limit": 500}` caps it. (`cleanup/retention_sweep.py`)
 - `POST /ops/sweep-t5-orphans` — fires `_start_ingest_background` for `tennis_singles_t5` tasks where `ingest_started_at IS NULL` but Batch is `complete`. Plugs the polling-gate gap (rule #10). `{"dry_run": true, "limit": 50, "min_age_minutes": 5}`. Idempotent via the inner ingest gate + `training_corpus` UNIQUE. Cron runs every 5 min via `cron_sweep_t5_orphans.py`.
 - `POST /ops/sweep-sa-orphans` — SportAI (`tennis_singles`) twin: recovers ingests that never fired (browser closed) **and** ones that started then died mid-flight (Render redeploy / OOM / DB-in-recovery) — `ingest_started_at` set, no terminal state. Poison-match cap `SWEEP_SA_MAX_ATTEMPTS` (counts `bronze/started` events) → past the cap it stamps `ingest_error`+`last_status='failed'` so `/ops/alert-failures` escalates. Cron every 5 min.
 - `POST /ops/sweep-stale-trims` — recovers video trims killed mid-encode (the `/tmp`-2GB kill, spin-down, redeploy) that are stuck at `trim_status` accepted/queued/processing with no finish. Resets + re-fires (`trim_attempts`-capped by `TRIM_SWEEP_MAX_ATTEMPTS`; give-up stamps `trim_status='failed'` + ops email). Cron every 5 min. `{"dry_run": true, "limit": 50}`.
@@ -333,6 +336,7 @@ Try/except-wrapped (failure is logged, service still boots):
 - `tennis_coach.coach_bp` — LLM coach endpoints.
 - `support_bot.support_bp` — `/api/support/*`.
 - `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep`.
+- `cleanup.retention_sweep_bp` — `POST /ops/retention-sweep` (dry-run by default, no cron).
 - `diag_sql.diag_sql_bp` — `POST /ops/diag/sql`.
 - `ml_pipeline.api.ml_analysis_bp` — local-only; import fails on Render (no `cv2` / `torch`). Dev diagnostics only, never serves prod.
 
@@ -341,7 +345,7 @@ Always-on (de-gated 2026-06-17 — `register()` registers unconditionally; each 
 - `core_api.core_bp` — `/api/core/*`, thin HTTP layer over `core_db` repositories. **Wired into `upload_app.py` boot (2026-06-17)**; dual-mode auth (Clerk JWT via `resolve_principal`, or `CORE_API_KEY`/`CLIENT_API_KEY`). The canonical `core.*` surface.
 - `auth_v2` — not a blueprint; `init_auth_v2(app)` boot hook + `resolve_principal` consumed by `client_api._guard()` and the other dual-mode guards.
 
-**Cron scripts** (root-level, invoked by Render Cron Jobs, not blueprints):
+**Cron scripts** (root-level, not blueprints). **The crons are NOT in `render.yaml`** — that file declares only the four web services, so the schedules live in the Render dashboard only. Don't conclude a cron is dead because `grep cron render.yaml` is empty.
 - `cron_capacity_sweep.py` — periodic billing/capacity sweep (see `docs/business/billing-implementation.md`, `docs/business/env-vars.md`).
 - `cron_monthly_refill.py` — monthly entitlement refill for active subscriptions.
 - `cron_sweep_t5_orphans.py` — every 5 min; fires `POST /ops/sweep-t5-orphans` (pairs with rule #10). Also POSTs `/ops/sync-feedback-signals` on the same tick (feedback consolidation is piggybacked here to avoid a second paid Render cron).
