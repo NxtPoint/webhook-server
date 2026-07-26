@@ -18,12 +18,14 @@ done; the trim is polish). See "Parked" below.
 **THE job for next session = build the two-match silver reconciliation bench and
 strengthen silver (logic-only) → full plan in
 `docs/_investigation/silver_recon_bench_plan.md`.** The owner has hand-mapped the
-full Erin v Jolanda match on video (Excel: `…OneDrive\Documentos\Tenfifty5\erin_v_yolanda recon.xlsx`;
-Erin=low id ~427, Yolanda ~770; point start/end marked in cell colours). Baseline
-numbers below. **Start by extracting + getting Tomo to SIGN OFF the ground truth**
-(the colour scheme is non-uniform — verify before building on it), then the bench,
-then sound silver levers under the iron rule: improve df594aea WITHOUT moving
-c8b77210 off 18/18 (anti-overfit), no manufacturing, bronze is the ceiling.
+full Erin v Jolanda match on video (Excel: `…OneDrive\Documentos\Tenfifty5\erin_v_yolanda recon.xlsx`).
+**Ground truth is CLEAN**: column A = `true point` (1–100), column C = silver `id` —
+join those, no colour parsing. **First-look already done: 86/100 points are 1:1
+with silver; the gap is 6 merges + 1 split (see the plan doc §First-look).** Next:
+persist the GT in-repo, ask Tomo for a true WINNER per point, build the bench, then
+sound silver levers under the iron rule: improve df594aea WITHOUT moving c8b77210
+off 18/18 (anti-overfit), no manufacturing, bronze is the ceiling (most merges are
+missed serves = bronze).
 
 ## THE JOB — validate df594aea against the owner's video
 

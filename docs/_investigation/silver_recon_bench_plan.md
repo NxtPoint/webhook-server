@@ -43,29 +43,43 @@ Owner-reported from the video (his camera setup, acknowledged imperfect):
 Owner estimate: ~80% already correct, ~100 points (silver has **95**). "Materially
 right." The job is to close the *sound-logic* portion of the gap, not all of it.
 
-## Ground truth — extraction + VERIFY FIRST (do this before any bench code)
+## Ground truth — CLEAN, ready to use (Tomo finalised 2026-07-26)
 
 The GT lives in `C:\Users\tomos\OneDrive\Documentos\Tenfifty5\erin_v_yolanda recon.xlsx`
-(Sheet1, 611 rows = the silver shot export; `id` col = silver.point_detail id).
-Players: **Erin = low id (~427), Yolanda = ~770.**
+(Sheet1, 611 rows = the silver shot export). Players: **Erin = low id (~427),
+Yolanda ~770.** Tomo added **column A = `true point` (1–100)** — one value per
+shot — and **column B = `time`**. Columns then shift +2: **`id` (silver
+point_detail id) = column C**, `player_id` = column E.
 
-The point mapping is in **cell fill colours marking the START and END of each
-point**, NOT whole rows (colours are non-uniform across columns — a naïve row-colour
-read is wrong; a first pass gave 31 runs, not ~100). Colours: blue `FF00B0F0` +
-yellow `FFFFFF00` = normal points (alternating; he switched to blue when yellow
-would repeat), green (theme) = tiebreak, orange (theme) = **potentially problematic
-(there may be more oranges)**.
+**Extraction is now trivial and unambiguous** (no colour parsing): join
+`col A (true point)` ↔ `col C (silver id)`. 390 shots carry a true point (the
+spine; excluded shots are blank), covering **100 true points**. Verified end-to-end:
+all 100 true points join to silver, 0 uncovered.
 
-**Step 1 (mandatory): extract the GT into a structured form and get Tomo to
-sign it off** before building anything on it. Two options, pick with Tomo:
-  (a) Ask Tomo for a small clean tab: `point_no | start_silver_id | end_silver_id |
-      winner (Erin/Yolanda) | type (normal/tiebreak/problem)` — most robust, small
-      effort, removes all colour-parsing ambiguity.
-  (b) Parse the start/end colour markers programmatically, reconstruct the ~100
-      points, render them back (point#, id range, winner, type) and have Tomo
-      confirm — respects the work already done, but must be eyeball-verified.
-Store the signed-off GT in-repo (e.g. `ml_pipeline/ground_truth/recon_df594aea.json`)
-alongside a c8b77210 GT (the 18/18 winners we already validated).
+**Step 1 remaining:** (a) persist this GT in-repo
+(`ml_pipeline/ground_truth/recon_df594aea.json` = `{silver_id: true_point}`) plus a
+c8b77210 GT (the 18/18 winners). (b) **Ask Tomo to add a true WINNER per point**
+(Erin/Yolanda) — the recon above scores point *boundaries*; winner accuracy (the
+18/18-style metric) needs his winner per point, or validate winners on the 86 clean
+points against the video.
+
+## First-look reconciliation baseline (2026-07-26, read-only)
+
+Joining the clean GT to prod silver:
+
+- **86 / 100 points are exactly 1:1** (silver point_number == true point). Better
+  than the owner's ~80% estimate.
+- **0 true points with no silver coverage.**
+- **6 MERGES** (silver g(l)ued consecutive real points → missed a boundary):
+  silver pt `8`=true[8,9,10] · `20`=[22,23] · `35`=[38,39] · `55`=[58,59] ·
+  `58`=[62,63] · `68`=[73,74].
+- **1 SPLIT**: silver broke true point `44` into two.
+
+The gap is dominated by **missed point boundaries (merges)** — a new point started
+(serve) but silver didn't break. That is mostly a **bronze/serve-detection ceiling**
+(RULE 6: fix bronze, don't paper over in silver); investigate each merge as
+missed-serve (bronze) vs contiguity-threshold (silver). The single split (44) is
+the one candidate for a silver over-break. **This is the target list for the bench.**
 
 ## Bench design
 
@@ -79,20 +93,28 @@ Extend the existing `bench_silver` family (local Docker Postgres, `fixtures_silv
   measured starting accuracy). CI/`bench` stays the serve-detector gate; this is a
   local reconciliation gate run before any silver-derivation change.
 
-## Candidate SOUND silver levers (hypotheses to TEST, not to assume)
+## Candidate SOUND silver levers (driven by the first-look, TEST don't assume)
 
-Each must improve df594aea AND keep c8b77210 at 18/18, or it's rejected:
-1. **Rally gap-bridging** — when tracking drops <Ns mid-rally (player out of frame)
-   and resumes with a plausible continuation (no serve between, ball within court
-   envelope), treat it as one rally, not two. Directly targets the "point looks
-   like it ended" flaw. Delicate: must not merge genuinely separate points.
-2. **Point-winner robustness** when the last tracked shot is pre-frame-exit (the
-   winner is currently the last *tracked* shot's outcome — verify that's right when
-   data cuts off).
-3. Re-check `exclude_d` membership on the boundary shots the bridging would affect.
+The measured error pattern is **6 merges + 1 split**, so the levers are:
+1. **Triage each of the 6 merges** (silver pts 8/20/35/55/58/68) — was there a real
+   serve/point-start silver didn't break on? Trace the boundary in bronze:
+   - **Missed serve (bronze)** → the serve detector never fired (Erin far serves,
+     player out of frame). This is the **bronze/serve ceiling — do NOT fix in
+     silver** (RULE 6). Expected to be most of them; confirms the ~5 dropped points.
+   - **Real >5s break present but silver didn't split** → a genuine silver
+     contiguity bug worth fixing (but `SILVER_RALLY_CONTIGUITY` already breaks at
+     the first >5s gap, so this would be a surprise — verify with the timestamps).
+2. **The 1 split (true point 44)** — the clearest silver-side candidate: did silver
+   over-break one real rally into two (e.g. a mid-rally tracking gap when a player
+   left frame)? If so, a **sound gap-bridge** (resume-within-window, no serve
+   between, ball in court envelope) may fix it — but it must not re-merge the 6.
+3. **Point-winner accuracy** — once Tomo adds true winners, score the last-shot →
+   winner logic on the 86 clean points (the 18/18-style metric).
 
 Do NOT pursue: recovering missed far serves in silver (bronze detector job), or
-encoding line-call overrides (genuinely ambiguous).
+encoding line-call overrides (genuinely ambiguous). Realistic expectation: much of
+the merge gap is a bronze ceiling; the honest silver win is small (the split + any
+true contiguity miss) — which is the correct, integrity-preserving outcome.
 
 ## Verification loop (per lever)
 
