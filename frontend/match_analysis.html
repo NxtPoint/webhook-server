@@ -2814,8 +2814,20 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
       : v < lo ? lo + margin * (1 - Math.exp(-(lo - v) / scale))
       : v;
       if (activeTab === 'serve-placement') {
-        by = soft(by, NET_Y, SVC_NEAR, 0.6, 0.5);          // into the service box (depth)
-        bx = soft(bx, singleLeft, singleRight, 0.4, 0.4);  // wide serves -> just inside the sideline
+        // A FAULT (shot_ix_in_point NULL) landed OUT. If the tracker put its
+        // bounce INSIDE the service box that's a known-wrong coordinate (a fault
+        // can't land in the box) with no meaningful placement -> drop it. Genuine
+        // long/wide faults plot where they landed (NOT soft-clamped — clamping an
+        // out-fault inward would falsely show it in the box). In-serves get the
+        // soft-clamp into the box as normal.
+        if (s.shot_ix_in_point == null) {
+          if (bx >= singleLeft && bx <= singleRight && by >= NET_Y && by <= SVC_NEAR) {
+            droppedNoCoords++; return;
+          }
+        } else {
+          by = soft(by, NET_Y, SVC_NEAR, 0.6, 0.5);          // into the service box (depth)
+          bx = soft(bx, singleLeft, singleRight, 0.4, 0.4);  // wide serves -> just inside the sideline
+        }
       } else {
         by = soft(by, NET_Y, COURT_L, 0.5, 0.5);           // return/rally: past the baseline
         bx = soft(bx, 0, COURT_W, 0.4, 0.4);               // past the doubles sideline
