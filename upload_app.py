@@ -2125,6 +2125,14 @@ INGEST_STALE_AFTER_S = int(os.getenv("INGEST_STALE_AFTER_S", "1800"))  # 30 minu
 # browser path + every sweep re-fire, not just sweep re-fires.
 SWEEP_SA_MAX_ATTEMPTS = int(os.getenv("SWEEP_SA_MAX_ATTEMPTS", "4"))
 
+# Video-trim recovery. A trim that started (trim_status accepted/queued/processing)
+# but never reached a terminal state within this window was almost certainly
+# killed mid-encode (the /tmp-2GB kill, a spin-down, or a redeploy). The stale-trim
+# sweep re-fires it; TRIM_SWEEP_MAX_ATTEMPTS bounds re-fires so a genuinely-broken
+# trim (e.g. source video deleted from S3) escalates instead of looping.
+TRIM_STALE_AFTER_S = int(os.getenv("TRIM_STALE_AFTER_S", "1800"))     # 30 minutes
+TRIM_SWEEP_MAX_ATTEMPTS = int(os.getenv("TRIM_SWEEP_MAX_ATTEMPTS", "3"))
+
 
 def _is_stale_ingest_row(row) -> bool:
     started_at = row.get("ingest_started_at") if row else None
@@ -5057,6 +5065,154 @@ def ops_sweep_sa_orphans():
          "attempts": int(o["attempts"] or 0)}
         for o in candidates
     ]
+    return jsonify(result), 200
+
+
+@app.post("/ops/retrim")
+def ops_retrim():
+    """Re-fire the video trim for ONE task. Resets a stuck/failed trim_status so
+    trigger_video_trim isn't skipped by its idempotency gate, then re-triggers.
+
+    Body: {"task_id": "...", "force": false}  (force re-trims even a completed one).
+    Header-only auth (OPS_KEY)."""
+    if not _guard():
+        return Response("Forbidden", 403)
+    body = request.get_json(silent=True) or {}
+    task_id = str(body.get("task_id") or "").strip()
+    force = bool(body.get("force", False))
+    if not task_id:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET trim_status = NULL, trim_error = NULL, trim_finished_at = NULL
+                 WHERE task_id = :t
+                   AND deleted_at IS NULL
+                   AND (CAST(:force AS boolean) OR lower(coalesce(trim_status,'')) <> 'completed')
+            """), {"t": task_id, "force": force})
+    except Exception as e:
+        return jsonify({"ok": False, "task_id": task_id,
+                        "error": f"reset_failed: {e.__class__.__name__}: {e}"}), 500
+
+    try:
+        out = trigger_video_trim(task_id)
+        return jsonify({"ok": True, "task_id": task_id, "trigger": out}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "task_id": task_id,
+                        "error": f"{e.__class__.__name__}: {e}"}), 500
+
+
+@app.post("/ops/sweep-stale-trims")
+def ops_sweep_stale_trims():
+    """Recover video trims that started but never finished — killed mid-encode by
+    the /tmp limit, a starter spin-down, or a redeploy. Such a trim sits at
+    trim_status in (queued|accepted|processing) with no trim_finished_at forever,
+    because the worker's completion callback never fired and nothing re-fires it
+    (this is what left df594aea's footage "still processing").
+
+    Finds those older than TRIM_STALE_AFTER_S (ingest complete, not deleted),
+    resets + re-fires each. TRIM_SWEEP_MAX_ATTEMPTS bounds re-fires: past the cap
+    it stamps trim_status='failed' and emails ops, so a genuinely-broken trim
+    (e.g. source deleted from S3) escalates instead of looping.
+
+    Body (optional): {"dry_run": true, "limit": 50}. Header-only auth (OPS_KEY).
+    Paired with the 5-min cron in cron_sweep_t5_orphans.py."""
+    if not _guard():
+        return Response("Forbidden", 403)
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+    limit = int(body.get("limit", 50))
+    if limit < 1 or limit > 500:
+        return jsonify({"ok": False, "error": "limit must be in [1, 500]"}), 400
+
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text(
+                "ALTER TABLE bronze.submission_context "
+                "ADD COLUMN IF NOT EXISTS trim_attempts INT DEFAULT 0"))
+        with engine.connect() as conn:
+            rows = conn.execute(sql_text("""
+                SELECT task_id::text AS task_id,
+                       trim_status,
+                       trim_requested_at,
+                       COALESCE(trim_attempts, 0) AS attempts
+                  FROM bronze.submission_context
+                 WHERE deleted_at IS NULL
+                   AND ingest_finished_at IS NOT NULL
+                   AND trim_finished_at IS NULL
+                   AND lower(COALESCE(trim_status, '')) IN ('queued','accepted','processing')
+                   AND trim_requested_at IS NOT NULL
+                   AND trim_requested_at < NOW() - (:stale_s || ' seconds')::interval
+                 ORDER BY trim_requested_at ASC
+                 LIMIT :lim
+            """), {"stale_s": str(TRIM_STALE_AFTER_S), "lim": limit}).mappings().all()
+    except Exception as e:
+        app.logger.exception("OPS SWEEP-STALE-TRIMS query failed")
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+    stale = [dict(r) for r in rows]
+    result = {"ok": True, "dry_run": dry_run, "found": len(stale),
+              "max_attempts": TRIM_SWEEP_MAX_ATTEMPTS, "triggered": []}
+
+    if dry_run:
+        result["sample"] = [
+            {"task_id": s["task_id"], "trim_status": s["trim_status"],
+             "attempts": int(s["attempts"] or 0),
+             "trim_requested_at": str(s["trim_requested_at"])}
+            for s in stale[:10]
+        ]
+        return jsonify(result), 200
+
+    def _giveup_trim(tid: str, attempts: int) -> None:
+        err = (f"trim stalled after {attempts} attempts — worker likely killed "
+               f"mid-encode, or the source video is unavailable; needs investigation")
+        try:
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                       SET trim_status='failed', trim_error=:e, trim_finished_at=now()
+                     WHERE task_id=:t AND trim_finished_at IS NULL
+                """), {"t": tid, "e": err})
+        except Exception:
+            app.logger.exception("SWEEP-STALE-TRIMS give-up stamp failed task_id=%s", tid)
+        try:
+            from coach_invite.video_complete_email import send_ops_email
+            send_ops_email(f"⚠️ Video trim stalled: {tid}", err + f"\n\nTask: {tid}")
+        except Exception:
+            pass
+
+    def _worker(items: list) -> None:
+        for it in items:
+            tid = it["task_id"]
+            attempts = int(it.get("attempts") or 0)
+            try:
+                if attempts >= TRIM_SWEEP_MAX_ATTEMPTS:
+                    _giveup_trim(tid, attempts)
+                    app.logger.error(
+                        "SWEEP-STALE-TRIMS task_id=%s GAVE UP after %s attempts", tid, attempts)
+                    continue
+                # Reset the stuck state + count this re-fire, then trigger.
+                with engine.begin() as conn:
+                    conn.execute(sql_text("""
+                        UPDATE bronze.submission_context
+                           SET trim_status=NULL, trim_error=NULL, trim_finished_at=NULL,
+                               trim_attempts = COALESCE(trim_attempts,0) + 1
+                         WHERE task_id=:t
+                    """), {"t": tid})
+                out = trigger_video_trim(tid)
+                app.logger.info(
+                    "SWEEP-STALE-TRIMS task_id=%s attempts=%s re-fired=%s",
+                    tid, attempts + 1, out.get("accepted"))
+            except Exception as exc:
+                app.logger.exception("SWEEP-STALE-TRIMS task_id=%s error: %s", tid, exc)
+
+    threading.Thread(target=_worker, args=(stale,), daemon=True).start()
+    result["triggered"] = [
+        {"task_id": s["task_id"], "attempts": int(s["attempts"] or 0)} for s in stale]
     return jsonify(result), 200
 
 

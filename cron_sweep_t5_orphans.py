@@ -50,6 +50,7 @@ t5_url = os.environ.get("SWEEP_T5_ORPHANS_URL") or f"{base}/ops/sweep-t5-orphans
 sa_url = os.environ.get("SWEEP_SA_ORPHANS_URL") or f"{base}/ops/sweep-sa-orphans"
 feedback_url = os.environ.get("SYNC_FEEDBACK_URL") or f"{base}/ops/sync-feedback-signals"
 alert_failures_url = os.environ.get("ALERT_FAILURES_URL") or f"{base}/ops/alert-failures"
+stale_trims_url = os.environ.get("SWEEP_STALE_TRIMS_URL") or f"{base}/ops/sweep-stale-trims"
 
 _body = {"dry_run": False}
 _limit = os.environ.get("SWEEP_T5_ORPHANS_LIMIT")
@@ -89,7 +90,11 @@ ok_fb = _post_sweep("SYNC-FEEDBACK", feedback_url)
 # 4th call (zero extra cron cost): email the ops inbox about any processing failures
 # not yet alerted (covers every failure path in both processes; idempotent per task).
 ok_af = _post_sweep("ALERT-FAILURES", alert_failures_url)
+# 5th call (zero extra cron cost): recover video trims killed mid-encode (the /tmp
+# limit / spin-down / redeploy case) that are stuck at accepted/queued with no
+# terminal state. Idempotent + attempt-capped server-side.
+ok_st = _post_sweep("SWEEP-STALE-TRIMS", stale_trims_url)
 
 # Non-zero exit only if ALL failed (so a transient single-endpoint blip doesn't
 # red the cron when the others ran fine).
-sys.exit(0 if (ok_t5 or ok_sa or ok_fb or ok_af) else 1)
+sys.exit(0 if (ok_t5 or ok_sa or ok_fb or ok_af or ok_st) else 1)
