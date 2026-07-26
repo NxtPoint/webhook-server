@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 log = logging.getLogger(__name__)
 
@@ -170,8 +172,52 @@ def _sum_segment_durations(valid_segments: List[Tuple[float, float]]) -> float:
     return round(sum((e - s) for s, e in valid_segments), 3)
 
 
+_bucket_region_cache: Dict[str, str] = {}
+
+
+def _bucket_region(bucket: str) -> str:
+    """Resolve the bucket's real region. The worker's default AWS_REGION may not
+    match the bucket (worker=us-east-1, bucket=eu-north-1), and a presigned URL is
+    region+signature specific — signing for the wrong region 400s.
+
+    Detection order: explicit S3_BUCKET_REGION env → the `x-amz-bucket-region`
+    header (returned even on a 403, so it works WITHOUT s3:GetBucketLocation) →
+    get_bucket_location → AWS_REGION → us-east-1."""
+    if bucket in _bucket_region_cache:
+        return _bucket_region_cache[bucket]
+
+    def _hdr_region(meta: dict) -> str:
+        return (meta or {}).get("HTTPHeaders", {}).get("x-amz-bucket-region", "") or ""
+
+    region = (os.getenv("S3_BUCKET_REGION") or "").strip()
+    if not region:
+        try:
+            resp = s3.head_bucket(Bucket=bucket)
+            region = _hdr_region(resp.get("ResponseMetadata", {}))
+        except ClientError as ce:
+            region = _hdr_region(ce.response.get("ResponseMetadata", {}))
+        except Exception:
+            region = ""
+    if not region:
+        try:
+            region = s3.get_bucket_location(Bucket=bucket).get("LocationConstraint") or ""
+        except Exception:
+            region = ""
+    region = region or (os.getenv("AWS_REGION") or "us-east-1").strip()
+    _bucket_region_cache[bucket] = region
+    return region
+
+
 def _presigned_get_url(bucket: str, key: str, expires: int) -> str:
-    return s3.generate_presigned_url(
+    """SigV4 presigned GET in the bucket's own region. Newer regions (eu-north-1
+    etc.) reject SigV2, and ffmpeg reads a static URL, so this must be exact."""
+    region = _bucket_region(bucket)
+    client = boto3.client(
+        "s3",
+        region_name=region,
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
+    return client.generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": key},
         ExpiresIn=expires,
