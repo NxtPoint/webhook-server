@@ -15,8 +15,15 @@ path was hardened. **Everything is shipped to `main`.** Bench is green.
 parked at `trim_status='accepted'` — not blocking (the dashboard/analytics are
 done; the trim is polish). See "Parked" below.
 
-**THE job for next session = analytics validation of `df594aea` against video**
-(the owner is recording actual values). Baseline numbers are below.
+**THE job for next session = build the two-match silver reconciliation bench and
+strengthen silver (logic-only) → full plan in
+`docs/_investigation/silver_recon_bench_plan.md`.** The owner has hand-mapped the
+full Erin v Jolanda match on video (Excel: `…OneDrive\Documentos\Tenfifty5\erin_v_yolanda recon.xlsx`;
+Erin=low id ~427, Yolanda ~770; point start/end marked in cell colours). Baseline
+numbers below. **Start by extracting + getting Tomo to SIGN OFF the ground truth**
+(the colour scheme is non-uniform — verify before building on it), then the bench,
+then sound silver levers under the iron rule: improve df594aea WITHOUT moving
+c8b77210 off 18/18 (anti-overfit), no manufacturing, bronze is the ceiling.
 
 ## THE JOB — validate df594aea against the owner's video
 
