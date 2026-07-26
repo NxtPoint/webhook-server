@@ -47,9 +47,18 @@ MIN_KEEP_SEGMENT_S = float(os.getenv("MIN_KEEP_SEGMENT_S", "0.25"))
 OUTPUT_KEY_TEMPLATE = "trimmed/{task_id}/review.mp4"
 
 # Safety ceilings
-FFMPEG_TIMEOUT_S = int(os.getenv("FFMPEG_TIMEOUT_S", "1800"))        # 30 min per segment
+FFMPEG_TIMEOUT_S = int(os.getenv("FFMPEG_TIMEOUT_S", "1800"))        # legacy per-segment ceiling
 FFPROBE_TIMEOUT_S = int(os.getenv("FFPROBE_TIMEOUT_S", "60"))        # 1 min probe
 MIN_DISK_FREE_MB = int(os.getenv("TRIM_MIN_DISK_FREE_MB", "500"))    # 500 MB minimum
+
+# Streaming single-pass trim (2026-07-26). The old path downloaded the full
+# source + wrote N per-segment files + the output all to /tmp, which blew past
+# Render's 2 GB /tmp limit on long matches → instance killed → orphaned trim.
+# Now: stream the source straight from S3 (presigned URL, nothing downloaded)
+# and do ONE trim+concat filtergraph pass → only the final clip touches /tmp.
+TRIM_STREAM_INPUT = os.getenv("TRIM_STREAM_INPUT", "1").strip().lower() in ("1", "true", "yes", "y")
+TRIM_ENCODE_TIMEOUT_S = int(os.getenv("TRIM_ENCODE_TIMEOUT_S", "3600"))   # whole single-pass encode
+TRIM_PRESIGN_EXPIRY_S = int(os.getenv("TRIM_PRESIGN_EXPIRY_S", "21600"))  # 6h — covers a long encode
 
 s3 = boto3.client("s3")
 
@@ -157,21 +166,70 @@ def _normalize_segments(
     return deduped
 
 
-def _write_concat_file(concat_path: Path, segment_files: List[Path]) -> None:
-    """
-    FFmpeg concat demuxer expects one file line per segment.
-    Use resolved POSIX paths and escape single quotes safely.
-    """
-    lines: List[str] = []
-    for sf in segment_files:
-        resolved = sf.resolve().as_posix().replace("'", "'\\''")
-        lines.append(f"file '{resolved}'")
-
-    concat_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def _sum_segment_durations(valid_segments: List[Tuple[float, float]]) -> float:
     return round(sum((e - s) for s, e in valid_segments), 3)
+
+
+def _presigned_get_url(bucket: str, key: str, expires: int) -> str:
+    return s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expires,
+    )
+
+
+def _probe_source(src: str) -> Tuple[float, bool]:
+    """Probe a source (local path OR http(s) URL) for (duration_s, has_audio).
+
+    Works on a streamed presigned URL — ffprobe reads only the metadata via
+    range requests, so no full download is needed to clamp segments."""
+    dur_out = _run([
+        FFPROBE_BIN, "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        src,
+    ], timeout=FFPROBE_TIMEOUT_S)
+    try:
+        duration = float(dur_out)
+    except Exception as e:
+        raise RuntimeError(f"Could not parse ffprobe duration: {dur_out!r}") from e
+    if duration <= 0:
+        raise RuntimeError(f"Invalid probed duration: {duration}")
+
+    a_out = _run([
+        FFPROBE_BIN, "-v", "error",
+        "-select_streams", "a",
+        "-show_entries", "stream=index",
+        "-of", "csv=p=0",
+        src,
+    ], timeout=FFPROBE_TIMEOUT_S)
+    return duration, bool(a_out.strip())
+
+
+def _build_filter_script(valid_segments: List[Tuple[float, float]], has_audio: bool) -> str:
+    """Single-pass trim+concat filtergraph.
+
+    Explicit split/asplit so the ONE input stream can feed every segment (no
+    reliance on ffmpeg auto-split), keeping the whole trim to a single
+    decode+encode pass — no per-segment temp files, so /tmp only ever holds the
+    final clip. Written to a script file (-filter_complex_script) so a 100+
+    segment graph never hits a command-line length limit."""
+    n = len(valid_segments)
+    lines: List[str] = []
+    lines.append("[0:v]split=%d%s" % (n, "".join(f"[vs{i}]" for i in range(n))))
+    if has_audio:
+        lines.append("[0:a]asplit=%d%s" % (n, "".join(f"[as{i}]" for i in range(n))))
+    concat_in: List[str] = []
+    for i, (s, e) in enumerate(valid_segments):
+        lines.append(f"[vs{i}]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS[v{i}]")
+        concat_in.append(f"[v{i}]")
+        if has_audio:
+            lines.append(f"[as{i}]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{i}]")
+            concat_in.append(f"[a{i}]")
+    tail = "concat=n=%d:v=1:a=%d%s" % (n, 1 if has_audio else 0,
+                                        "[outv][outa]" if has_audio else "[outv]")
+    lines.append("".join(concat_in) + tail)
+    return ";\n".join(lines)
 
 
 # ============================================================
@@ -211,28 +269,39 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
 
     with tempfile.TemporaryDirectory(prefix=f"trim_{task_id[:8]}_") as td_raw:
         td = Path(td_raw)
-
-        src = td / "source_input"
         out = td / "review.mp4"
-        concat_list = td / "concat.txt"
+        filter_script = td / "filter.txt"
+        downloaded_src = td / "source_input"
 
         # --------------------------
-        # Disk space guard
+        # Disk guard — when streaming, only the OUTPUT lands in /tmp, so this is
+        # easily satisfied; it still catches a genuinely full volume.
         # --------------------------
-        disk = shutil.disk_usage(td)
-        free_mb = disk.free // (1024 * 1024)
+        free_mb = shutil.disk_usage(td).free // (1024 * 1024)
         if free_mb < MIN_DISK_FREE_MB:
             raise RuntimeError(
                 f"Insufficient disk space: {free_mb}MB free, need at least {MIN_DISK_FREE_MB}MB"
             )
 
         # --------------------------
-        # Download + probe source
+        # Source: stream from S3 (default — nothing downloaded, /tmp-safe) or,
+        # with TRIM_STREAM_INPUT=0, fall back to a full download.
         # --------------------------
-        log.info("FFMPEG TRIM task_id=%s downloading s3://%s/%s", task_id, s3_bucket, s3_key)
-        s3.download_file(s3_bucket, s3_key, str(src))
-        source_duration_s = _probe_duration(src)
-        log.info("FFMPEG TRIM task_id=%s source_duration=%.3fs", task_id, source_duration_s)
+        input_prefix_args: List[str] = []
+        if TRIM_STREAM_INPUT:
+            src = _presigned_get_url(s3_bucket, s3_key, TRIM_PRESIGN_EXPIRY_S)
+            # Survive transient network hiccups mid-encode on the HTTP input.
+            input_prefix_args = ["-reconnect", "1", "-reconnect_streamed", "1",
+                                 "-reconnect_delay_max", "10"]
+            log.info("FFMPEG TRIM task_id=%s streaming source from s3://%s/%s", task_id, s3_bucket, s3_key)
+        else:
+            log.info("FFMPEG TRIM task_id=%s downloading source s3://%s/%s", task_id, s3_bucket, s3_key)
+            s3.download_file(s3_bucket, s3_key, str(downloaded_src))
+            src = str(downloaded_src)
+
+        source_duration_s, has_audio = _probe_source(src)
+        log.info("FFMPEG TRIM task_id=%s source_duration=%.3fs has_audio=%s",
+                 task_id, source_duration_s, has_audio)
 
         # --------------------------
         # Normalize segments
@@ -243,63 +312,28 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
 
         total_keep = sum(e - s for s, e in valid_segments)
         log.info(
-            "FFMPEG TRIM task_id=%s segments=%d total_keep=%.3fs removing=%.3fs",
+            "FFMPEG TRIM task_id=%s segments=%d total_keep=%.3fs removing=%.3fs (single-pass)",
             task_id, len(valid_segments), total_keep, source_duration_s - total_keep,
         )
 
         # --------------------------
-        # Render each segment
-        # Re-encode each clip so concat is stable and deterministic
+        # ONE trim+concat pass. Reads the source once (streamed), writes only the
+        # final clip — no per-segment temp files, so /tmp stays tiny and it beats
+        # the 2 GB limit that killed long-match trims.
         # --------------------------
-        segment_files: List[Path] = []
+        filter_script.write_text(_build_filter_script(valid_segments, has_audio), encoding="utf-8")
 
-        for i, (s, e) in enumerate(valid_segments, start=1):
-            seg_file = td / f"seg_{i:03d}.mp4"
-            log.info("FFMPEG TRIM task_id=%s encoding segment %d/%d (%.3f-%.3fs)", task_id, i, len(valid_segments), s, e)
+        cmd = [FFMPEG_BIN, "-y", *input_prefix_args, "-i", src,
+               "-filter_complex_script", str(filter_script),
+               "-map", "[outv]"]
+        if has_audio:
+            cmd += ["-map", "[outa]"]
+        cmd += ["-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF, "-pix_fmt", "yuv420p"]
+        if has_audio:
+            cmd += ["-c:a", "aac", "-b:a", AUDIO_BITRATE]
+        cmd += ["-movflags", "+faststart", str(out)]
 
-            _run([
-                FFMPEG_BIN,
-                "-y",
-                "-ss", f"{s:.3f}",
-                "-to", f"{e:.3f}",
-                "-i", str(src),
-                "-map", "0:v:0",
-                "-map", "0:a?",
-                "-c:v", "libx264",
-                "-preset", VIDEO_PRESET,
-                "-crf", VIDEO_CRF,
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-b:a", AUDIO_BITRATE,
-                "-movflags", "+faststart",
-                str(seg_file),
-            ])
-
-            if not seg_file.exists():
-                raise RuntimeError(f"Segment file was not created: {seg_file}")
-
-            segment_files.append(seg_file)
-
-        if not segment_files:
-            raise ValueError("No segment files were created")
-
-        # --------------------------
-        # Concat
-        # Since clips are normalized to same codec/container settings,
-        # concat copy is acceptable and fast.
-        # --------------------------
-        _write_concat_file(concat_list, segment_files)
-
-        _run([
-            FFMPEG_BIN,
-            "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_list),
-            "-c", "copy",
-            "-movflags", "+faststart",
-            str(out),
-        ])
+        _run(cmd, timeout=TRIM_ENCODE_TIMEOUT_S)
 
         if not out.exists():
             raise RuntimeError("Final trimmed output was not created")
@@ -308,7 +342,6 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
         if trimmed_duration_s <= 0:
             raise RuntimeError("Trimmed output duration is invalid")
 
-        # Prefer actual output duration as truth
         out_key = OUTPUT_KEY_TEMPLATE.format(task_id=task_id)
         log.info("FFMPEG TRIM task_id=%s uploading to s3://%s/%s (%.3fs)", task_id, s3_bucket, out_key, trimmed_duration_s)
 
