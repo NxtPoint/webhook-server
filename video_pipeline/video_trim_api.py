@@ -200,7 +200,7 @@ def _mark_trim_accepted(conn, task_id: str) -> None:
     conn.execute(
         text("""
             UPDATE bronze.submission_context
-               SET trim_requested_at = COALESCE(trim_requested_at, NOW()),
+               SET trim_requested_at = NOW(),
                    trim_finished_at = NULL,
                    trim_status = 'accepted',
                    trim_error = NULL,
