@@ -153,6 +153,24 @@ SERVE_GAP_ANCHOR_S = float(os.getenv("SILVER_SERVE_GAP_ANCHOR_S") or "30")
 # Rollback: SILVER_SERVE_SIDE_FIXED_MIDLINE=0 restores the AVG(x) midline.
 SERVE_SIDE_FIXED_MIDLINE = (os.getenv("SILVER_SERVE_SIDE_FIXED_MIDLINE") or "1").strip().lower() in ("1", "true", "yes")
 
+# ========== SERVE FALSE-POSITIVE GUARD (2026-07-26) ==========
+# The geometric serve gate (serve_d) fires on ANY overhead-type swing struck
+# within ~eps of a baseline — it cannot tell a serve from a baseline overhead
+# or a smashed return. On df594aea true point 44 that mislabelled 466's return
+# (an fh_overhead at the far baseline, 1.07s after 772's real serve) as a serve,
+# so point_anchors started a NEW point on it and SPLIT one real point into two.
+#
+# Sound guard: two detected serves by DIFFERENT players within a few seconds is
+# impossible (only the server serves a point; the shot right after a serve is the
+# opponent's return, ~0.5-2s later). So a serve_d struck <=SERVE_FP_GAP_S after a
+# prior different-player serve_d is a RETURN — demote it. A real 1st->2nd serve is
+# the SAME player (never demoted); consecutive points' serves are >>3s apart.
+# Measured: demotes exactly 1 shot on df594aea (the split), 0 on c8b77210.
+#
+# Rollback: SILVER_SERVE_FP_GUARD=0.
+SERVE_FP_GUARD = (os.getenv("SILVER_SERVE_FP_GUARD") or "1").strip().lower() in ("1", "true", "yes")
+SERVE_FP_GAP_S = float(os.getenv("SILVER_SERVE_FP_GAP_S") or "3")
+
 # Coverage floor for trusting SportAI's is_in_rally as the gap_break escape.
 # A value > 1.0 can never be met, so the escape is DISABLED by default.
 #
@@ -682,6 +700,15 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         if SERVE_GAP_ANCHOR else ""
     )
 
+    # Demote a serve_d that lands <=SERVE_FP_GAP_S after a prior DIFFERENT-player
+    # serve — it's a return, not a serve (see SERVE_FP_GUARD at module top).
+    # Evaluated over serve rows only (srv_fp_seq), so the LAG is the previous SERVE.
+    serve_fp_demote_expr = (
+        "(ball_hit_s - LAG(ball_hit_s) OVER w) <= :serve_fp_gap "
+        "AND LAG(player_id) OVER w IS DISTINCT FROM player_id"
+        if SERVE_FP_GUARD else "FALSE"
+    )
+
     COURT_LEN       = cfg["court_length_m"]
     EPS             = cfg["eps_baseline_m"]
     SX_LEFT         = cfg["singles_left_x"]
@@ -795,6 +822,26 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       FROM base b
     ),
 
+    -- ========== SERVE FALSE-POSITIVE GUARD ==========
+    -- Over serve rows only, flag a serve struck <=:serve_fp_gap after a prior
+    -- DIFFERENT-player serve — that is a return misread as a serve (SERVE_FP_GUARD).
+    -- The LLM/O(n^2) trap is avoided: this scans the small serve-only set and
+    -- rejoins by id; no per-row correlated subquery.
+    srv_fp_seq AS (
+      SELECT id, ({serve_fp_demote_expr}) AS demote
+      FROM srv_detect
+      WHERE serve_d
+      WINDOW w AS (PARTITION BY task_id ORDER BY ball_hit_s, id)
+    ),
+    srv_guarded AS (
+      SELECT sd.id, sd.task_id, sd.player_id, sd.valid, sd.serve, sd.swing_type,
+             sd.volley, sd.ball_hit_s, sd.x, sd.y, sd.court_x, sd.court_y,
+             CASE WHEN COALESCE(fp.demote, FALSE) THEN NULL ELSE sd.server_end_raw END AS server_end_raw,
+             CASE WHEN COALESCE(fp.demote, FALSE) THEN FALSE ELSE sd.serve_d END AS serve_d
+      FROM srv_detect sd
+      LEFT JOIN srv_fp_seq fp ON fp.id = sd.id
+    ),
+
     -- Forward-fill server_end (window-function gap-fill). Replaces a per-row
     -- correlated subquery: the planner duplicated it once per server_end_d
     -- reference downstream (4x in srv_side_raw's CASE) and re-scanned the
@@ -811,7 +858,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
           PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS _se_grp
-      FROM srv_detect s
+      FROM srv_guarded s
     ),
     srv_end AS (
       SELECT g.id, g.task_id, g.player_id, g.valid, g.serve, g.swing_type,
@@ -1705,6 +1752,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         "b1": float(B1), "b2": float(B2), "b3": float(B3),
         "serve_src": _resolve_serve_source(conn, task_id, EPS, COURT_LEN),
         "serve_gap_s": float(SERVE_GAP_ANCHOR_S),
+        "serve_fp_gap": float(SERVE_FP_GAP_S),
     }
 
     # --- Route B staging (perf, no behaviour change) -----------------------
