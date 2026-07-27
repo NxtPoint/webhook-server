@@ -181,6 +181,8 @@ S3 presigned URLs + multipart, sport-routed submission, task-status orchestratio
 
 ### Video trim pipeline
 
+> **STATUS 2026-07-27: the trim is OFF and the `nextpoint-video-worker` service is suspended.** It cost $25/month always-on and could not finish a long match: re-encoding ~24 min of 1080p reel needs far more CPU than a Render starter (0.5 CPU) provides — measured ≥121 min, never completing. The decode half of the problem IS fixed (seek inputs, below); the remainder is pure compute. Re-enable with `VIDEO_TRIM_ENABLED=1` + resume the service. **The intended fix is to move the encode to AWS Batch on Fargate** (~16 vCPU, ~6-10 min, ~$0.10/trim, per-second billing) — the trim needs only S3 + an HTTPS callback, no DB, so the Postgres IP-allowlist problem doesn't apply. Everything below still describes the code as written.
+
 Fire-and-forget async: ingest worker (match) or `_do_ingest_t5` (practice) calls `trigger_video_trim(task_id)` → loads silver, builds EDL → POSTs to video worker → worker spawns detached subprocess → **one `-ss/-t` seek input per kept segment → `concat`** → uploads `trimmed/{task_id}/review.mp4` → callback updates `bronze.submission_context.trim_status`.
 
 **Seek-input trim (2026-07-26 rev 2, `ffmpeg_trim_worker.py`) — the load-bearing property is that runtime scales with the HIGHLIGHT length, not the match length.** Two earlier designs failed for opposite reasons, so don't "simplify" back to either:

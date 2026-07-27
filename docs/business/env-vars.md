@@ -68,6 +68,7 @@ Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing
 ## Other Services
 
 - **Ingest Worker**: `INGEST_WORKER_OPS_KEY` (required — startup crash), `DATABASE_URL`, `VIDEO_WORKER_*` for trim trigger.
+- **`VIDEO_TRIM_ENABLED`** (main API + ingest worker, default `1`): `0` makes `trigger_video_trim` a no-op so the **video-worker service can be suspended** to stop its spend. Leaves `trim_status` NULL on purpose — the SPAs fall back to the original video, and nothing raises an ops alert. Ingest is unaffected (all callers wrap the trigger). Set it on **both** services; they both import `video_trim_api`.
 - **Video Trim Worker** (Docker, Render **starter = 512 MB RAM / 2 GB `/tmp`** — both are binding constraints): `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS credentials. FFmpeg tunables: `VIDEO_CRF=28`, `VIDEO_PRESET=veryfast`, `FFMPEG_TIMEOUT_S=1800`.
   - Trim strategy knobs (`video_pipeline/ffmpeg_trim_worker.py`; the trim uses one `-ss/-t` seek input per kept segment, so runtime scales with highlight length, not match length):
     - `TRIM_SEEK_INPUTS_PER_PASS` — default `4`. Seek inputs per ffmpeg pass; above this the trim runs several passes joined by the concat demuxer (`-c copy`). **Measured ceiling: 8 concurrent 1080p/15 Mbps inputs are OOM-killed on 0.5 CPU / 512 MB, 6 survive, throughput flat 1–6.** Don't raise without re-measuring. `0` = one pass regardless.
