@@ -30,9 +30,15 @@ from sqlalchemy import text
 
 from db_init import engine, log_task_event
 from video_pipeline.build_video_timeline import (
+    MIN_POINT_DURATION_S,
     build_video_timeline_from_silver,
     timeline_to_edl,
 )
+
+# Synthetic span given to a single-shot point (an ace) so it survives the
+# builder's MIN_POINT_DURATION_S filter. 1s matches what the practice loader
+# has always used.
+SINGLE_SHOT_PAD_S = float(os.getenv("TRIM_SINGLE_SHOT_PAD_S", "1.0"))
 
 
 # Master kill switch. VIDEO_TRIM_ENABLED=0 makes trigger_video_trim a no-op that
@@ -136,7 +142,22 @@ def _get_submission_context_row(conn, task_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _load_silver_for_timeline(conn, task_id: str) -> pd.DataFrame:
-    return pd.read_sql(
+    """Match points for the timeline builder.
+
+    Single-shot points get a synthetic second row 1s later, mirroring what
+    _load_practice_for_timeline already does for single-shot rallies.
+
+    WHY (2026-07-27): a point's span is max(ball_hit_s) - min(ball_hit_s), and
+    the builder drops anything under MIN_POINT_DURATION_S (0.5s). An ACE has
+    exactly one ball-hit event — the serve — so its span is 0.00s and it was
+    silently cut from the highlight reel. Measured on df594aea: 9 of 100 points
+    dropped, and all 9 were serve-only points — 7 aces plus 2 serve errors. The
+    reel was losing precisely the most watchable points in the match.
+
+    A one-shot point is a real point, not a degenerate segment: with the
+    builder's +/-2s padding it yields a perfectly watchable ~5s clip.
+    """
+    df = pd.read_sql(
         text("""
             SELECT
                 task_id,
@@ -151,6 +172,33 @@ def _load_silver_for_timeline(conn, task_id: str) -> pd.DataFrame:
         conn,
         params={"task_id": task_id},
     )
+    return pad_single_shot_points(df)
+
+
+def pad_single_shot_points(df: pd.DataFrame) -> pd.DataFrame:
+    """Give every single-shot point a synthetic second row so it survives the
+    builder's MIN_POINT_DURATION_S filter. Pure DataFrame in / out so it can be
+    tested without a database — see video_pipeline/tests/test_timeline_aces.py.
+    """
+    if df is None or df.empty:
+        return df
+
+    # Span is measured over the SPINE (exclude_d IS NOT TRUE) because that is
+    # what the builder filters on — measuring over all rows would mask a
+    # one-shot point that has excluded rows around it.
+    spine = df.loc[~df["exclude_d"].fillna(False).astype(bool)]
+    if spine.empty:
+        return df
+
+    spans = spine.groupby("point_number")["ball_hit_s"].transform(lambda g: g.max() - g.min())
+    singles = spine.loc[spans < MIN_POINT_DURATION_S].copy()
+    if singles.empty:
+        return df
+
+    # One synthetic row per point (a point may legitimately have >1 row here).
+    singles = singles.drop_duplicates(subset=["point_number"])
+    singles["ball_hit_s"] = singles["ball_hit_s"] + SINGLE_SHOT_PAD_S
+    return pd.concat([df, singles], ignore_index=True)
 
 
 def _load_practice_for_timeline(conn, task_id: str) -> pd.DataFrame:
