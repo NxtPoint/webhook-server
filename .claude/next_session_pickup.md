@@ -152,61 +152,33 @@ neutral-or-better → `bench` (serve) green → ship with env rollback. **devenv
 
 ## Parked (unchanged from the am session)
 
-- **df594aea video TRIM — REWRITTEN, awaiting prod validation.** (`trim_status` is
-  `failed`, not `accepted` — the am note drifted; the error is
-  `Command timed out after 3600s`.) `run_ffmpeg_trim` now uses **one `-ss/-t` seek
-  input per kept segment + `concat`**, so ffmpeg decodes only the ~30% kept
-  instead of the whole source — measured **3.4× less decode work** (= the
-  theoretical ceiling at a 30% keep ratio) on a real ffmpeg in Docker.
-  Two constraints found while doing it, both now designed around: the source is
-  **8.0 GB** (so download-once CANNOT be the default — it doesn't fit the 2 GB
-  `/tmp`) and the worker is a **512 MB starter** instance (so ~86 simultaneous
-  seek inputs risk OOM → passes of `TRIM_SEEK_INPUTS_PER_PASS`=12 joined with the
-  concat demuxer, `-c copy`). Measured shape: **86 segments, 23.8 min kept of
-  73.9 min (32%)**.
-  **⚠ BUT the trim will still not fit the budget — ENCODE is now the binding
-  constraint, and it needs a Tomo decision.** Measured on a 0.5 CPU / 512 MB box
-  (= Render starter, what the video-worker runs on) against 1080p 29.97 footage
-  matching the real source, `df594aea` keeps 1425 s:
+- **VIDEO TRIM — SOLVED 2026-07-27. Now an AWS Batch (Fargate) per-use job.**
+  `df594aea`: **8.6 min wall, 2.19x realtime, ~$0.14**, `trim_status=completed`,
+  1136.3s reel from a 74-min/8.0 GB source (55 min of dead time cut). The same
+  match on the Render worker ran **121 min and never finished**. Full path proven
+  in prod: main API -> Batch submit -> Fargate encode -> S3 -> callback -> DB.
+  - **Module `video_pipeline/fargate_trim/` — its README is the runbook.**
+    `TRIM_BACKEND=batch` (default); `http` rolls back to the Render worker;
+    `VIDEO_TRIM_ENABLED=0` disables trims entirely.
+  - **`ffmpeg_trim_worker.py` is baked into the ECR image** — changing it needs a
+    Docker rebuild + ECR push. A Render deploy alone will NOT update it.
+  - Four bugs fixed getting here (all shipped): whole-source decode -> per-segment
+    seek inputs (3.4x less decode); two sweeps killing healthy long trims at 30 min
+    + re-fires stacking ffmpeg until OOM (worker lock + 2h windows); a
+    `max(60, ...)` floor that made `TRIM_ENCODE_TIMEOUT_S` bound nothing; and
+    **every ace being silently cut from every reel** (single ball-hit -> span 0.00s
+    -> dropped by `MIN_POINT_DURATION_S`; 9 of 100 points on df594aea, all
+    serve-only). Checks: `video_pipeline/tests/test_trim_{cmd,lock}.py`,
+    `test_timeline_aces.py`, `e2e_trim_docker.py` (last two need pandas/ffmpeg ->
+    run in the container, see their docstrings).
+  - **OPEN / TODO:**
+    1. **Suspend the `nextpoint-video-worker` Render service** — redundant, $25/mo.
+    2. **Re-trim df594aea once more** — the completed run predates the ace fix, so
+       it has 91 clips; a re-trim yields the full **100 including 7 aces**.
+    3. **`299013b3` is an orphan** stuck at `accepted` (re-fired 17:55, killed by a
+       deploy) — one `/ops/retrim` clears it.
+    4. Confirm the reel actually PLAYS in the Locker Room (nobody has watched it).
 
-  | output | preset | rate | df594aea encode | file size | verdict |
-  |---|---|---|---|---|---|
-  | 1080p | veryfast (current) | 0.17–0.23× | **104–141 min** | 17 MB/min | OVER |
-  | 1080p | ultrafast | 0.44–0.51× | 46–54 min | 75 MB/min | tight, huge file |
-  | 720p | veryfast | 0.34× | 69 min | 5 MB/min | OVER |
-  | 720p | ultrafast | 0.49× | **49 min** | 28 MB/min | only sub-budget option |
-  | 540p | veryfast | 0.42× | 56 min | 3 MB/min | OVER |
-
-  **A 0.5 CPU instance cannot re-encode ~24 min of 1080p inside the hour at any
-  preset.** Downscaling helps less than the pixel ratio suggests because the
-  scale filter itself costs CPU. Options, in preference order:
-  1. **Upgrade the video-worker Render plan** (starter 0.5 CPU → standard/pro).
-     Roughly linear: 2 CPU puts 1080p veryfast at ~35–50 min, 720p at ~17–25 min.
-     Costs money; keeps reel quality. **Recommended — this is a compute problem.**
-  2. `TRIM_MAX_HEIGHT=720` + `VIDEO_PRESET=ultrafast` (both no-redeploy env
-     flips): fits today at ~49 min, but ultrafast inflates the file ~5× (28 vs
-     5 MB/min) so the reel gets big to store and stream.
-  3. Raise `TRIM_ENCODE_TIMEOUT_S` — **explicitly rejected**, an hour-plus trim
-     is the thing being fixed.
-  (dev-box 0.5 CPU ≠ Render 0.5 CPU exactly — treat as ratios, verify on the
-  first real run. Also confirm the worker's LIVE plan in the dashboard; the
-  committed `plan: starter` may not match.)
-
-  **TO DO — validate in prod** once the worker redeploys: re-fire
-  `POST /ops/retrim {"task_id":"df594aea-78ef-47b1-8c10-60174a58d8b0"}` (header
-  `X-Ops-Key`, main-API Render shell). Success = accepted→completed,
-  `trim_output_s3_key=trimmed/df594aea-…/review.mp4`, `trim_duration_s` ≈ 1425 s.
-  Watch video-worker Logs for the per-pass lines (`pass N/22 done … keep …s in
-  …s`) — the first pass gives the real encode rate, so you can extrapolate
-  immediately instead of waiting an hour for a timeout.
-  Checks: `python -m video_pipeline.tests.test_trim_cmd` +
-  `video_pipeline/tests/e2e_trim_docker.py` (real ffmpeg in Docker).
-- **`video-worker.onrender.com` is a FOREIGN app** — still true, never
-  external-health-check it (use the service's Render Logs). **Fixed:**
-  `VIDEO_WORKER_BASE_URL` is now `sync: false` in `render.yaml` (main API +
-  ingest worker) instead of carrying the squatted value, so a blueprint sync
-  can't clobber the working dashboard URL. Tomo: confirm both services still
-  hold the real URL after the next sync.
 - **quality_tier calibration:** both c8b77210 (good) and df594aea (bad) read
   `medium` — thresholds don't discriminate; df594aea should read `low`.
 
