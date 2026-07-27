@@ -747,6 +747,11 @@ serve_pts AS (
     FROM silver.point_detail pd
     WHERE pd.serve_d = TRUE AND pd.shot_ix_in_point = 1
       AND pd.exclude_d IS NOT TRUE AND pd.point_key IS NOT NULL
+      -- Same alignment as gold.match_kpi's serve_points: a lone-faulted serve
+      -- (bronze missed the 2nd serve) is tagged in-serve with outcome 'Error';
+      -- exclude it so serve-points-played == serves-in, but KEEP double faults.
+      -- Without this, Player Performance and Match Analytics disagree per match.
+      AND (pd.shot_outcome_d IS DISTINCT FROM 'Error' OR pd.double_fault_d IS TRUE)
     ORDER BY pd.task_id, pd.point_key
 ),
 games_dedup AS (
