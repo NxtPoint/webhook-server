@@ -35,6 +35,20 @@ from video_pipeline.build_video_timeline import (
 )
 
 
+# Master kill switch. VIDEO_TRIM_ENABLED=0 makes trigger_video_trim a no-op that
+# leaves trim_status NULL — deliberately NOT 'failed', because the SPAs treat NULL
+# as "no reel, show the original video" and degrade cleanly, while 'failed' would
+# generate ops-alert noise on every ingest.
+#
+# Why this exists (2026-07-27): the video-worker is a separate always-on Render
+# service. Long-match trims need far more CPU than its plan provides, so while
+# that is unresolved the service can be suspended to stop the spend — and this
+# flag stops the pipeline from POSTing at a service that isn't there. Ingest is
+# unaffected either way: all three callers wrap the trigger in try/except
+# precisely so a trim problem can never fail an ingest.
+VIDEO_TRIM_ENABLED = (os.getenv("VIDEO_TRIM_ENABLED", "1").strip().lower()
+                      not in ("0", "false", "no", "n", "off"))
+
 VIDEO_WORKER_BASE_URL = (os.getenv("VIDEO_WORKER_BASE_URL") or "").strip().rstrip("/")
 VIDEO_WORKER_OPS_KEY = (os.getenv("VIDEO_WORKER_OPS_KEY") or "").strip()
 
@@ -52,12 +66,16 @@ S3_BUCKET = (os.getenv("S3_BUCKET") or "").strip()
 # Conservative outbound timeout: must never hang ingest flow
 REQUEST_TIMEOUT_S = int(os.getenv("VIDEO_WORKER_REQUEST_TIMEOUT_S", "10"))
 
-if not VIDEO_WORKER_BASE_URL:
-    raise RuntimeError("VIDEO_WORKER_BASE_URL env var is required")
-if not VIDEO_WORKER_OPS_KEY:
-    raise RuntimeError("VIDEO_WORKER_OPS_KEY env var is required")
-if not VIDEO_TRIM_CALLBACK_URL:
-    raise RuntimeError("VIDEO_TRIM_CALLBACK_URL env var is required")
+# Only demand the worker wiring when trims are actually enabled — otherwise a
+# suspended worker whose env vars have been cleared would break this module at
+# IMPORT time, which would take out the ingest modules that import it.
+if VIDEO_TRIM_ENABLED:
+    if not VIDEO_WORKER_BASE_URL:
+        raise RuntimeError("VIDEO_WORKER_BASE_URL env var is required")
+    if not VIDEO_WORKER_OPS_KEY:
+        raise RuntimeError("VIDEO_WORKER_OPS_KEY env var is required")
+    if not VIDEO_TRIM_CALLBACK_URL:
+        raise RuntimeError("VIDEO_TRIM_CALLBACK_URL env var is required")
 
 
 # ============================================================
@@ -245,6 +263,19 @@ def trigger_video_trim(task_id: str) -> dict:
     task_id = str(task_id or "").strip()
     if not task_id:
         raise ValueError("task_id is required")
+
+    if not VIDEO_TRIM_ENABLED:
+        # No-op, and deliberately no DB write: trim_status stays NULL so the SPAs
+        # fall back to the original video and nothing raises an ops alert. This
+        # also lets the stale-trim sweep quietly retire any pre-existing orphan
+        # (it resets the row to NULL, calls this, and the row simply stays NULL).
+        return {
+            "ok": True,
+            "accepted": False,
+            "task_id": task_id,
+            "status": "disabled",
+            "reason": "VIDEO_TRIM_ENABLED=0",
+        }
 
     # --------------------------
     # Gather data + prepare payload (read-only — no state change yet)
