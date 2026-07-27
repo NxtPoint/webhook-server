@@ -812,7 +812,7 @@ async function selectMatch(idx) {
   performanceSelectedPlayer = null;
 
   // Reset heatmap filters to defaults for new match
-  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all', faults: 'off' };
+  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all', faults: 'off', errors: 'off' };
   heatmapPlayer = 'player_a';
 
   // Show loading state
@@ -2125,7 +2125,7 @@ async function callCoachAnalyze(body) {
 
 // Heatmap filter state persists across tabs (cross-filter)
 // Defaults reset only when a new match is selected
-let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all', faults: 'off' };
+let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all', faults: 'off', errors: 'off' };
 let heatmapPlayer = 'player_a';
 let heatmapInfoOpen = false;  // side info panel collapsed by default
 let performanceData = null;
@@ -2248,6 +2248,13 @@ function renderHeatmapContent() {
       {val:'all',label:'All'},{val:'Attack',label:'Attack'},{val:'Neutral',label:'Neutral'},{val:'Defence',label:'Defence'}
     ], heatmapFilter.stroke, 'setHeatmapFilterStroke');
   }
+  // Errors toggle on every non-serve tab — the miss equivalent of serve Faults
+  // (hidden by default, shown grey). Serve has its own Faults toggle above.
+  if (activeTab !== 'serve-placement') {
+    tabTogglesHTML += toggleGroup('Errors', 'hf-errors', [
+      {val:'off',label:'Hide'},{val:'on',label:'Show'}
+    ], heatmapFilter.errors, 'setHeatmapFilterErrors');
+  }
 
   const toggleRow = `<div class="heatmap-toggle-row">${playerToggleHTML}${setToggleHTML}${tabTogglesHTML}<button class="info-toggle" onclick="toggleHeatmapInfo()" title="How to read this page">${heatmapInfoOpen ? '✕ Close info' : 'ⓘ How to read this'}</button></div>`;
 
@@ -2332,6 +2339,7 @@ function renderHeatmapContent() {
 // Onclick wrappers for filter buttons
 function setHeatmapFilterServe(val)   { setHeatmapFilter('serve', val); }
 function setHeatmapFilterFaults(val)  { setHeatmapFilter('faults', val); }
+function setHeatmapFilterErrors(val)  { setHeatmapFilter('errors', val); }
 function setHeatmapFilterStroke(val)  { setHeatmapFilter('stroke', val); }
 function setHeatmapFilterOutcome(val) { setHeatmapFilter('outcome', val); }
 function setHeatmapFilterSet(val)     { setHeatmapFilter('setNum', val); }
@@ -2414,6 +2422,14 @@ function getHeatmapShots(playerRole) {
     if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.aggression_d === heatmapFilter.stroke);
     }
+  }
+
+  // Errors (a shot hit OUT / into the net -> shot_outcome_d = 'Error') are the
+  // rally/return equivalent of serve faults: a "miss", hidden by default and
+  // shown grey via the 'Errors' toggle. Serve faults are handled above by the
+  // 'Faults' toggle, so this applies to every non-serve tab.
+  if (activeTab !== 'serve-placement' && heatmapFilter.errors !== 'on') {
+    shots = shots.filter(p => p.shot_outcome_d !== 'Error');
   }
 
   return shots;
@@ -2829,8 +2845,13 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
           bx = soft(bx, singleLeft, singleRight, 0.4, 0.4);  // wide serves -> just inside the sideline
         }
       } else {
-        by = soft(by, NET_Y, COURT_L, 0.5, 0.5);           // return/rally: past the baseline
-        bx = soft(bx, 0, COURT_W, 0.4, 0.4);               // past the doubles sideline
+        // rally/return: an ERROR went OUT -> don't soft-clamp it inward (that
+        // would falsely show a miss as in-court). In/Winner shots clamp into the
+        // court so a slightly-out reading folds to the line, not past it.
+        if (s.shot_outcome_d !== 'Error') {
+          by = soft(by, NET_Y, COURT_L, 0.5, 0.5);           // past the baseline
+          bx = soft(bx, 0, COURT_W, 0.4, 0.4);               // past the doubles sideline
+        }
       }
     }
 
@@ -2845,11 +2866,12 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     }
 
     let colour;
-    // A serve fault (shown only via the Faults toggle) is drawn GREY regardless
-    // of who won the point — the serve landed OUT, so colouring it by point
-    // win/loss would mislead (a fault whose point was later won would read green).
-    const isFault = (s.serve_d === true && s.shot_ix_in_point == null);
-    if (isFault) {
+    // A "miss" — a serve FAULT (didn't start a rally) or a rally/return ERROR
+    // (hit out/into net) — is drawn GREY regardless of who won the point.
+    // Colouring a miss by point win/loss misleads (a miss whose point was later
+    // won would read green). Misses show only via the Faults / Errors toggle.
+    const isMiss = s.serve_d ? (s.shot_ix_in_point == null) : (s.shot_outcome_d === 'Error');
+    if (isMiss) {
       colour = 'rgba(140,140,140,0.7)';
       unknownCount++;
     } else if (s.point_winner_player_id === ownerId) {
