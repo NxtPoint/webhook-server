@@ -575,8 +575,10 @@ SELECT
     COUNT(*) FILTER (WHERE depth_d = 'Deep') AS returns_deep,
     COUNT(*) FILTER (WHERE depth_d = 'Middle') AS returns_middle,
     COUNT(*) FILTER (WHERE depth_d = 'Short') AS returns_short,
+    COUNT(*) FILTER (WHERE COALESCE(depth_d,'none') NOT IN ('Deep','Middle','Short')) AS returns_no_depth,
     COUNT(*) FILTER (WHERE stroke_d = 'Forehand') AS returns_forehand,
     COUNT(*) FILTER (WHERE stroke_d = 'Backhand') AS returns_backhand,
+    COUNT(*) FILTER (WHERE COALESCE(stroke_d,'Other') NOT IN ('Forehand','Backhand','Slice','Volley')) AS returns_other_stroke,
     COUNT(*) FILTER (WHERE serve_type = '1st') AS vs_first_serve_played,
     COUNT(*) FILTER (WHERE serve_type = '1st' AND point_winner_player_id = returner_id) AS vs_first_serve_won,
     COUNT(*) FILTER (WHERE serve_type = '2nd') AS vs_second_serve_played,
@@ -601,15 +603,18 @@ SELECT
     COUNT(*) FILTER (WHERE s.aggression_d = 'Attack') AS aggression_attack,
     COUNT(*) FILTER (WHERE s.aggression_d = 'Neutral') AS aggression_neutral,
     COUNT(*) FILTER (WHERE s.aggression_d = 'Defence') AS aggression_defence,
-    -- Depth
+    -- Depth (+ depth_none so deep+middle+short+none = rally_shots — the tally-back
+    -- bucket for shots with no bounce coordinate, like "no placement data")
     COUNT(*) FILTER (WHERE s.depth_d = 'Deep') AS depth_deep,
     COUNT(*) FILTER (WHERE s.depth_d = 'Middle') AS depth_middle,
     COUNT(*) FILTER (WHERE s.depth_d = 'Short') AS depth_short,
-    -- Stroke
+    COUNT(*) FILTER (WHERE COALESCE(s.depth_d,'none') NOT IN ('Deep','Middle','Short')) AS depth_none,
+    -- Stroke (+ stroke_other so fh+bh+slice+volley+other = rally_shots)
     COUNT(*) FILTER (WHERE s.stroke_d = 'Forehand') AS stroke_forehand,
     COUNT(*) FILTER (WHERE s.stroke_d = 'Backhand') AS stroke_backhand,
     COUNT(*) FILTER (WHERE s.stroke_d = 'Slice') AS stroke_slice,
     COUNT(*) FILTER (WHERE s.stroke_d = 'Volley') AS stroke_volley,
+    COUNT(*) FILTER (WHERE COALESCE(s.stroke_d,'Other') NOT IN ('Forehand','Backhand','Slice','Volley')) AS stroke_other,
     -- Outcomes
     COUNT(*) FILTER (WHERE s.shot_outcome_d = 'Winner') AS winners,
     COUNT(*) FILTER (WHERE s.shot_outcome_d = 'Error') AS errors,
