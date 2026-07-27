@@ -9,17 +9,20 @@
 Built the **two-match silver reconciliation bench** and shipped the first sound
 silver lever. All on `main`, pushed.
 
-> **★ AGREED PRIORITY (Tomo, 2026-07-26) — the "Rules of the Game".** The whole
-> business runs off ONE filter (the spine = `exclude_d IS NOT TRUE`). Canonical
-> statement now at the TOP of `docs/_investigation/silver_gold_filter_contract.md`
-> §"★ THE RULES OF THE GAME". Verified: cross-dashboard reconciliation is **100%**
-> (serves/points/shots byte-identical across all gold views on both matches). **Do
-> (1) perfect the filter contract, (2) verify every gold view + tally-back on every
-> page, BEFORE (3) returning to heatmap fine-tuning.** Heatmap big-items DONE
-> (fault toggle, service-line geometry, soft-clamp, in-box-fault drop); finer
-> placement/depth/stroke recon is PARKED by agreement.
-> **Prod silver rebuild = run the all-matches loop on Render** (prod code has all 3
-> fixes now) — see the loop in this file / the last session message.
+> **★ RULES OF THE GAME + STEP-2 RECONCILIATION DONE (Tomo, 2026-07-27).** The whole
+> business runs off ONE filter (spine = `exclude_d IS NOT TRUE`). Canonical statement
+> + the full step-2 walk are at the TOP of
+> `docs/_investigation/silver_gold_filter_contract.md` (§"★ THE RULES OF THE GAME" +
+> §"★ Step-2 reconciliation pass"). **Every dashboard page verified silver→gold AND
+> page-to-page on both matches — everything reconciles.** Fixes shipped: serve-points
+> alignment (`f560b6f`/`c0870a4` — closed a real Player-Perf-vs-Match-Analytics
+> 62.2%-vs-65.7% break), tally-back buckets (`6561eda`), AI-Coach fed the buckets
+> (`d392928`), heatmap error toggle + info panels (`ab71508`/`c273f58`). Verified
+> invariants: winners+errors=points; 1st+2nd serve-pts=service-points (DF⊆2nd);
+> every breakdown tallies to its topline. **Prod silver rebuilt** (all matches, all 3
+> silver fixes). **Identity UPDATE ran** (Erin=466). Remaining: finer placement/depth
+> heatmap detail is still PARKED; new-GT axes (depth/serve placement) need Tomo's
+> video annotation to score accuracy (vs the current internal-consistency proof).
 
 - **STEP 1 (GT signed off):** Tomo's video ground truth for **df594aea** (Erin v
   Yolanda, 100 pts) + the **c8b77210** 18/18 anchor are persisted in

@@ -54,6 +54,51 @@ filter contract [this section], (2) verify every gold view filters correctly on
 every page + tally-back holds, (3) THEN return to heatmaps and reconcile the finer
 placement/depth/stroke detail. Don't jump to (3) before (1)+(2) are airtight.
 
+## ★ Step-2 reconciliation pass — every page verified (2026-07-27)
+
+Walked every dashboard page, reconciled silver→gold AND page-to-page, on both
+reference matches. **Result: everything reconciles.** Fixes shipped along the way:
+
+**Cross-view topline (100% identical on both matches):** serves / points / shots
+are byte-identical across `spine`, `match_kpi`, `shot_placement`, `vw_point`,
+`serve_breakdown` (df594aea 133/100/409, c8b77210 27/18/80).
+
+**Verified invariants (use these as front-end checks):**
+- `winners + errors = points` (every point ends in exactly one Winner or Error).
+- `1st-serve pts played + 2nd-serve pts played = service points`; **a double fault
+  is a LOST 2nd-serve point** (DF ⊆ 2nd-serve-played, NOT a third bucket).
+- `1st serve % = 1st_serves_in / 1st_serves_total`; `1st_serves_total = service points`.
+- Every breakdown sums to its topline (see tally-back below).
+- **Speed averages are a partial sample** (`ball_speed > 0` only) — label "n=" so a
+  speed avg reconciles to a serve/shot count that is ≥ it.
+
+**Fixes shipped:**
+1. **Serve-points-played alignment** (`match_kpi` `f560b6f`, `player_match_kpis`
+   `c0870a4`). `first_serves_in` (outcome<>'Error') and `first_serve_pts_played`
+   (shot_ix=1) disagreed by the count of **lone-faulted serves** — a 1st serve that
+   faults with NO 2nd serve detected (bronze miss) gets tagged in-serve with outcome
+   'Error'. Both serve-points CTEs now require the in-serve be non-Error EXCEPT double
+   faults. 0 rows on the clean match; 2 on df594aea → Erin 37→35. This was a real
+   **cross-page break**: Player Performance showed 1st-serve-win 62.2% vs Match
+   Analytics 65.7% for the same match; now both 65.7%.
+2. **Tally-back buckets** (`6561eda`): `depth_none` + `stroke_other` on
+   `match_rally_breakdown`, `returns_no_depth` + `returns_other_stroke` on
+   `match_return_breakdown`, so `deep+middle+short+none = rally_shots` and
+   `fh+bh+slice+volley+other = rally_shots`. (The frontend already computed the
+   "Other" bucket by subtraction; the columns make it explicit for coach/API.)
+
+**AI Coach** (`tennis_coach/data_fetcher.py`): a THIN passthrough of the reconciled
+gold views (`match_kpi`, serve/rally/return breakdowns, `coach_rally_patterns` —
+spine-filtered) — no separate math. Its depth/stroke %s are already over the topline
+(`rally_shots`), so consistent; now fed the explicit tally-back buckets too.
+
+**Known nuances (labeling, not breaks):** double faults are counted INSIDE the
+"errors" total (a DF is the server's error — the winners+errors=points invariant
+needs it there); tennis convention reports "unforced errors" excl. DF, so a future
+display could split them. Player Performance's rolling window is per
+`(email, player_a_name)` → relies on consistent `first_server` identity per match
+(the known fragility — a mismark swaps a match onto the wrong player's trend).
+
 ## The pipeline in one screen
 
 ```
