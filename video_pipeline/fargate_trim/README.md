@@ -1,8 +1,12 @@
 # fargate_trim — the video trim as a per-use AWS Batch job
 
-> **Status: LIVE, proven on `df594aea` 2026-07-27.** 7.9 min, 2.40× realtime,
-> ~$0.135. The same match on the Render video-worker ran 121 min and never
-> finished.
+> **Status: LIVE, proven end-to-end in prod on `df594aea` 2026-07-27.**
+> **8.6 min wall, 2.19× realtime, ~$0.14**, `trim_status=completed`, 18.9-min reel
+> from a 74-min / 8.0 GB source (55 min of dead time cut). Full chain confirmed:
+> main API → Batch submit → Fargate encode → S3 → callback → DB.
+> (A prior run with the callback disabled measured 7.9 min / 2.40× — same work,
+> the spread is normal variance plus container start.)
+> The same match on the Render video-worker ran **121 min and never finished**.
 
 ## Why this exists
 

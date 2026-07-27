@@ -1,12 +1,21 @@
 # video_pipeline
 
-> Async video trim pipeline. Main API builds an EDL from silver, hands it off to a separate FFmpeg worker service, worker re-encodes and uploads `trimmed/{task_id}/review.mp4`, then callbacks back to update `bronze.submission_context.trim_status`.
+> Async video trim pipeline. Main API builds an EDL from silver, hands it to an
+> encoder, which re-encodes and uploads `trimmed/{task_id}/review.mp4`, then
+> calls back to update `bronze.submission_context.trim_status`.
+
+> **★ Since 2026-07-27 the encoder is a per-use AWS Batch (Fargate) job**
+> (`fargate_trim/`, `TRIM_BACKEND=batch` = default). The always-on Render
+> video-worker service is **SUSPENDED** and kept only as the `TRIM_BACKEND=http`
+> rollback. Prod: 8.6 min / 2.19x realtime / ~$0.14 for a 74-min match, versus
+> 121 min and never finishing on the Render worker.
+> **`fargate_trim/README.md` is the trim runbook — read it first.**
 
 ## What this owns
 
 - The EDL (Edit Decision List) builder that reads `silver.point_detail` and produces a list of keep-segments
 - The trigger function `trigger_video_trim(task_id)` that ingest workers call
-- The standalone Flask + FFmpeg worker service (separate Render Docker service)
+- The two encoder backends: `fargate_trim/` (live, AWS Batch) and the standalone Flask worker service (suspended, rollback only)
 - The completion callback contract (worker → main API)
 - The `bronze.submission_context.trim_*` columns (set on boot via `_ensure_trim_columns`)
 
@@ -14,18 +23,22 @@
 
 - **Not the `/video-trim-complete` callback handler.** That lives in `upload_app.py` and is the *receiver* for this module's outbound callback. It updates `trim_status`, `trim_output_s3_key`, and fires SES notify if not already sent.
 - **Not the EDL business logic.** Padding, merge rules, and minimum-segment thresholds live in `build_video_timeline.py` constants. Python owns the logic; SQL only does the I/O.
-- **Not the storage layer.** S3 write is by the worker subprocess; this module only orchestrates.
+- **Not the storage layer.** S3 write is done by the encoder; this module only orchestrates.
+- **Not deployed by `git push` (the encode half).** `ffmpeg_trim_worker.py` is baked into the ECR image the Fargate job runs — changing it needs a Docker rebuild + ECR push. See `fargate_trim/README.md`.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `__init__.py` | Package marker |
-| `video_trim_api.py` | **Main API side.** `trigger_video_trim(task_id)` — loads silver, builds EDL via `build_video_timeline`, POSTs to worker, sets `trim_status='queued'`. |
+| `video_trim_api.py` | **Main API side.** `trigger_video_trim(task_id)` — loads silver, builds the EDL, dispatches to the chosen backend, marks `trim_status='accepted'`. Also `pad_single_shot_points()`, which stops single-shot points (ACES) being dropped. |
+| `fargate_trim/` | **The live encoder backend.** `submit.py` (main-API side: work order → S3, `batch:SubmitJob`), `runner.py` (container entrypoint), `Dockerfile`, and **`README.md` — the runbook**. |
 | `build_video_timeline.py` | Pure-Python EDL builder. Reads silver, pads point boundaries, merges overlaps, drops too-short segments. No I/O. |
-| `video_worker_app.py` | **Worker side (separate Render service).** Flask app. `POST /trim` validates auth + body, spawns detached subprocess, returns 202. |
+| `video_worker_app.py` | **Legacy worker (Render service, SUSPENDED).** Flask app; `POST /trim` spawns a detached subprocess, returns 202. Holds the PID-checked duplicate-trim lock. Rollback path only. |
 | `ffmpeg_trim_worker.py` | Subprocess body. Streams (or downloads, if small) the S3 source → ffprobe → encodes with **one `-ss/-t` seek input per kept segment** + `concat` → uploads `trimmed/{task_id}/review.mp4` → POSTs callback. Runtime scales with the *highlight* length, not the match length — see the header comment for the two designs this replaced. |
-| `tests/test_trim_cmd.py` | Arg/segment math checks, no ffmpeg needed: `python -m video_pipeline.tests.test_trim_cmd`. |
+| `tests/test_trim_cmd.py` | Arg/segment math, no deps: `python -m video_pipeline.tests.test_trim_cmd`. |
+| `tests/test_trim_lock.py` | In-flight duplicate-trim lock (acquire / refuse / stale takeover). |
+| `tests/test_timeline_aces.py` | Proves single-shot points (aces) reach the reel. Needs pandas → run in a container. |
 | `tests/e2e_trim_docker.py` | Real-ffmpeg end-to-end over a synthetic clip, run in Docker (the dev box has no ffmpeg). Covers seek accuracy + the multi-pass concat join. |
 | `video_worker_wsgi.py` | Gunicorn entry for the worker service. |
 
@@ -36,63 +49,54 @@
 | `trigger_video_trim(task_id)` | `video_trim_api.py` | Ingest worker step 4 (`ingest_worker_app.py`); T5 ingest in-process (`upload_app.py::_do_ingest_t5`); technique pipeline (`upload_app.py::_technique_run_pipeline`) |
 | `build_video_timeline_from_silver(task_id, conn)` | `build_video_timeline.py` | Called by `trigger_video_trim` |
 | `timeline_to_edl(df)` | `build_video_timeline.py` | Called by `trigger_video_trim` to convert DataFrame → JSON segments |
-| `POST /trim` | `video_worker_app.py:APP` | Main API → worker, async hand-off |
+| `submit_trim_job(...)` | `fargate_trim/submit.py` | **Live path** — called by `trigger_video_trim` when `TRIM_BACKEND=batch` |
+| `POST /trim` | `video_worker_app.py:APP` | Legacy path (`TRIM_BACKEND=http`), service suspended |
 | `run_ffmpeg_trim(task_id, s3_bucket, s3_key, edl, callback_url, callback_headers)` | `ffmpeg_trim_worker.py` | Subprocess spawned by the worker `/trim` handler |
 
-## Cross-service flow
+## Cross-service flow (live = Batch backend)
 
 ```
-─────────── MAIN API ("Sport AI - API call") ───────────────
-ingest_worker_app step 4
-        │
-        ▼
+─────────── MAIN API / INGEST WORKER ───────────────────────
 trigger_video_trim(task_id)
         │
-        ├─ skip if trim_status in {'completed','accepted','queued'}
+        ├─ VIDEO_TRIM_ENABLED=0 ? → return 'disabled', write NOTHING (status stays NULL)
+        ├─ skip if trim_status in {'queued','accepted','processing'} (or 'completed')
         │
-        ├─ build_video_timeline_from_silver(task_id, conn)
-        │     ├─ SELECT ball_hit_s FROM silver.point_detail WHERE NOT exclude_d
-        │     ├─ pad ±2s, merge overlaps, drop <2s segments
-        │     └─ DataFrame of keep windows
+        ├─ load silver points  →  pad_single_shot_points()   ← keeps ACES in the reel
+        ├─ build_video_timeline_from_silver()  → pad ±2s, merge overlaps, drop <2s
+        ├─ timeline_to_edl(df) → {"segments": [{start_s, end_s}, ...]}
         │
-        ├─ timeline_to_edl(df) → {"segments": [{start, end}, ...]}
+        ├─ TRIM_BACKEND=batch (default):
+        │     ├─ PUT s3://{bucket}/trim-jobs/{task_id}.json   (work order incl. EDL)
+        │     └─ batch:SubmitJob  queue=ten-fifty5-trim-queue  def=ten-fifty5-video-trim
+        │           env: TRIM_JOB_S3, TRIM_CALLBACK_URL, TRIM_CALLBACK_OPS_KEY
         │
-        ├─ POST {VIDEO_WORKER_BASE_URL}/trim
-        │     headers:  Authorization: Bearer {VIDEO_WORKER_OPS_KEY}
-        │     body:     {task_id, s3_bucket, s3_key, edl, callback_url, callback_headers}
+        ├─ TRIM_BACKEND=http (rollback, service suspended):
+        │     └─ POST {VIDEO_WORKER_BASE_URL}/trim  → 202, detached subprocess
         │
-        └─ UPDATE submission_context SET trim_status='queued', trim_requested_at=now()
+        └─ UPDATE submission_context SET trim_status='accepted', trim_requested_at=now()
+              (only AFTER the hand-off succeeds — no phantom rows)
 
-─────────── VIDEO WORKER (Docker service) ──────────────────
-POST /trim
+─────────── AWS FARGATE (per-use job, ~8 min) ──────────────
+fargate_trim.runner
         │
-        ├─ auth: X-Ops-Key Bearer match against VIDEO_WORKER_OPS_KEY
-        ├─ validate body
-        ├─ spawn detached subprocess: run_ffmpeg_trim(...)
-        └─ return 202 immediately (fire-and-forget)
+        ├─ GET the work order from S3
+        ├─ run_ffmpeg_trim(...)   ← identical code on both backends
+        │     ├─ source: presigned-URL stream, or download if < TRIM_LOCAL_COPY_MAX_MB
+        │     ├─ ffprobe duration / has_audio / fps / height (metadata only)
+        │     ├─ per pass (<= TRIM_SEEK_INPUTS_PER_PASS segments):
+        │     │     ffmpeg -ss s1 -t d1 -i SRC  -ss s2 -t d2 -i SRC ... concat
+        │     │     → ONE seek input per segment: ffmpeg SEEKS (HTTP range) rather
+        │     │       than decoding forward, so only the kept ~30% is decoded
+        │     ├─ if >1 pass: ffmpeg -f concat -i parts.txt -c copy   (no re-encode)
+        │     └─ PUT trimmed/{task_id}/review.mp4
+        ├─ POST {callback_url}  {task_id, status, output_s3_key, durations, counts}
+        └─ DELETE the work order   (kept on failure, as the record of the attempt)
 
-   subprocess (run_ffmpeg_trim):
-        │
-        ├─ source: presigned-URL stream, or download once if < TRIM_LOCAL_COPY_MAX_MB
-        ├─ ffprobe duration / has_audio / fps  (metadata only — works on the URL)
-        ├─ normalise + clamp EDL segments
-        ├─ per pass (<= TRIM_SEEK_INPUTS_PER_PASS segments):
-        │     ffmpeg  -ss s1 -t d1 -i SRC  -ss s2 -t d2 -i SRC  ...
-        │             -filter_complex "[0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1"
-        │     → ONE seek input per kept segment: ffmpeg seeks (HTTP range) instead
-        │       of decoding forward, so only the kept ~30% is ever decoded
-        ├─ if >1 pass: ffmpeg -f concat -i parts.txt -c copy review.mp4  (no re-encode)
-        ├─ aws s3 cp review.mp4 s3://{bucket}/trimmed/{task_id}/review.mp4
-        │
-        └─ POST {callback_url} headers={callback_headers}
-              body={task_id, status: 'completed'|'failed', output_s3_key,
-                    source_duration_s, trim_duration_s, segment_count}
-
-─────────── MAIN API ("Sport AI - API call") ───────────────
-POST /video-trim-complete  (handler in upload_app.py, NOT this module)
-        │
+─────────── MAIN API ───────────────────────────────────────
+POST /video-trim-complete   (handler in upload_app.py, NOT this module)
         ├─ auth: VIDEO_TRIM_CALLBACK_OPS_KEY (must equal main API's OPS_KEY)
-        ├─ UPDATE submission_context SET trim_status='completed', trim_output_s3_key=...
+        ├─ UPDATE trim_status='completed', trim_output_s3_key=…, durations
         └─ if not ses_notified_at → fire video-complete email
 ```
 
@@ -102,13 +106,15 @@ POST /video-trim-complete  (handler in upload_app.py, NOT this module)
 
 | Status | Set by |
 |---|---|
-| (NULL) | Initial — no trim attempted |
-| `queued` | Main API after successful `POST /trim` |
-| `accepted` | Worker's optional pre-callback (rare; usually skipped) |
-| `completed` | Worker callback on success — `trim_output_s3_key` set |
-| `failed` | Worker callback on FFmpeg / S3 failure — `trim_error` set |
+| (NULL) | No trim attempted — **also what `VIDEO_TRIM_ENABLED=0` leaves.** The SPAs treat NULL as "no reel, show the original video", so it degrades cleanly |
+| `queued` | Legacy/transitional; the current path goes straight to `accepted` |
+| `accepted` | Main API, after the Batch job is submitted (or the worker returns 202) |
+| `completed` | Completion callback — `trim_output_s3_key` + durations set |
+| `failed` | Completion callback on encode/S3 failure (`trim_error`), **or** a staleness sweep giving up. A sweep `failed` does NOT prove the encode died — check the job/worker log |
 
-Trigger is idempotent: `queued`, `accepted`, and `completed` all skip re-submission.
+Trigger is idempotent: `queued`, `accepted`, `processing` and `completed` all skip
+re-submission. `/ops/retrim` clears the status to force a re-fire (it does not
+reset `trim_attempts`).
 
 ## Tunable EDL constants
 
