@@ -49,6 +49,15 @@ from video_pipeline.build_video_timeline import (
 VIDEO_TRIM_ENABLED = (os.getenv("VIDEO_TRIM_ENABLED", "1").strip().lower()
                       not in ("0", "false", "no", "n", "off"))
 
+# Which backend runs the encode:
+#   'batch' — AWS Batch on Fargate, one per-use job (DEFAULT since 2026-07-27).
+#   'http'  — the legacy always-on Render video-worker service (rollback).
+# Fargate bills per second, so a 16-vCPU job that finishes in minutes costs
+# roughly the same as a 0.5-vCPU one that runs for hours — and nothing at all
+# between trims. The Render worker cost $25/month whether or not it trimmed
+# anything, and its 0.5 CPU could not finish a long match at all.
+TRIM_BACKEND = (os.getenv("TRIM_BACKEND") or "batch").strip().lower()
+
 VIDEO_WORKER_BASE_URL = (os.getenv("VIDEO_WORKER_BASE_URL") or "").strip().rstrip("/")
 VIDEO_WORKER_OPS_KEY = (os.getenv("VIDEO_WORKER_OPS_KEY") or "").strip()
 
@@ -66,16 +75,18 @@ S3_BUCKET = (os.getenv("S3_BUCKET") or "").strip()
 # Conservative outbound timeout: must never hang ingest flow
 REQUEST_TIMEOUT_S = int(os.getenv("VIDEO_WORKER_REQUEST_TIMEOUT_S", "10"))
 
-# Only demand the worker wiring when trims are actually enabled — otherwise a
-# suspended worker whose env vars have been cleared would break this module at
-# IMPORT time, which would take out the ingest modules that import it.
+# Only demand the worker wiring when trims are enabled AND the legacy HTTP
+# backend is in use — otherwise a suspended/removed worker would break this
+# module at IMPORT time, taking the ingest modules down with it. The Batch
+# backend needs no worker URL or worker key at all.
 if VIDEO_TRIM_ENABLED:
-    if not VIDEO_WORKER_BASE_URL:
-        raise RuntimeError("VIDEO_WORKER_BASE_URL env var is required")
-    if not VIDEO_WORKER_OPS_KEY:
-        raise RuntimeError("VIDEO_WORKER_OPS_KEY env var is required")
     if not VIDEO_TRIM_CALLBACK_URL:
         raise RuntimeError("VIDEO_TRIM_CALLBACK_URL env var is required")
+    if TRIM_BACKEND == "http":
+        if not VIDEO_WORKER_BASE_URL:
+            raise RuntimeError("VIDEO_WORKER_BASE_URL env var is required (TRIM_BACKEND=http)")
+        if not VIDEO_WORKER_OPS_KEY:
+            raise RuntimeError("VIDEO_WORKER_OPS_KEY env var is required (TRIM_BACKEND=http)")
 
 
 # ============================================================
@@ -348,8 +359,40 @@ def trigger_video_trim(task_id: str) -> dict:
     # This prevents orphaned "queued" rows if the process dies before the POST.
 
     # --------------------------
-    # Trigger worker
+    # Trigger the encode — Batch job (default) or the legacy HTTP worker
     # --------------------------
+    if TRIM_BACKEND == "batch":
+        from video_pipeline.fargate_trim.submit import submit_trim_job
+        try:
+            out = submit_trim_job(
+                task_id=task_id,
+                s3_bucket=s3_bucket,
+                s3_key=s3_key,
+                edl=edl,
+                callback_url=VIDEO_TRIM_CALLBACK_URL,
+                callback_ops_key=VIDEO_TRIM_CALLBACK_OPS_KEY or None,
+            )
+        except Exception as e:
+            with engine.begin() as conn:
+                _ensure_trim_columns(conn)
+                _mark_trim_trigger_failed(
+                    conn, task_id, f"batch_submit_failed: {type(e).__name__}: {e}")
+            raise
+
+        # Same contract as the HTTP path: only mark accepted once the work is
+        # genuinely handed off, so a crash before submit leaves no phantom row.
+        with engine.begin() as conn:
+            _ensure_trim_columns(conn)
+            _mark_trim_accepted(conn, task_id)
+        return {
+            "ok": True,
+            "accepted": True,
+            "task_id": task_id,
+            "status": "accepted",
+            "backend": "batch",
+            "job_id": out.get("job_id"),
+        }
+
     url = f"{VIDEO_WORKER_BASE_URL}/trim"
     headers = {
         "Authorization": f"Bearer {VIDEO_WORKER_OPS_KEY}",
