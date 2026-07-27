@@ -330,6 +330,13 @@ serve_win_stats AS (
         FROM silver.point_detail s
         WHERE s.serve_d = true AND s.shot_ix_in_point = 1
           AND s.exclude_d IS NOT TRUE AND s.point_key IS NOT NULL
+          -- Align "serve point played" with "serve landed in" (first_serves_in uses
+          -- shot_outcome_d <> 'Error'). On a badly-tracked match a 1st serve can
+          -- fault with NO 2nd serve detected (bronze miss); silver then tags that
+          -- lone fault as the in-serve (shot_ix=1, outcome 'Error'), inflating
+          -- serve-points-played vs serves-in. Drop those. But KEEP double faults —
+          -- a DF's 2nd serve is Error yet is a real (lost) 2nd-serve point.
+          AND (s.shot_outcome_d IS DISTINCT FROM 'Error' OR s.double_fault_d IS TRUE)
         ORDER BY s.task_id, s.point_key
     )
     SELECT
