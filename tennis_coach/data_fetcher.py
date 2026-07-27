@@ -110,8 +110,8 @@ def fetch_match_data(task_id: str) -> dict:
                 SELECT player_role,
                        rally_shots,
                        aggression_attack, aggression_neutral, aggression_defence,
-                       depth_deep, depth_middle, depth_short,
-                       stroke_forehand, stroke_backhand,
+                       depth_deep, depth_middle, depth_short, depth_none,
+                       stroke_forehand, stroke_backhand, stroke_other,
                        winners, errors
                 FROM gold.match_rally_breakdown
                 WHERE task_id = :tid
@@ -271,8 +271,10 @@ def fetch_match_data(task_id: str) -> dict:
             "deep":           int(row["depth_deep"] or 0),
             "middle":         int(row["depth_middle"] or 0),
             "short":          int(row["depth_short"] or 0),
+            "no_depth":       int(row["depth_none"] or 0),   # tally-back: shots with no bounce
             "forehand":       int(row["stroke_forehand"] or 0),
             "backhand":       int(row["stroke_backhand"] or 0),
+            "other_stroke":   int(row["stroke_other"] or 0),  # tally-back: non fh/bh/slice/volley
             "winners":        int(row["winners"] or 0),
             "errors":         int(row["errors"] or 0),
         }
