@@ -2274,24 +2274,28 @@ function renderHeatmapContent() {
       <h4>Player Return Position</h4>
       <p>Shows where YOU were standing when you hit each return — plotted at your position on the court (hit coordinates).</p>
       <p>Filter by stroke (Forehand / Backhand) to compare positioning per wing.</p>
+      <p><strong>Errors</strong> are hidden by default — toggle <strong>Errors: Show</strong> to reveal (in <span class="info-dot" style="background:rgba(140,140,140,0.7)"></span>grey) where you stood when a return missed.</p>
       <p>A cluster near the baseline indicates a confident return position; further back may suggest difficulty reading the serve.</p>
     `,
     'return-ball-pos': `
       <h4>Return Ball Position</h4>
       <p>Each dot is your return shot, plotted at the ball's bounce location on the opponent's court.</p>
       <p>Filter by stroke (Forehand / Backhand) to see where each wing tends to place the ball.</p>
+      <p><strong>Errors</strong> (returns hit out / into the net) are hidden by default — toggle <strong>Errors: Show</strong> to reveal them in <span class="info-dot" style="background:rgba(140,140,140,0.7)"></span>grey, plotted where they missed.</p>
       <p>Tables below split by which side you were returning from (Ad / Deuce).</p>
     `,
     'groundstroke': `
       <h4>Groundstrokes</h4>
       <p>Every shot during a rally (excluding serves and returns). Filter by stroke type to see forehand vs backhand placement, and by depth to focus on Deep / Middle / Short bounces.</p>
       <p>Win % = the point ended up being won by this player. Use it to find which shot patterns actually convert to points.</p>
+      <p><strong>Errors</strong> (shots hit out / into the net) are hidden by default — toggle <strong>Errors: Show</strong> to see them in <span class="info-dot" style="background:rgba(140,140,140,0.7)"></span>grey, where they missed.</p>
       <p>A "Deep" bounce near the baseline is generally a winning pattern. Compare your win % per depth to see if you push opponents back effectively.</p>
     `,
     'rally-player-pos': `
       <h4>Rally Player Position</h4>
       <p>Shows where you were on court when you struck each rally shot — your footwork and positioning pattern during rallies.</p>
       <p>Filter by Aggression (Attack / Neutral / Defence) to see how court position changes with shot intent.</p>
+      <p><strong>Errors</strong> are hidden by default — toggle <strong>Errors: Show</strong> to reveal (in <span class="info-dot" style="background:rgba(140,140,140,0.7)"></span>grey) where you stood when you missed.</p>
     `,
   }[activeTab] || '';
 
