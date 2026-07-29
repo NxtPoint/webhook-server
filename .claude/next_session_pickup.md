@@ -171,14 +171,15 @@ neutral-or-better → `bench` (serve) green → ship with env rollback. **devenv
     serve-only). Checks: `video_pipeline/tests/test_trim_{cmd,lock}.py`,
     `test_timeline_aces.py`, `e2e_trim_docker.py` (last two need pandas/ffmpeg ->
     run in the container, see their docstrings).
-  - **OPEN / TODO:**
-    1. **Suspend the `nextpoint-video-worker` Render service** — redundant, $25/mo.
-    2. **Re-trim df594aea once more** — the completed run predates the ace fix, so
-       it has 91 clips; a re-trim yields the full **100 including 7 aces**.
-    3. **`299013b3` is an orphan** stuck at `accepted` (re-fired 17:55, killed by a
-       deploy) — one `/ops/retrim` clears it.
-    4. Confirm the reel actually PLAYS in the Locker Room (nobody has watched it).
-
+  - **DONE 2026-07-27:** Render `nextpoint-video-worker` service **suspended**
+    ($25/mo saved); reel confirmed playing in the Locker Room; no trims left
+    stuck (`299013b3` cleared — Tomo opted not to re-trim it). Docs audited:
+    CLAUDE.md, `video_pipeline/README.md`, `docs/business/env-vars.md` and
+    `fargate_trim/README.md` all reflect the Fargate path; new rules #13/#14.
+  - **ONLY REMAINING (optional, cosmetic):** df594aea's reel was produced by the
+    18:21 run, which **predates the ace fix**, so it has **91 clips and is
+    missing 7 aces**. One `/ops/retrim` yields the full 100 (~8 min, ~$0.14).
+    Nothing depends on it.
 - **quality_tier calibration:** both c8b77210 (good) and df594aea (bad) read
   `medium` — thresholds don't discriminate; df594aea should read `low`.
 
