@@ -2,6 +2,7 @@
 title: How to Read a Tennis Heatmap
 description: A player's guide to reading tennis heatmaps — serve, return, groundstroke and court-position maps — and turning the colours into tactics that win points.
 date: 2026-08-08
+image: /blog/images/heatmap-guide.webp
 ---
 Most tennis apps will hand you a heatmap and leave you to it. You see a court, a scatter of coloured dots, maybe a warm blob near the baseline — and no idea what to actually *do* with it. So the picture gets a nod, a "huh, interesting", and then it's forgotten, while the pattern it was trying to show you keeps costing you matches.
 

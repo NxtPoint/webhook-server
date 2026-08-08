@@ -2,6 +2,7 @@
 title: Tennis Analytics for Junior Players
 description: A guide for tennis parents and coaches — what to measure in junior tennis, what to ignore, and how match data replaces guesswork without adding pressure.
 date: 2026-08-08
+image: /blog/images/junior-analytics.webp
 ---
 Junior tennis has a measurement problem. Almost everything a developing player is judged on is an **outcome**: did they win, what's their ranking, did they make the draw. Those numbers are easy to collect and they feel objective — which is exactly why they get so much weight.
 
