@@ -71,6 +71,7 @@ from db_init import engine, log_task_event  # noqa: E402
 from ingest_bronze import ingest_bronze_strict, _run_bronze_init  # noqa: E402
 from build_silver_v2 import build_silver_v2 as build_silver_point_detail  # noqa: E402
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
+from ingest_quality import assess as assess_payload, should_reject  # noqa: E402
 
 
 # ============================================================
@@ -183,6 +184,38 @@ _TRANSIENT_DB_MARKERS = (
 )
 
 
+def _notify_ops_bad_analysis(task_id: str, verdict) -> None:
+    """Ops email for a rejected or degraded analysis. Best-effort: an alerting
+    failure must never change the ingest outcome."""
+    try:
+        from coach_invite.video_complete_email import send_ops_email
+        rejected = not verdict.ok
+        head = "REJECTED — empty analysis" if rejected else "DEGRADED — ingested with warnings"
+        lines = [
+            f"Task {task_id}: {head}.",
+            "",
+            f"SportAI stats: {verdict.stats}",
+        ]
+        if verdict.detail:
+            lines += ["", verdict.detail]
+        if verdict.warnings:
+            lines += ["", "Warnings:"] + [f"  - {w}" for w in verdict.warnings]
+        if rejected:
+            lines += [
+                "",
+                "No bronze/silver was built, no trim was fired, no completion email "
+                "was sent, and no credit was consumed. The raw payload is archived "
+                "at raw-json/<task_id>.json.gz for diagnosis.",
+            ]
+        send_ops_email(
+            subject=f"[ingest {'rejected' if rejected else 'warning'}] {task_id[:8]} — "
+                    f"{verdict.reason or 'degraded analysis'}",
+            text_body="\n".join(lines),
+        )
+    except Exception as e:  # noqa: BLE001
+        app.logger.warning("SANITY GATE ops email failed task_id=%s: %s", task_id, e)
+
+
 def _is_transient_db_error(exc: BaseException) -> bool:
     """True for DB-connectivity/recovery errors worth retrying, vs a genuine
     data/logic failure (ProgrammingError/IntegrityError/DataError — not retried).
@@ -260,6 +293,43 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             detect_drift(task_id, payload)
         except Exception as _arch_e:
             app.logger.warning("RAW ARCHIVE/drift step failed task_id=%s: %s", task_id, _arch_e)
+
+        # -------------------------
+        # STEP 1c: POST-ANALYSIS SANITY GATE
+        # Runs AFTER the archive on purpose — a rejected payload is exactly the
+        # one we want kept for diagnosis. A failed SportAI analysis returns 200
+        # with a well-formed but empty payload; without this the ingest
+        # "succeeds", silver gets nothing, the customer is emailed a ready
+        # dashboard with no data, and a credit is consumed. See ingest_quality/.
+        # -------------------------
+        _verdict = assess_payload(payload)
+        app.logger.info("INGEST STEP task_id=%s step=sanity_gate ok=%s stats=%s",
+                        task_id, _verdict.ok, _verdict.stats)
+        for _w in _verdict.warnings:
+            app.logger.warning("INGEST QUALITY WARNING task_id=%s: %s", task_id, _w)
+
+        if should_reject(_verdict):
+            _err = f"empty_analysis: {_verdict.detail}"
+            log_task_event(task_id, "bronze", "failed", error=_err)
+            with engine.begin() as conn:
+                _ensure_schema(conn)
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                       SET ingest_error       = :err,
+                           ingest_finished_at = now(),
+                           last_status        = 'failed',
+                           last_status_at     = now()
+                     WHERE task_id = :t
+                """), {"t": task_id, "err": _err})
+            _notify_ops_bad_analysis(task_id, _verdict)
+            app.logger.error("INGEST REJECTED task_id=%s reason=%s", task_id, _verdict.reason)
+            # Returning here deliberately skips bronze, silver, trim, the billing
+            # sync (STEP 5) and the customer notify (STEP 6) — an unanalysable
+            # match must not be billed or announced as ready.
+            return False
+
+        if _verdict.warnings:
+            _notify_ops_bad_analysis(task_id, _verdict)
 
         # -------------------------
         # STEP 2: BRONZE INGEST
