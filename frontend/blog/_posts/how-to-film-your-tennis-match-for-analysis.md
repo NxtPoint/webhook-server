@@ -1,7 +1,7 @@
 ---
-title: How to Film Your Tennis Match for Analysis (Any Camera, Any Court)
-description: How to film a tennis match for AI analysis — the camera, angle, height and settings that turn any phone footage into clean point-by-point match data. No special gear.
-date: 2026-06-15
+title: How to Film Your Tennis Match for Analysis
+description: How to film a tennis match for AI analysis — the angle, height and settings that turn phone footage into clean match data. No branded stick needed.
+date: 2026-08-08
 image: /blog/images/film-your-match.webp
 ---
 Here is the good news before we start: you do not need a smart court, a special tripod, or a four-figure camera to get pro-level match data. You need a phone, a sensible spot to put it, and about two minutes of setup. The footage that powers a full point-by-point breakdown — serve placement, rally length, win patterns, technique — is the same footage you could shoot this weekend on the camera already in your pocket.
@@ -44,6 +44,19 @@ A shaky camera is the fastest way to ruin otherwise good footage. The tracking s
 
 Whatever you use, set it up once, frame the shot, and leave it alone for the whole match. Do not hold the phone, and do not let a well-meaning parent "follow the action" — a fixed, locked-off camera beats a moving one every time for analysis.
 
+## Do you need a dedicated camera stick or mount?
+
+Short answer: no. Several tennis-analysis products sell a matching hardware accessory — a branded stick, pole or court mount whose job is to hold your phone steady at roughly fence height, pointed down the court. They work. But it is worth being clear about what you are buying: a **stand**. The mount does not analyse anything, and nothing about the footage it captures is proprietary.
+
+That means the alternative to a branded stick is not a different branded stick. It is any of these, all of which put the camera in the same place:
+
+- **A basic phone tripod**, extended to head height behind the baseline. The cheapest option that works, and the one most players end up using.
+- **A fence clamp or gooseneck mount**, clipped to the back fence. Folds flat into a racquet bag and sits at a naturally good height without you having to think about it.
+- **An existing club camera**, balcony or gallery — free, and usually already at the ideal elevation.
+- **A tall bag propped against the fence.** Genuinely fine in a pinch, as long as it cannot fall over mid-match.
+
+The one requirement that actually matters is the one from the section above: it must not move. A R200 tripod that stays perfectly still produces better data than an expensive mount that drifts in the wind. And because Ten-Fifty5 analyses an ordinary uploaded video file rather than a live feed from a specific device, no part of your setup is locked to a brand — film on whatever holds your phone steady, upload, and the analysis is identical.
+
 ## Frame the shot: a 30-second checklist
 
 Before you hit record, glance through the frame and confirm:
@@ -73,6 +86,17 @@ Before you hit record, glance through the frame and confirm:
 ## Filming a junior's match? A note for parents and coaches
 
 If you are recording a child's tournament or a player you coach, the same rules apply — and a fixed camera is actually easier than trying to film by hand from the stands. Set it up behind the court before the warm-up, press record, and watch the match like a normal spectator. You walk away with footage you can upload later, turning a tournament you sat through into a full data set you can review together in the next session. For coaches managing several players, that means match data from events you never travelled to. (More on the [coaching workflow here](https://www.ten-fifty5.com/coaching).)
+
+## Frequently asked questions
+
+**Do I need to buy a special tennis camera stick or mount?**
+No. A branded stick is a phone stand — it holds the camera steady at height and does nothing else. Any tripod, fence clamp or club camera that gives you a stable, centred, elevated view behind the baseline produces exactly the same quality of footage and exactly the same analysis.
+
+**Does the analysis depend on which camera or mount I use?**
+No. Ten-Fifty5 works from a standard uploaded video file (MP4 or MOV, 720p or better) from any device — Android phone, iPhone, GoPro, DSLR or a fixed club camera. There is no proprietary hardware anywhere in the chain.
+
+**What height should the camera be at?**
+As high as you can reasonably manage. Chest height works, fence-top height or above is better — elevation keeps the far baseline visible and stops the ball disappearing behind the near player.
 
 ## From footage to insight
 

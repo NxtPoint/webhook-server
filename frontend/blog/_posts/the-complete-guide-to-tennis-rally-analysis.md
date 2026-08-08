@@ -1,9 +1,19 @@
 ---
-title: The Complete Guide to Tennis Rally Analysis
-description: Rally length and aggression profile reveal your tactical identity — where you win points, where you lose them, and how patterns shift under pressure.
-date: 2026-05-24
+title: What Is a Rally in Tennis? Meaning and Analysis
+description: A rally in tennis is the exchange of shots after the serve. Here's what rally length and aggression reveal about where you really win and lose points.
+date: 2026-08-08
 image: /blog/images/rally-analysis.webp
 ---
+## What is a rally in tennis?
+
+A **rally** in tennis is the exchange of shots between players that follows the serve — every ball hit back and forth over the net until the point ends in a winner, a forced error or an unforced error. A rally's **length** is simply the number of shots it contains, counting the serve as the first shot.
+
+So an ace is a one-shot rally. A serve, a return and a putaway is a three-shot rally. A long baseline exchange might run to fifteen or twenty shots. The term covers the whole point, not just the baseline phase — which is why commentators use "rally" and "point" almost interchangeably.
+
+That definition sounds trivial. It isn't — because the moment you start counting rally lengths and recording who won each one, the tactical shape of your whole game appears in a way that no amount of watching will show you. That is what rally analysis does.
+
+## What rally analysis measures
+
 Rally analysis tracks every point in a match and categorises it by how the rally played out — not just the final result. The two most fundamental dimensions are rally length (how many shots the point lasted) and rally outcome (who won, and how — winner, forced error, unforced error).
 
 From those building blocks, a full rally analysis reveals patterns like your win rate at different rally lengths, how aggressively you play relative to your opponent, whether you control or surrender neutral rallies, and how your patterns shift across sets as a match develops.
@@ -76,6 +86,10 @@ If you consistently lose long rallies, you have three options: improve your endu
 **Step 5: Review after the match.** Did you execute the plan? Rally data from the new match will show whether you actually shortened points or maintained aggression as intended.
 
 ## Frequently Asked Questions
+
+### How long is an average tennis rally?
+
+Shorter than almost everyone expects. Across professional and club tennis alike, the majority of points end within the first four shots — serve, return, and one or two more. The long, dramatic baseline exchanges that stick in the memory are a small minority of any match. This is exactly why rally-length data is so useful: most players train for the rallies they remember rather than the ones they actually play.
 
 ### How is rally length calculated?
 

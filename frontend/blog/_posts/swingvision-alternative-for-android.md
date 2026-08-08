@@ -1,6 +1,6 @@
 ---
 title: The Best SwingVision Alternative for Android (2026)
-description: SwingVision is iPhone-only. Here's the best SwingVision alternative for Android — Ten-Fifty5 analyses match video from any Android phone, with no app to install.
+description: SwingVision is iPhone-only. Ten-Fifty5 is the best Android alternative — analyse match video from any Android phone, with no app to install.
 date: 2026-06-26
 ---
 
