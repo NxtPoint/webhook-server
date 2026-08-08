@@ -2,36 +2,45 @@
 
 Why: `VIDEO_QUALITY_CHECK_ENABLED` gates the video BEFORE analysis. Nothing
 checked what came BACK. A failed SportAI analysis returns HTTP 200 with a
-well-formed payload containing no ball, no rallies and no bounces — so the
-ingest "succeeded", silver got nothing, the dashboard rendered empty, the
-customer got a "your video is ready" email, and a credit was consumed.
+well-formed payload, so bronze ingested happily, silver wrote nothing, and the
+match still read `last_status='completed'` — showing up in the customer's
+sidebar as a finished match with 0 points, and counting as billable to
+`billing_import_from_bronze` (which selects on exactly that status).
 
-Measured 2026-08-08 over every payload in s3://<bucket>/raw-json/ (10 matches):
+Measured 2026-08-08 over every payload in s3://<bucket>/raw-json/ (10 matches),
+against the silver rows each actually produced:
 
-    codec  n  n_rallies              final_conf
-    h264   6  101, 96, 27, 27, 24, 9  0.618-0.699
-    hevc   4  2, 1, 0, 0              0.408-0.526
+    ball_positions   valid swings   silver rows   n
+    >= 5591          94 - 611       94 - 611      8   usable
+    496 / 0          0              0             2   broken (42280d38, 6abd37ca)
 
-Every HEVC upload was broken; every H.264 one worked. On task 42280d38 the
-player tracking was FINE (the two real players tracked across 82k/85k frames at
-0.71 pose confidence) — only the ball detector returned nothing, which is why
-the footage looks perfect to a human. That match also carried 74 phantom
-"players", and their near-empty `location_heatmap` grids are what OOM-killed the
-512 MB ingest worker (see [[feedback_gz_size_is_not_an_ingest_memory_proxy]]).
+The failure chain is: ball tracking collapses -> SportAI cannot validate swings
+against ball proximity, so it flags EVERY swing invalid -> build_silver_v2.
+_resolve_two_players counts distinct player_id over `valid IS TRUE` only, finds
+0, and raises "Cannot resolve 2 players (found 0)" -> zero silver rows.
+
+Note the error message misleads: 6abd37ca carries exactly 2 correctly-identified
+players and 228 swings. Nothing was wrong with the player IDs; all 228 swings
+were flagged invalid.
+
+CODEC IS NOT THE CAUSE. Both failures were HEVC, but 2 of the 4 HEVC matches
+analysed fine (155 and 154 silver rows) — so HEVC is a weak risk signal at n=2
+failures, nothing more. An earlier version of this file claimed "every HEVC
+upload was broken"; that was built on `n_rallies`, which does not track
+usability at all (df594aea reports 9 rallies and has 611 silver rows). Do not
+reinstate a codec-based rejection.
 
 So this module answers one question: did SportAI actually analyse this match?
 
-REJECT is deliberately restricted to the UNAMBIGUOUS case — zero ball positions
-AND zero rallies, i.e. there is literally nothing for silver to build from. A
-real match cannot have zero ball positions, so this carries no false-positive
-risk and needs no tuned threshold. Anything softer (low confidence, few rallies)
-is a WARNING: it is flagged to ops and recorded, but still ingested, because
-`df594aea` proves a genuinely-poor match can still be worth keeping (9 rallies
-reported over 74 minutes, yet 100 hand-verified real points).
+REJECT is restricted to structural, threshold-free facts — zero valid swings, or
+no rallies AND no bounces. Anything softer (low confidence, suspect codec, few
+rallies) is a WARNING: flagged to ops but still ingested, because `df594aea`
+proves a genuinely-poor match can still be worth keeping (9 reported rallies
+over 74 minutes, yet 100 hand-verified real points).
 
-Do NOT turn the warnings into rejections without re-measuring. The confidence
-gap (0.526 -> 0.618) is real but rests on 10 matches, and `silver.match_quality`
-already tiers on the same numbers for downstream reliability display.
+Do NOT turn the warnings into rejections without re-measuring — they rest on 10
+matches, and `silver.match_quality` already tiers on the same confidence numbers
+for downstream reliability display.
 """
 from __future__ import annotations
 
@@ -85,6 +94,21 @@ def assess(payload: dict) -> Verdict:
         n_rally = _n(payload, "rallies")
         n_bounce = _n(payload, "ball_bounces")
         n_players = _n(payload, "players")
+
+        # SportAI's per-swing `valid` flag is the DIRECT predictor of the silver
+        # failure: build_silver_v2._resolve_two_players counts distinct player_id
+        # over `valid IS TRUE` swings only, so zero valid swings => "Cannot
+        # resolve 2 players (found 0)" => zero silver rows, however many swings
+        # or players the payload nominally contains.
+        n_swings = n_valid = 0
+        for _p in (payload.get("players") or []):
+            if not isinstance(_p, dict):
+                continue
+            for _s in (_p.get("swings") or []):
+                if isinstance(_s, dict):
+                    n_swings += 1
+                    if _s.get("valid") is True:
+                        n_valid += 1
         codec = str(vinfo.get("codec") or "").lower()
         final_conf = final.get("final")
         try:
@@ -94,7 +118,8 @@ def assess(payload: dict) -> Verdict:
 
         v.stats = {
             "ball_positions": n_ball, "rallies": n_rally, "ball_bounces": n_bounce,
-            "players": n_players, "codec": codec or None, "final_conf": final_conf,
+            "players": n_players, "swings": n_swings, "valid_swings": n_valid,
+            "codec": codec or None, "final_conf": final_conf,
             "duration_s": vinfo.get("duration"),
         }
 
@@ -113,20 +138,34 @@ def assess(payload: dict) -> Verdict:
             )
             return v
 
-        # --- the one unambiguous rejection -------------------------------------
-        # No rallies AND no floor bounces => silver has no point structure to
-        # derive from, so the dashboard is empty whatever else is present. Not a
-        # threshold; a structural fact about the payload.
+        # --- rejections: both structural, both threshold-free -------------------
+        # (1) Zero VALID swings. The direct cause of the observed silver failure
+        #     (see above). Measured over all 10 archived payloads this separates
+        #     perfectly: the 8 usable matches have 94-611 valid swings, the 2
+        #     broken ones have exactly 0 (with 228 and 458 swings present but all
+        #     flagged invalid, because SportAI validates a swing against ball
+        #     proximity and ball tracking had collapsed).
+        # (2) No rallies AND no floor bounces => no point structure to derive.
         #
-        # Deliberately NOT keyed on ball_positions: 6abd37ca returned 496 ball
-        # positions with zero rallies and zero bounces and is just as empty, so
-        # a ball-based rule would have let it through. Every healthy match
-        # measured has >= 9 rallies and >= 162 bounces; the two rejects have 0/0.
-        if n_rally == 0 and n_bounce == 0:
+        # Deliberately NOT keyed on ball_positions. It is the best-separating
+        # NUMBER (usable >= 5591, broken 0 and 496) but that is an 11x gap fitted
+        # to 10 samples, and a count threshold on a 10-min match is not the same
+        # as on a 2-hour one. `valid == 0` is the same evidence without a knob.
+        if n_valid == 0 and n_swings > 0:
+            v.ok = False
+            v.reason = "no_valid_swings"
+            v.detail = (
+                f"SportAI flagged every one of {n_swings} detected swings as "
+                f"invalid (0 valid), so silver cannot resolve either player. "
+                f"{n_ball} ball positions, {n_rally} rallies, {n_bounce} floor "
+                f"bounces, {n_players} players, codec={codec or 'unknown'}, "
+                f"final_confidence={final_conf}."
+            )
+        elif n_rally == 0 and n_bounce == 0:
             v.ok = False
             v.reason = "empty_analysis"
             v.detail = (
-                f"SportAI returned no usable analysis: {n_ball} ball positions, "
+                f"SportAI returned no point structure: {n_ball} ball positions, "
                 f"{n_rally} rallies, {n_bounce} floor bounces "
                 f"({n_players} players detected, codec={codec or 'unknown'}, "
                 f"final_confidence={final_conf}). Nothing to ingest."
@@ -135,8 +174,9 @@ def assess(payload: dict) -> Verdict:
         # --- warnings (still ingested) -----------------------------------------
         if codec in SUSPECT_CODECS:
             v.warnings.append(
-                f"codec={codec}: every {codec} upload measured so far produced a "
-                f"broken or near-empty analysis (h264 has not)"
+                f"codec={codec}: both matches that failed outright were {codec}, "
+                f"but 2 of 4 {codec} matches analysed fine — a weak risk signal, "
+                f"not a cause"
             )
         if final_conf is not None and final_conf < MIN_FINAL_CONF:
             v.warnings.append(

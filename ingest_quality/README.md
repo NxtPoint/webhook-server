@@ -4,11 +4,11 @@ One question: **did SportAI actually analyse this match?**
 
 `VIDEO_QUALITY_CHECK_ENABLED` gates the video *before* analysis. Nothing checked
 what came back — and a failed SportAI analysis returns **HTTP 200 with a
-well-formed but empty payload**. So the ingest "succeeded", silver got nothing,
-the customer was emailed a ready dashboard with no data, and a credit was
-consumed. Two real matches hit this (`42280d38`, `6abd37ca`).
+well-formed but empty payload**. So the ingest "succeeded", silver wrote nothing,
+and the match still showed as `completed` with 0 points in the customer's
+sidebar. Two real matches hit this (`42280d38`, `6abd37ca`, both 2026-08-08).
 
-Full evidence: `docs/_investigation/sportai_hevc_and_ingest_memory_2026-08-08.md`.
+Full evidence: `docs/_investigation/empty_analysis_and_ingest_memory_2026-08-08.md`.
 
 ## Where it runs
 
@@ -21,18 +21,26 @@ customer notify (STEP 6). An unanalysable match is neither billed nor announced.
 
 ## What it rejects — and what it deliberately doesn't
 
-**REJECT** on one unambiguous signal: **0 rallies AND 0 floor bounces** — no
-point structure for silver to derive from. Not a tuned threshold; a structural
-fact. Healthy matches measured ≥ 9 rallies and ≥ 162 bounces; the two rejects
-have 0/0.
+**REJECT** on either structural, threshold-free fact:
+
+1. **0 valid swings** (with swings present) — the direct cause. SportAI validates
+   a swing against ball proximity, so when ball tracking collapses it flags every
+   swing invalid; `build_silver_v2._resolve_two_players` counts distinct
+   `player_id` over `valid IS TRUE` only, finds 0, and raises "Cannot resolve 2
+   players". Measured across all 10 archived payloads, **valid swings == silver
+   rows exactly**.
+2. **0 rallies AND 0 floor bounces** — no point structure to derive from.
+
+Validated against all 10 real payloads: **rejects iff the match produced zero
+silver rows.**
 
 Three axes were considered and rejected — **don't reintroduce them**:
 
 | axis | why not |
 |---|---|
-| `ball_positions == 0` | `6abd37ca` has **496** ball positions with 0 rallies and 0 bounces — just as empty. A ball rule misses it. |
-| rallies per minute | `df594aea` reports 9 rallies over 74 min yet has **100 hand-verified points**. A rate rule rejects a match we hold ground truth for. |
-| codec (HEVC) | HEVC is the *cause* (4/4 broken vs 6/6 h264) but the decision is made on the **output**, so a SportAI fix needs no change here. Warning only. |
+| `ball_positions` | The best-separating *number* (usable ≥ 5,591; broken 0 and 496) — but an 11× gap fitted to 10 samples, and a count threshold on a 10-min match ≠ a 2-hour one. `valid == 0` is the same evidence with no knob. |
+| rallies per minute | `df594aea` reports 9 rallies over 74 min yet has 611 silver rows and **100 hand-verified points**. A rate rule rejects a match we hold ground truth for. |
+| codec (HEVC) | **2 of the 4 HEVC matches analysed fine** (155 and 154 silver rows). Both failures happened to be HEVC, but at n=2 that is a weak risk signal, not a cause. An earlier version of this file claimed "every HEVC upload was broken" — it was built on `n_rallies`, which doesn't track usability. Warning only. |
 
 **WARN** (still ingests): suspect codec, `final` confidence below
 `INGEST_SANITY_MIN_FINAL_CONF`, or > 10 players (phantom storm — the shape that
