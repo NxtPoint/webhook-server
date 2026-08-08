@@ -68,6 +68,9 @@ Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing
 ## Other Services
 
 - **Ingest Worker**: `INGEST_WORKER_OPS_KEY` (required — startup crash), `DATABASE_URL`, and the trim-trigger vars (`TRIM_BACKEND`, `VIDEO_TRIM_CALLBACK_*`; `VIDEO_WORKER_*` only if `TRIM_BACKEND=http`).
+  - **Plan: `standard` (2 GB)** — upgraded from `starter` (512 MB) on 2026-08-08 after a payload parsing to a 558 MB dict OOM-killed it four times. Don't downgrade; see `docs/_investigation/sportai_hevc_and_ingest_memory_2026-08-08.md`.
+  - **Post-analysis sanity gate** (`ingest_quality/`): `INGEST_SANITY_GATE_ENABLED` (default `1`; `0` = assess and log but never reject — rollback with no deploy), `INGEST_SANITY_MIN_FINAL_CONF` (default `0.55`, **warn-only**), `INGEST_SANITY_SUSPECT_CODECS` (default `hevc,h265`, **warn-only**). Rejects a SportAI payload with 0 rallies AND 0 floor bounces before bronze/silver/trim/billing/customer-notify, so an unanalysable match is neither billed nor announced as ready.
+  - `RAW_ARCHIVE_ENABLED` (default on) — archives every payload to `raw-json/<task>.json.gz` + schema-drift alarm. Leave on: it is the only durable copy (SportAI's re-fetch URL expires in 1 h) and the corpus every codec/quality finding is measured on.
 - **Video trim — backend selection** (main API + ingest worker; both import `video_trim_api`):
   - **`TRIM_BACKEND`** — default **`batch`** = a per-use AWS Batch (Fargate) job (`video_pipeline/fargate_trim/`, **LIVE since 2026-07-27**). `http` = the legacy always-on Render worker (**suspended**; resume the service before switching back).
   - **`VIDEO_TRIM_ENABLED`** — default `1`; `0` makes `trigger_video_trim` a no-op. Leaves `trim_status` NULL on purpose — the SPAs fall back to the original video and nothing raises an ops alert. Ingest is unaffected either way (all callers wrap the trigger).

@@ -155,6 +155,8 @@ curl -s https://api.nextpointtennis.com/ops/compact-storage \
 
 **When**: A SportAI task completed but the auto-ingest didn't fire (rare); or you need to re-ingest after a silver-builder fix; or testing pipeline changes.
 
+**Also the poison-guard bypass.** When an ingest dies repeatedly, `/ops/sweep-sa-orphans` gives up at `SWEEP_SA_MAX_ATTEMPTS` (4) and stamps `last_status='failed'` — after which **the sweep will never retry it again**. This endpoint ignores the attempt count entirely, so it is the way to recover such a task once the underlying cause is fixed. It re-resolves a **fresh** SportAI `result_url` (`_resolve_result_url_for_task` does a live status lookup, falling back to the cached URL), so the 1-hour presign expiry is not a problem — but SportAI must still retain the result, else you get `result_url_not_available` and the match needs resubmitting.
+
 **Body (required):**
 ```json
 {"task_id": "<task_id>", "mode": "worker" | "sync"}
