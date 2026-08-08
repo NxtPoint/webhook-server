@@ -45,7 +45,7 @@
 #   - Transaction-scoped advisory locks (auto-release)
 #   - Defensive JSON parsing & shape guards
 
-import os, json, gzip, hashlib, re
+import os, json, gzip, hashlib, io, re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
@@ -85,6 +85,36 @@ def _sha256(s: str) -> str:
 def _gzip_bytes(s: str) -> bytes:
     return gzip.compress(s.encode("utf-8"))
 
+# Canonical form of the whole payload, used for both the session uid and the
+# bronze.raw_result row. MUST stay byte-identical to
+# json.dumps(payload, separators=(",", ":"), ensure_ascii=False).
+_PAYLOAD_ENCODER = json.JSONEncoder(separators=(",", ":"), ensure_ascii=False)
+
+def _encode_payload(payload: Dict[str, Any]) -> tuple[str, int, bytes]:
+    """One streaming pass over the payload -> (sha256, char length, gzip bytes).
+
+    The whole-payload `json.dumps(...)` this replaces held a full JSON string
+    beside the already-huge parsed dict, then encoded it to utf-8 TWICE more
+    (once for the sha, once for the gzip). Measured on a real 11 MB-gz match
+    (39 MB JSON -> 181 MB dict), that pattern is ~90 MB of avoidable peak inside
+    the bronze transaction — on a 512 MB Render instance, with the dict still
+    live. Hashing and compressing are both incremental, so nothing needs the
+    full string to exist at once.
+
+    Returns the CHARACTER length (not the utf-8 byte length) to keep
+    bronze.raw_result.payload_len identical to the previous `len(s)`.
+    """
+    h = hashlib.sha256()
+    buf = io.BytesIO()
+    n_chars = 0
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        for chunk in _PAYLOAD_ENCODER.iterencode(payload):
+            n_chars += len(chunk)
+            b = chunk.encode("utf-8")
+            h.update(b)
+            gz.write(b)
+    return h.hexdigest(), n_chars, buf.getvalue()
+
 def _as_list(v) -> List[Any]:
     if v is None: return []
     return v if isinstance(v, list) else []
@@ -103,8 +133,18 @@ def _derive_task_id(payload: dict | None, src_hint: str | None) -> Optional[str]
         if m: return m.group(1)
     return None
 
+def _sha256_payload(payload: Dict[str, Any]) -> str:
+    """sha256 of the canonical payload JSON, hashed incrementally. Identical
+    digest to _sha256(json.dumps(payload, separators=(",", ":"),
+    ensure_ascii=False)) — sha256 is a streaming construction — but without the
+    full-string copy. Session uids stay stable across this change."""
+    h = hashlib.sha256()
+    for chunk in _PAYLOAD_ENCODER.iterencode(payload):
+        h.update(chunk.encode("utf-8"))
+    return h.hexdigest()
+
 def _compute_session_uid(task_id: str, payload: Dict[str, Any]) -> str:
-    ph = _sha256(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))[:10]
+    ph = _sha256_payload(payload)[:10]
     return f"{task_id[:8]}-{ph}"
 
 def _as_float(x):
@@ -389,18 +429,22 @@ def _run_bronze_init(conn=None):
 
 # --------------- raw persistence ---------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
-    s = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    sha = _sha256(s)
-    if len(s) <= size_threshold:
+    # Stream once for sha/length/gzip so the big-payload branch never materialises
+    # the full JSON string (see _encode_payload). Only the small branch, which is
+    # bounded by size_threshold, serialises to a string — it needs one for JSONB.
+    sha, n, gz = _encode_payload(payload)
+    if n <= size_threshold:
+        del gz
+        s = _PAYLOAD_ENCODER.encode(payload)
         conn.execute(sql_text("""
             INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256, payload_len, chunked, chunk_count)
             VALUES (:tid, CAST(:j AS JSONB), :sha, :len, FALSE, NULL)
-        """), {"tid": task_id, "j": s, "sha": sha, "len": len(s)})
+        """), {"tid": task_id, "j": s, "sha": sha, "len": n})
     else:
         conn.execute(sql_text("""
             INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256, payload_len, chunked, chunk_count)
             VALUES (:tid, :gz, :sha, :len, FALSE, NULL)
-        """), {"tid": task_id, "gz": _gzip_bytes(s), "sha": sha, "len": len(s)})
+        """), {"tid": task_id, "gz": gz, "sha": sha, "len": n})
 
 # --------------- fan-out helpers (all flatten-on-insert) ---------------
 def _ensure_session(conn, task_id: str, payload: Dict[str, Any]):

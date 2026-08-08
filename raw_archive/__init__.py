@@ -14,6 +14,7 @@ ingest.
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import logging
 import os
@@ -37,6 +38,27 @@ RAW_ARCHIVE_ENABLED = (os.getenv("RAW_ARCHIVE_ENABLED", "1").strip() != "0")
 RAW_ARCHIVE_PREFIX = os.getenv("RAW_ARCHIVE_PREFIX", "raw-json").strip("/")
 
 
+def _gzip_stream(payload: dict) -> bytes:
+    """gzip the payload WITHOUT ever materialising the whole JSON string/bytes.
+
+    The obvious one-liner — gzip.compress(json.dumps(payload).encode()) — holds a
+    full str AND a full bytes copy of the entire result alongside the already-huge
+    parsed dict. Measured on a real 11 MB-gz match (39 MB JSON -> 181 MB dict):
+    that line peaked at +78 MB on top of the live dict; this chunked version peaks
+    at +13 MB for byte-identical output.
+
+    That matters because the ingest worker is a 512 MB Render instance and this
+    step is BEST-EFFORT — but an out-of-memory kill is SIGKILL, not an exception,
+    so the caller's try/except cannot contain it. An archive failure has to stay
+    survivable, which means it must not be an allocation spike.
+    """
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        for chunk in json.JSONEncoder(separators=(",", ":")).iterencode(payload):
+            gz.write(chunk.encode("utf-8"))
+    return buf.getvalue()
+
+
 def archive_raw(task_id: str, payload: dict, *, bucket: str | None = None) -> str | None:
     """Store the whole payload to s3://<bucket>/<prefix>/<task_id>.json.gz.
 
@@ -50,7 +72,7 @@ def archive_raw(task_id: str, payload: dict, *, bucket: str | None = None) -> st
         return None
     try:
         import boto3  # local import — worker may not need it otherwise
-        body = gzip.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        body = _gzip_stream(payload)
         key = f"{RAW_ARCHIVE_PREFIX}/{task_id}.json.gz"
         boto3.client("s3", region_name=os.getenv("AWS_REGION", "eu-north-1")).put_object(
             Bucket=bucket, Key=key, Body=body,
